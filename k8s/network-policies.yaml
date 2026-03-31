@@ -1,0 +1,325 @@
+---
+# ============================================================================
+# Kubernetes NetworkPolicies — Zero-Trust Network Segmentation
+# ============================================================================
+# Banking Relevance: Thai Virtual Banks (BOT/AMLO) require network segmentation
+# to prevent lateral movement in case of a security breach. These policies
+# implement the principle of "Deny All, Allow Explicitly" — every Pod can only
+# communicate with the exact services it needs.
+#
+# Architecture:
+#   Producer → Kafka ← Flink → PostgreSQL ← MCP Server
+#                                    ↑
+#                                  Airflow
+# ============================================================================
+
+# ── Default: Deny ALL ingress traffic in namespace ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: cryptostream
+spec:
+  podSelector: {}  # Applies to ALL pods in namespace
+  policyTypes:
+  - Ingress
+  # No ingress rules = deny all inbound traffic by default
+
+---
+# ── Kafka: Allow only authorized producers/consumers ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kafka-ingress
+  namespace: cryptostream
+  labels:
+    compliance: network-segmentation
+spec:
+  podSelector:
+    matchLabels:
+      app: kafka
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow Flink TaskManagers (consumer)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: flink
+          component: taskmanager
+    ports:
+    - port: 29092
+      protocol: TCP
+  # Allow Flink JobManagers (consumer coordination)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: flink
+          component: jobmanager
+    ports:
+    - port: 29092
+      protocol: TCP
+  # Allow inter-broker communication (Kafka → Kafka)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - port: 29092
+      protocol: TCP
+    - port: 9092
+      protocol: TCP
+  # Allow Kafka Exporter (monitoring)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: kafka-exporter
+    ports:
+    - port: 9092
+      protocol: TCP
+
+---
+# ── ZooKeeper: Allow only Kafka brokers and ZK ensemble peers ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zookeeper-ingress
+  namespace: cryptostream
+spec:
+  podSelector:
+    matchLabels:
+      app: zookeeper
+  policyTypes:
+  - Ingress
+  ingress:
+  # Kafka brokers connect to ZK for coordination
+  - from:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - port: 2181
+      protocol: TCP
+  # ZK peer communication (leader election, sync)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: zookeeper
+    ports:
+    - port: 2181
+      protocol: TCP
+    - port: 2888
+      protocol: TCP
+    - port: 3888
+      protocol: TCP
+
+---
+# ── PostgreSQL: Allow only authorized data services ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-ingress
+  namespace: cryptostream
+  labels:
+    compliance: network-segmentation
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+  - Ingress
+  ingress:
+  # Flink writes enriched trades and market metrics
+  - from:
+    - podSelector:
+        matchLabels:
+          app: flink
+    ports:
+    - port: 5432
+      protocol: TCP
+  # Airflow reads data for EOD reports
+  - from:
+    - podSelector:
+        matchLabels:
+          app: airflow
+    ports:
+    - port: 5432
+      protocol: TCP
+  # MCP Server reads data for AI agent queries (read-only role)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: mcp-server
+    ports:
+    - port: 5432
+      protocol: TCP
+  # Postgres Exporter (monitoring)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: postgres-exporter
+    ports:
+    - port: 5432
+      protocol: TCP
+
+---
+# ── Flink JobManager: Allow UI + TaskManager communication ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-flink-jobmanager-ingress
+  namespace: cryptostream
+spec:
+  podSelector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  policyTypes:
+  - Ingress
+  ingress:
+  # TaskManagers connect to JobManager for job coordination
+  - from:
+    - podSelector:
+        matchLabels:
+          app: flink
+          component: taskmanager
+    ports:
+    - port: 6123
+      protocol: TCP
+  # Ingress controller for Flink UI access
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - port: 8081
+      protocol: TCP
+  # Prometheus scraping Flink metrics
+  - from:
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - port: 9249
+      protocol: TCP
+
+---
+# ── Flink TaskManager: Allow JobManager coordination ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-flink-taskmanager-ingress
+  namespace: cryptostream
+spec:
+  podSelector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: flink
+          component: jobmanager
+    ports:
+    - port: 6122
+      protocol: TCP
+
+---
+# ── Airflow Webserver: Allow Ingress only ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-airflow-ingress
+  namespace: cryptostream
+spec:
+  podSelector:
+    matchLabels:
+      app: airflow
+      component: webserver
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - port: 8080
+      protocol: TCP
+
+---
+# ── MCP Server: Allow Ingress only ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mcp-server-ingress
+  namespace: cryptostream
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-server
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - port: 8080
+      protocol: TCP
+
+---
+# ── Grafana: Allow Ingress only ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-grafana-ingress
+  namespace: cryptostream
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - port: 3000
+      protocol: TCP
+  # Prometheus health checks
+  - from:
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - port: 3000
+      protocol: TCP
+
+---
+# ── Prometheus: Allow Grafana queries ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-ingress
+  namespace: cryptostream
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: grafana
+    ports:
+    - port: 9090
+      protocol: TCP

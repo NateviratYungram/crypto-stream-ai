@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+env/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Docker / Database Data (CRITICAL to ignore)
+postgres_data/
+airflow_logs/
+datalake/
+
+# Testing / Temporary
+.pytest_cache/
+htmlcov/
+fix_db.py

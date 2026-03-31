@@ -1,0 +1,62 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cryptostream-ingress
+  namespace: cryptostream
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    
+    # ── Protection against DDoS & Brute-force ──
+    nginx.ingress.kubernetes.io/limit-rps: "60"           # Match MCP Sever rate limit
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+    
+    # ── Security Headers (Banking Best Practices) ──
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+      
+    # ── CORS setup for MCP Server ──
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,X-API-Key"
+spec:
+  tls:
+  - hosts:
+    - airflow.cryptostream.ai
+    - grafana.cryptostream.ai
+    - mcp.cryptostream.ai
+    secretName: cryptostream-tls
+  rules:
+  - host: airflow.cryptostream.ai
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: airflow-webserver
+            port:
+              number: 8080
+  - host: grafana.cryptostream.ai
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: grafana
+            port:
+              number: 3000
+  - host: mcp.cryptostream.ai
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: mcp-server  # Needs a K8s service for mcp-server to work
+            port:
+              number: 8080

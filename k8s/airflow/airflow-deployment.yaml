@@ -1,0 +1,163 @@
+---
+# Apache Airflow Deployment (KubernetesExecutor)
+# Banking Relevance: Airflow KubernetesExecutor runs each DAG Task in an isolated
+# Kubernetes Pod. This means:
+#   - Failed tasks don't affect other tasks (fault isolation)
+#   - Each task gets exact compute resources it needs
+#   - Full audit trail via Kubernetes Pod logs (meets ธปท. logging requirements)
+# This replaces the CeleryExecutor/Redis architecture for production Virtual Banking workloads.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  namespace: cryptostream
+  labels:
+    app: airflow
+    component: webserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      component: webserver
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: webserver
+    spec:
+      serviceAccountName: airflow   # Needs RBAC to create Pods (KubernetesExecutor)
+      containers:
+      - name: airflow-webserver
+        image: apache/airflow:2.8.0
+        command: ["airflow", "webserver"]
+        ports:
+        - containerPort: 8080
+          name: ui
+        env:
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: KubernetesExecutor
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: db_conn
+        - name: AIRFLOW__CORE__FERNET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet_key
+        - name: AIRFLOW__KUBERNETES__NAMESPACE
+          value: cryptostream
+        - name: AIRFLOW__KUBERNETES__WORKER_CONTAINER_REPOSITORY
+          value: apache/airflow
+        - name: AIRFLOW__KUBERNETES__WORKER_CONTAINER_TAG
+          value: "2.8.0"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: cryptostream
+  labels:
+    app: airflow
+    component: scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      component: scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: scheduler
+    spec:
+      serviceAccountName: airflow
+      containers:
+      - name: airflow-scheduler
+        image: apache/airflow:2.8.0
+        command: ["airflow", "scheduler"]
+        env:
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: KubernetesExecutor
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: db_conn
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-webserver
+  namespace: cryptostream
+spec:
+  selector:
+    app: airflow
+    component: webserver
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+# RBAC: Allow Airflow scheduler to create/manage Pods (required for KubernetesExecutor)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: airflow
+  namespace: cryptostream
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-role
+  namespace: cryptostream
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-rolebinding
+  namespace: cryptostream
+subjects:
+- kind: ServiceAccount
+  name: airflow
+  namespace: cryptostream
+roleRef:
+  kind: Role
+  name: airflow-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: airflow-secret
+  namespace: cryptostream
+type: Opaque
+stringData:
+  db_conn: "postgresql+psycopg2://airflow:CHANGE_ME@postgres:5432/airflow_db"
+  fernet_key: "CHANGE_ME_GENERATE_WITH_python_-c_from_cryptography.fernet_import_Fernet_print(Fernet.generate_key())"

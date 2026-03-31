@@ -1,0 +1,73 @@
+---
+# Flink JobManager Deployment
+# Banking Relevance: JobManager is the "brain" of Flink — it coordinates stream
+# processing jobs (Whale Detection, VWAP). In HA mode, multiple JobManagers use
+# ZooKeeper for leader election, ensuring no single point of failure for critical
+# AML monitoring jobs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: cryptostream
+  labels:
+    app: flink
+    component: jobmanager
+spec:
+  replicas: 1  # Phase 7: Use HA mode with ZooKeeper for multi-jobmanager
+  selector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: jobmanager
+    spec:
+      containers:
+      - name: jobmanager
+        image: flink:1.18-scala_2.12
+        args: ["jobmanager"]
+        ports:
+        - containerPort: 6123
+          name: rpc
+        - containerPort: 8081
+          name: ui
+        env:
+        - name: FLINK_PROPERTIES
+          value: |
+            jobmanager.rpc.address: flink-jobmanager
+            taskmanager.numberOfTaskSlots: 4
+            parallelism.default: 2
+            state.backend: filesystem
+            state.checkpoints.dir: file:///tmp/flink-checkpoints
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /overview
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: cryptostream
+spec:
+  selector:
+    app: flink
+    component: jobmanager
+  ports:
+  - name: rpc
+    port: 6123
+    targetPort: 6123
+  - name: ui
+    port: 8081
+    targetPort: 8081

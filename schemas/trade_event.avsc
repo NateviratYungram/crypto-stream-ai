@@ -1,0 +1,53 @@
+{
+  "type": "record",
+  "name": "TradeEvent",
+  "namespace": "ai.cryptostream.schemas",
+  "doc": "Canonical schema for a single trade event from the Binance WebSocket feed. Used to enforce contract between Kafka Producer and all downstream consumers (Flink, Lake Writer). Schema Registry prevents upstream changes from silently breaking the pipeline.",
+  "fields": [
+    {
+      "name": "trade_id",
+      "type": "string",
+      "doc": "Unique trade identifier assigned by the exchange (Binance trade ID). Cannot be null — used as the primary key in enriched_trades table."
+    },
+    {
+      "name": "symbol",
+      "type": "string",
+      "doc": "Trading pair symbol, e.g. BTCUSDT, ETHUSDT. Validated against an allowed-symbol whitelist in Flink."
+    },
+    {
+      "name": "price",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 20,
+        "scale": 8
+      },
+      "doc": "Trade execution price. Must be > 0. Scale of 8 supports satoshi-level precision for crypto assets."
+    },
+    {
+      "name": "quantity",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 20,
+        "scale": 8
+      },
+      "doc": "Trade quantity in base asset (e.g., BTC). Must be > 0. Whale threshold: quantity > 0.5 BTC triggers AML monitoring flag."
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "doc": "Trade execution timestamp from the exchange, in Unix milliseconds (epoch ms). Used as event-time for Flink watermarking."
+    },
+    {
+      "name": "is_buyer_maker",
+      "type": "boolean",
+      "doc": "True if the buyer is the market maker (i.e., the trade was triggered by a sell order). Used for market microstructure analysis."
+    },
+    {
+      "name": "ingested_at",
+      "type": "string",
+      "doc": "ISO8601 UTC timestamp of when the record was ingested by the Kafka Producer. Format: 2026-03-20T01:00:00.000Z. Used for pipeline latency monitoring."
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+---
+# Flink TaskManager Deployment
+# Banking Relevance: TaskManagers are the "workers" — they execute stream processing tasks
+# (VWAP windows, Whale detection). Each TaskManager has multiple task slots, allowing
+# parallel processing. In HA environments, failed TaskManagers are automatically replaced
+# by Kubernetes, ensuring AML monitoring never goes offline.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-taskmanager
+  namespace: cryptostream
+  labels:
+    app: flink
+    component: taskmanager
+spec:
+  replicas: 2  # Phase 7: HPA (Horizontal Pod Autoscaler) for dynamic scaling
+  selector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: taskmanager
+    spec:
+      containers:
+      - name: taskmanager
+        image: flink:1.18-scala_2.12
+        args: ["taskmanager"]
+        ports:
+        - containerPort: 6122
+          name: rpc
+        env:
+        - name: FLINK_PROPERTIES
+          value: |
+            jobmanager.rpc.address: flink-jobmanager
+            taskmanager.numberOfTaskSlots: 4
+            parallelism.default: 2
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        readinessProbe:
+          tcpSocket:
+            port: 6122
+          initialDelaySeconds: 30
+          periodSeconds: 10

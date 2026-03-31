@@ -1,0 +1,129 @@
+---
+# ============================================================================
+# MCP Server — Kubernetes Deployment + Service
+# ============================================================================
+# Banking Relevance: MCP (Model Context Protocol) Server enables GenAI agents
+# to securely query the Data Lakehouse. In Virtual Banking, AI governance
+# requires all AI-generated queries to be:
+#   1. Authenticated (API Key)
+#   2. Rate-limited (prevent abuse)
+#   3. Audited (full query log)
+#   4. Read-only (no data modification)
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  namespace: cryptostream
+  labels:
+    app: mcp-server
+    component: ai-agent
+spec:
+  replicas: 2  # HA: 2 replicas for failover
+  selector:
+    matchLabels:
+      app: mcp-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # Zero-downtime deployments
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+    spec:
+      containers:
+      - name: mcp-server
+        image: python:3.11-slim
+        command:
+        - bash
+        - -c
+        - |
+          pip install --no-cache-dir fastapi uvicorn psycopg2-binary slowapi &&
+          cd /app &&
+          uvicorn main:app --host 0.0.0.0 --port 8080 --workers 2
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: "crypto_stream_db"
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: mcp-server-secret
+              key: db_user
+        - name: DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: mcp-server-secret
+              key: db_pass
+        - name: MCP_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mcp-server-secret
+              key: api_key
+        - name: MCP_RATE_LIMIT
+          value: "60/minute"
+        volumeMounts:
+        - name: mcp-code
+          mountPath: /app
+          readOnly: true
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 45
+          periodSeconds: 15
+          timeoutSeconds: 3
+      volumes:
+      - name: mcp-code
+        configMap:
+          name: mcp-server-code  # In production: use a proper Docker image instead
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+  namespace: cryptostream
+  labels:
+    app: mcp-server
+spec:
+  selector:
+    app: mcp-server
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+# Secret for MCP Server credentials
+# In production: Use External Secrets Operator or HashiCorp Vault
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mcp-server-secret
+  namespace: cryptostream
+type: Opaque
+stringData:
+  db_user: mcp_readonly               # Read-only database role
+  db_pass: CHANGE_ME_IN_PROD           # Override with Vault-injected value
+  api_key: CHANGE_ME_IN_PROD           # Override with secure generated key

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cryptostream
+  labels:
+    app.kubernetes.io/name: cryptostream-ai
+    app.kubernetes.io/version: "1.0"
+    environment: production
+    compliance: "bot-amlo"

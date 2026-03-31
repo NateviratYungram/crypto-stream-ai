@@ -1,0 +1,156 @@
+---
+# ============================================================================
+# PostgreSQL Init Schema & Tuning ConfigMap
+# ============================================================================
+# Banking Relevance: Separating schema and config into ConfigMaps ensures
+# reproducible deployments and audit trail via Git. Every schema change is
+# version-controlled — required for regulatory change management (BOT/AMLO).
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-schema
+  namespace: cryptostream
+  labels:
+    app: postgres
+    component: hot-storage
+data:
+  # ── Database Schema (auto-applied on first boot) ──
+  init.sql: |
+    -- ================================================================
+    -- CryptoStream AI — PostgreSQL Schema
+    -- Banking: All tables include audit timestamps for regulatory
+    -- compliance (BOT 5-10 year data retention requirement)
+    -- ================================================================
+
+    -- Enriched individual trades (written by Flink)
+    CREATE TABLE IF NOT EXISTS enriched_trades (
+        trade_id       BIGINT PRIMARY KEY,
+        symbol         VARCHAR(20),
+        price          DECIMAL(20, 8),
+        quantity       DECIMAL(20, 8),
+        timestamp      BIGINT,
+        is_buyer_maker BOOLEAN,
+        is_whale       BOOLEAN,
+        ingestion_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 1-minute aggregated market metrics (VWAP windows from Flink)
+    CREATE TABLE IF NOT EXISTS market_metrics (
+        window_start TIMESTAMP,
+        window_end   TIMESTAMP,
+        symbol       VARCHAR(20),
+        avg_price    DECIMAL(20, 8),
+        total_volume DECIMAL(20, 8),
+        trade_count  INT,
+        PRIMARY KEY (window_start, symbol)
+    );
+
+    -- Data Quality audit log (DLQ records)
+    -- Banking: Audit trail for regulators to prove invalid data was isolated
+    CREATE TABLE IF NOT EXISTS data_quality_log (
+        id             BIGSERIAL PRIMARY KEY,
+        trade_id       VARCHAR(50),
+        raw_payload    JSONB,
+        error_reason   VARCHAR(255),
+        detected_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_dq_detected_at ON data_quality_log (detected_at);
+
+    -- Daily OHLCV Summary (populated by Airflow DAG)
+    -- Banking: EOD report for regulatory submission
+    CREATE TABLE IF NOT EXISTS daily_summary (
+        report_date    DATE         NOT NULL,
+        symbol         VARCHAR(20)  NOT NULL,
+        open_price     DECIMAL(20, 8),
+        high_price     DECIMAL(20, 8),
+        low_price      DECIMAL(20, 8),
+        close_price    DECIMAL(20, 8),
+        total_volume   DECIMAL(20, 8),
+        trade_count    INT,
+        whale_count    INT,
+        whale_volume   DECIMAL(20, 8),
+        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (report_date, symbol)
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_summary_date ON daily_summary (report_date DESC);
+
+    -- MCP Server audit log (tracks all AI agent queries)
+    -- Banking: Required for AI governance — every LLM query is logged
+    CREATE TABLE IF NOT EXISTS mcp_audit_log (
+        id           BIGSERIAL PRIMARY KEY,
+        api_key_hash VARCHAR(64),
+        sql_query    TEXT,
+        row_count    INT,
+        duration_ms  INT,
+        client_ip    VARCHAR(45),
+        executed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_mcp_audit_executed ON mcp_audit_log (executed_at DESC);
+
+    -- Create read-only role for MCP Server
+    -- Banking: Principle of Least Privilege — AI agents CANNOT modify data
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mcp_readonly') THEN
+            CREATE ROLE mcp_readonly;
+        END IF;
+    END
+    $$;
+    GRANT CONNECT ON DATABASE crypto_stream_db TO mcp_readonly;
+    GRANT USAGE ON SCHEMA public TO mcp_readonly;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_readonly;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_readonly;
+
+---
+# ── PostgreSQL Performance Tuning ConfigMap ──
+# Banking: Tuned for mixed OLTP (Flink writes) + OLAP (Airflow/MCP reads)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-tuning
+  namespace: cryptostream
+  labels:
+    app: postgres
+data:
+  custom-postgresql.conf: |
+    # ============================================================
+    # CryptoStream AI — PostgreSQL Production Tuning
+    # Workload: Mixed OLTP (Flink real-time writes) + OLAP (Airflow batch reads)
+    # ============================================================
+
+    # ── Connection Management ──
+    max_connections = 200
+    superuser_reserved_connections = 5
+
+    # ── Memory ──
+    shared_buffers = 256MB
+    effective_cache_size = 768MB
+    work_mem = 8MB
+    maintenance_work_mem = 128MB
+
+    # ── Write-Ahead Log (WAL) ──
+    wal_level = replica
+    max_wal_senders = 5
+    wal_keep_size = 1GB
+    checkpoint_completion_target = 0.9
+    min_wal_size = 80MB
+    max_wal_size = 1GB
+
+    # ── Query Planner ──
+    random_page_cost = 1.1
+    effective_io_concurrency = 200
+    default_statistics_target = 100
+
+    # ── Logging (Audit) ──
+    log_statement = 'ddl'
+    log_min_duration_statement = 1000
+    log_connections = on
+    log_disconnections = on
+    log_lock_waits = on
+    log_checkpoints = on
+
+    # ── Autovacuum ──
+    autovacuum = on
+    autovacuum_max_workers = 3
+    autovacuum_naptime = 60

@@ -1,0 +1,196 @@
+version: '3.8'
+
+# ============================================================
+# CryptoStream AI — Docker Compose
+# Services: Zookeeper, Kafka, PostgreSQL, Kafka UI,
+#           Flink (JobManager + TaskManager),
+#           Airflow (Init + Webserver + Scheduler)
+# ============================================================
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.8.1
+  environment:
+    # Use LocalExecutor with the same PostgreSQL instance (separate DB)
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://user:password@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: 'ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg='
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+    # Connection string for our crypto_stream_db (used inside DAGs)
+    AIRFLOW_CONN_CRYPTO_POSTGRES: postgresql://user:password@postgres:5432/crypto_stream_db
+    AIRFLOW_CONN_KAFKA_DEFAULT: kafka://kafka:29092
+    # Additional pip packages needed by DAGs (installed at container startup)
+    # kafka-python: required by dlq_processor_dag.py
+    # psycopg2-binary: required by both DAGs for direct DB access
+    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary"
+
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./datalake:/opt/datalake
+    - airflow_logs:/opt/airflow/logs
+  depends_on:
+    - postgres
+  networks:
+    - crypto-network
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - crypto-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    networks:
+      - crypto-network
+
+  postgres:
+    image: postgres:15
+    hostname: postgres
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: crypto_stream_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Auto-create airflow DB on first boot
+      - ./infrastructure/init_db.sh:/docker-entrypoint-initdb.d/init_db.sh
+    networks:
+      - crypto-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    hostname: kafka-ui
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - crypto-network
+
+  jobmanager:
+    build:
+      context: .
+      dockerfile: infrastructure/flink/Dockerfile
+    hostname: jobmanager
+    container_name: jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+    volumes:
+      - ./streaming:/opt/streaming
+    networks:
+      - crypto-network
+
+  taskmanager:
+    build:
+      context: .
+      dockerfile: infrastructure/flink/Dockerfile
+    hostname: taskmanager
+    container_name: taskmanager
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+    volumes:
+      - ./streaming:/opt/streaming
+    networks:
+      - crypto-network
+
+  # ----------------------------------------------------------
+  # Airflow Services (Phase 4)
+  # Banking Relevance: Airflow orchestrates nightly EOD batch
+  # jobs — mirrors how Thai banks run Reconciliation & Reporting
+  # workflows that feed into ธปท. regulatory submissions.
+  # ----------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db init &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@cryptostream.ai
+    restart: on-failure
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    depends_on:
+      - airflow-init
+      - postgres
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      - airflow-init
+      - postgres
+
+networks:
+  crypto-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  airflow_logs:
+
+

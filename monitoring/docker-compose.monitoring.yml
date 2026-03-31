@@ -1,0 +1,110 @@
+version: "3.9"
+
+# CryptoStream AI — Monitoring Stack
+# Runs alongside the main docker-compose.yml
+# Start: docker compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d
+#
+# Banking Relevance: Dedicated monitoring stack is a separate concern from the data pipeline.
+# In a Virtual Bank, monitoring systems must be independently available even if the
+# main pipeline is undergoing maintenance or recovery.
+
+services:
+
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.49.0
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'    # 30-day metric retention
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'               # Allow hot-reload via /-/reload
+    networks:
+      - monitoring
+      - crypto-network
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.3.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: cryptostream_admin   # Change in production
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/cryptostream_overview.json
+      GF_SERVER_ROOT_URL: "http://localhost:3000"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+      - crypto-network
+
+  # ── Alertmanager ───────────────────────────────────────────────────────────
+  # Routes critical alerts (Kafka lag, DQ failures) to email/Slack/PagerDuty
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - monitoring
+
+  # ── Kafka Exporter (JMX → Prometheus format) ──────────────────────────────
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka-exporter
+    restart: unless-stopped
+    ports:
+      - "9308:9308"
+    command:
+      - '--kafka.server=kafka:29092'
+      - '--group.filter=flink_processor_v3|lake_writer_v1'
+    networks:
+      - monitoring
+      - crypto-network
+
+  # ── PostgreSQL Exporter ───────────────────────────────────────────────────
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://user:password@postgres:5432/crypto_stream_db?sslmode=disable"
+    networks:
+      - monitoring
+      - crypto-network
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  monitoring:
+    driver: bridge
+  crypto-network:
+    external: true
+    name: crypto-stream-ai_crypto-network

@@ -1,0 +1,128 @@
+---
+# PostgreSQL Deployment for CryptoStream AI
+# Banking Relevance: PostgreSQL serves as the "Hot" storage layer — real-time
+# trade metrics accessible in milliseconds. Banks use similar hot stores for
+# intraday position tracking and real-time risk dashboards.
+# PersistentVolumeClaim ensures data survives Pod restarts (critical for audit data).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: cryptostream
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi  # Production: Increased from 10Gi for 5-10 year audit requirement
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: cryptostream
+  labels:
+    app: postgres
+    component: hot-storage
+spec:
+  replicas: 1  # Phase 7: Use postgres-ha chart with Patroni for HA
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # ── Anti-Affinity: Spread DB pods across different nodes ──
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - postgres
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: crypto_stream_db
+        # Apply custom tuning config
+        args: ["-c", "config_file=/etc/postgresql/postgresql.conf"]
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-schema
+          mountPath: /docker-entrypoint-initdb.d
+        - name: postgres-config
+          mountPath: /etc/postgresql/postgresql.conf
+          subPath: custom-postgresql.conf
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "cryptostream_user", "-d", "crypto_stream_db"]
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "cryptostream_user", "-d", "crypto_stream_db"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: init-schema
+        configMap:
+          name: postgres-init-schema
+      - name: postgres-config
+        configMap:
+          name: postgres-tuning
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: cryptostream
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+# Secret: In production, use External Secrets Operator or Vault
+# NEVER commit real credentials to git
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: cryptostream
+type: Opaque
+stringData:
+  username: cryptostream_user      # Override with real value from Vault
+  password: CHANGE_ME_IN_PROD      # Override with real value from Vault
+  exporter_dsn: "postgresql://cryptostream_user:CHANGE_ME_IN_PROD@localhost:5432/crypto_stream_db?sslmode=disable"

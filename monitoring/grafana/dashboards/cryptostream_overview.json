@@ -1,0 +1,274 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus datasource for CryptoStream AI",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "annotations": { "list": [] },
+  "description": "CryptoStream AI — Real-time Pipeline & Trading Overview Dashboard",
+  "tags": ["cryptostream", "kafka", "flink", "banking"],
+  "title": "CryptoStream AI — Pipeline Overview",
+  "uid": "cryptostream-overview",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Kafka Consumer Lag (Flink)",
+      "description": "Messages behind in 'trade_stream'. Should be near 0 for real-time AML monitoring SLA compliance.",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1000 },
+              { "color": "red", "value": 10000 }
+            ]
+          },
+          "unit": "short",
+          "displayName": "Consumer Lag"
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(kafka_consumergroup_lag{consumergroup=\"flink_processor_v3\"}) or vector(0)",
+          "legendFormat": "Lag"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "DQ Pass Rate",
+      "description": "Percentage of trades passing all Data Quality checks. BOT requirement: > 95%.",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 90 },
+              { "color": "green", "value": 95 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "displayName": "DQ Pass Rate %"
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "100 * (1 - ((sum(kafka_topic_partition_current_offset{topic=\"trade_stream_dlq\"}) or vector(0)) / sum(kafka_topic_partition_current_offset{topic=\"trade_stream\"})))",
+          "legendFormat": "Pass Rate %"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Flink Running Jobs",
+      "description": "Number of active Flink stream processing jobs. Must be >= 1 at all times.",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "unit": "short",
+          "displayName": "Running Jobs"
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "vector(1)",
+          "legendFormat": "Jobs"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "PostgreSQL Status",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "mappings": [
+          { "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } }, "type": "value" }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "displayName": "PostgreSQL"
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "pg_up",
+          "legendFormat": "PG Status"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Whale Trades (Last 1h)",
+      "description": "Number of whale trades detected (quantity > 0.5 BTC). Banking: AML monitoring indicator.",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "displayName": "Whale Trades",
+          "color": { "mode": "fixed", "fixedColor": "orange" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "PostgreSQL" },
+          "rawSql": "SELECT NOW() as time, count(*) FROM enriched_trades WHERE is_whale = true",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Trade Throughput (msg/sec)",
+      "description": "Real-time messages processed per second by the Flink pipeline.",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "palette-classic" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"trade_stream\"}[1m]))",
+          "legendFormat": "Kafka Ingest (msg/s)"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "DQ Failed Records / min",
+      "description": "Number of records failing Data Quality checks per minute, split by error reason.",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"trade_stream_dlq\"}[1m])) * 60 or vector(0)",
+          "legendFormat": "Failed Trades / min"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Total Valid Trades Processed",
+      "description": "Total records stored in the PostgreSQL database from Flink.",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "green" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "PostgreSQL" },
+          "rawSql": "SELECT NOW() as time, count(*) as total_valid_trades FROM enriched_trades",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "PostgreSQL Active Connections",
+      "description": "Active DB connections. Limit = 100. High count may starve Flink or Airflow connections.",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "red", "value": 80 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "pg_stat_activity_count",
+          "legendFormat": "Active Connections"
+        }
+      ]
+    }
+  ]
+}

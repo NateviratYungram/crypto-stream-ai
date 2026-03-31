@@ -1,0 +1,79 @@
+global:
+  scrape_interval: 15s       # Scrape every 15 seconds
+  evaluation_interval: 15s   # Evaluate alerting rules every 15 seconds
+  external_labels:
+    environment: production
+    project: cryptostream-ai
+    compliance: bot-amlo
+
+# Banking Relevance: Alertmanager routes threshold breaches to on-call team.
+# In a Virtual Bank, SLA breaches (e.g., data freshness > 5 min) must be
+# escalated immediately to avoid regulatory reporting failures.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - "rules/alert_rules.yml"
+
+scrape_configs:
+
+  # ── Prometheus self-monitoring ──────────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ── Apache Kafka (JMX Exporter) ─────────────────────────────────────────────
+  # Banking Relevance: Kafka lag = how far behind consumers are. High lag means
+  # trades are NOT being processed in real-time — critical for AML monitoring.
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+    metrics_path: /metrics
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: kafka-broker-1
+
+  # ── Apache Flink (REST API metrics) ─────────────────────────────────────────
+  # Key metrics: numRunningJobs, lastCheckpointDuration, numberOfFailedCheckpoints
+  # Banking: Checkpoint failures = potential data loss in stream processing.
+  - job_name: 'flink'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['flink-jobmanager:9249']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: flink-jobmanager
+
+  # ── PostgreSQL (postgres_exporter) ──────────────────────────────────────────
+  # Key metrics: pg_up, pg_stat_activity_count, pg_database_size_bytes
+  # Banking: DB connection pool exhaustion = real-time reporting SLA breach.
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: postgres-primary
+
+  # ── Apache Airflow (StatsD → Prometheus) ────────────────────────────────────
+  # Key metrics: airflow_dag_run_duration, airflow_task_fail_count
+  # Banking: Failed DAGs = missing EOD regulatory reports.
+  - job_name: 'airflow'
+    static_configs:
+      - targets: ['airflow-webserver:8080']
+    metrics_path: /metrics
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: airflow-scheduler
+
+  # ── Data Lake Writer (Custom Python metrics via prometheus_client) ───────────
+  # Tracks: records_flushed_total, flush_duration_seconds, parquet_files_written
+  - job_name: 'lake_writer'
+    static_configs:
+      - targets: ['lake-writer:8000']
+    metrics_path: /metrics

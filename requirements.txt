@@ -1,0 +1,16 @@
+kafka-python
+websocket-client
+psycopg2-binary
+python-dotenv
+pandas
+pyarrow          # Parquet read/write for Data Lake (Phase 3B)
+sqlalchemy
+# apache-flink
+# apache-flink-libraries
+
+# MCP Server Dependencies
+fastapi
+uvicorn
+requests
+slowapi
+pydantic
