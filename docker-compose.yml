@@ -1,40 +1,62 @@
 version: '3.8'
 
 # ============================================================
-# CryptoStream AI — Docker Compose
-# Services: Zookeeper, Kafka, PostgreSQL, Kafka UI,
-#           Flink (JobManager + TaskManager),
-#           Airflow (Init + Webserver + Scheduler)
+# CryptoStream AI — Unified Docker Compose (All-in-One)
+# ============================================================
+# Services included:
+#   [Ingestion]     zookeeper, kafka, kafka-ui
+#   [Processing]    jobmanager (Flink), taskmanager (Flink)
+#   [Storage]       postgres
+#   [Ingestion]     ingestion-producer (Binance WebSocket → Kafka)
+#   [Data Lake]     lake-writer (Kafka → Parquet)
+#   [Orchestration] airflow-init, airflow-webserver, airflow-scheduler
+#   [Monitoring]    prometheus, grafana, alertmanager
+#   [Exporters]     kafka-exporter, postgres-exporter
+#
+# One command to start everything:
+#   docker compose up -d
+#
+# UI Access:
+#   Kafka UI  -> http://localhost:8080
+#   Flink UI  -> http://localhost:8081
+#   Airflow   -> http://localhost:8082  (admin / admin)
+#   Grafana   -> http://localhost:3000  (admin / cryptostream_admin)
+#   Prometheus-> http://localhost:9090
+#   AlertMgr  -> http://localhost:9093
 # ============================================================
 
+# ── Reusable Airflow anchor ─────────────────────────────────
 x-airflow-common: &airflow-common
   image: apache/airflow:2.8.1
   environment:
-    # Use LocalExecutor with the same PostgreSQL instance (separate DB)
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://user:password@postgres:5432/airflow
     AIRFLOW__CORE__FERNET_KEY: 'ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg='
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
-    # Connection string for our crypto_stream_db (used inside DAGs)
+    # Internal connection strings used by Airflow DAGs
     AIRFLOW_CONN_CRYPTO_POSTGRES: postgresql://user:password@postgres:5432/crypto_stream_db
     AIRFLOW_CONN_KAFKA_DEFAULT: kafka://kafka:29092
-    # Additional pip packages needed by DAGs (installed at container startup)
-    # kafka-python: required by dlq_processor_dag.py
-    # psycopg2-binary: required by both DAGs for direct DB access
-    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary"
-
+    # pip packages needed by DAGs
+    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./datalake:/opt/datalake
     - airflow_logs:/opt/airflow/logs
   depends_on:
-    - postgres
+    postgres:
+      condition: service_healthy
   networks:
     - crypto-network
 
+# ============================================================
 services:
+
+  # ── LAYER 1: MESSAGE BROKER ─────────────────────────────────
+  # Banking Relevance: Multi-topic Kafka is the backbone for
+  # fault-tolerant ingest (trade stream) + DLQ (invalid records)
+  # mirroring BAHTNET/PromptPay message routing patterns.
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     hostname: zookeeper
@@ -44,6 +66,15 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      # Whitelist 'ruok' + 'stat' commands for health monitoring
+      ZOOKEEPER_4LW_COMMANDS_WHITELIST: "ruok,stat,mntr"
+      SERVER_JVMFLAGS: "-Dzookeeper.4lw.commands.whitelist=ruok,stat,mntr"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo ruok > /dev/tcp/localhost/2181' && sleep 1 || exit 1"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
+      start_period: 30s
     networks:
       - crypto-network
 
@@ -52,10 +83,11 @@ services:
     hostname: kafka
     container_name: kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "9092:9092"   # External access (host machine)
+      - "29092:29092" # Internal access (container-to-container)
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
@@ -65,9 +97,70 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # Auto-create topics with correct partition counts on first use
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 3
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
     networks:
       - crypto-network
 
+  # Kafka topic initialiser — creates required topics with correct
+  # partition count (3) and DLQ before any producers/consumers start.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "--- Creating Kafka topics ---"
+        kafka-topics --bootstrap-server kafka:29092 \
+          --create --if-not-exists \
+          --topic trade_stream \
+          --partitions 3 \
+          --replication-factor 1 \
+          --config retention.ms=604800000   # 7 days
+
+        kafka-topics --bootstrap-server kafka:29092 \
+          --create --if-not-exists \
+          --topic trade_stream_dlq \
+          --partitions 1 \
+          --replication-factor 1 \
+          --config retention.ms=2592000000  # 30 days — longer for audit
+
+        echo "--- Kafka topics created ---"
+        kafka-topics --bootstrap-server kafka:29092 --list
+    restart: on-failure
+    networks:
+      - crypto-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    hostname: kafka-ui
+    container_name: kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: CryptoStream-Local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - crypto-network
+
+  # ── LAYER 2: STORAGE ────────────────────────────────────────
+  # Banking Relevance: PostgreSQL acts as "Hot Storage" for recent
+  # enriched trades, DQ audit logs, and EOD summaries — all of which
+  # are queryable by the MCP AI Agent and Airflow DAGs.
   postgres:
     image: postgres:15
     hostname: postgres
@@ -80,26 +173,22 @@ services:
       POSTGRES_DB: crypto_stream_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # Auto-create airflow DB on first boot
-      - ./infrastructure/init_db.sh:/docker-entrypoint-initdb.d/init_db.sh
+      # init_db.sh creates the 'airflow' database on first boot
+      - ./infrastructure/init_db.sh:/docker-entrypoint-initdb.d/01_init_db.sh
+      # schema.sql creates all application tables
+      - ./infrastructure/schema.sql:/docker-entrypoint-initdb.d/02_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d crypto_stream_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - crypto-network
 
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    hostname: kafka-ui
-    container_name: kafka-ui
-    depends_on:
-      - kafka
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
-    networks:
-      - crypto-network
-
+  # ── LAYER 3: STREAM PROCESSING (Apache Flink) ───────────────
+  # Banking Relevance: Flink's stateful processing = real-time
+  # Fraud / AML engine. Whale detection mirrors transaction
+  # monitoring thresholds used by Thai commercial banks.
   jobmanager:
     build:
       context: .
@@ -107,14 +196,27 @@ services:
     hostname: jobmanager
     container_name: jobmanager
     ports:
-      - "8081:8081"
+      - "8081:8081"   # Flink Web UI
+      - "9249:9249"   # Prometheus metrics endpoint
     command: jobmanager
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
+        metrics.reporter.promgateway.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+        metrics.reporter.promgateway.port: 9249
     volumes:
       - ./streaming:/opt/streaming
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - crypto-network
 
@@ -125,24 +227,71 @@ services:
     hostname: taskmanager
     container_name: taskmanager
     depends_on:
-      - jobmanager
+      jobmanager:
+        condition: service_healthy
     command: taskmanager
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 2
+        taskmanager.numberOfTaskSlots: 4
+        metrics.reporter.promgateway.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+        metrics.reporter.promgateway.port: 9250
     volumes:
       - ./streaming:/opt/streaming
     networks:
       - crypto-network
 
-  # ----------------------------------------------------------
-  # Airflow Services (Phase 4)
-  # Banking Relevance: Airflow orchestrates nightly EOD batch
-  # jobs — mirrors how Thai banks run Reconciliation & Reporting
-  # workflows that feed into ธปท. regulatory submissions.
-  # ----------------------------------------------------------
+  # ── LAYER 4: INGESTION SERVICES ─────────────────────────────
+  # ingestion-producer: Streams live BTC/USDT trades from Binance
+  # WebSocket into the trade_stream Kafka topic continuously.
+  # Banking Relevance: Mirrors real-time market data feed ingestion
+  # used by bank treasury and trading systems.
+  ingestion-producer:
+    build:
+      context: .
+      dockerfile: infrastructure/flink/Dockerfile  # Reuses same Python env
+    container_name: ingestion-producer
+    command: ["python", "/opt/streaming/producer.py"]
+    environment:
+      # Override broker to use internal Docker address
+      KAFKA_BROKER: kafka:29092
+    volumes:
+      - ./streaming:/opt/streaming
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - crypto-network
+
+  # lake-writer: Kafka consumer that writes Parquet files to the
+  # local Data Lake with Hive-style time partitioning.
+  # Banking Relevance: Immutable Parquet archive = 5–10 yr BOT/AMLO
+  # regulatory retention for transaction history.
+  lake-writer:
+    build:
+      context: .
+      dockerfile: infrastructure/flink/Dockerfile
+    container_name: lake-writer
+    command: ["python", "/opt/streaming/lake_writer.py"]
+    environment:
+      KAFKA_BROKER: kafka:29092
+      DATALAKE_OUTPUT_PATH: /opt/datalake_output
+    volumes:
+      - ./streaming:/opt/streaming
+      - ./datalake:/opt/datalake_output
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - crypto-network
+
+  # ── LAYER 5: ORCHESTRATION (Apache Airflow) ─────────────────
+  # Banking Relevance: Airflow orchestrates nightly EOD batch jobs
+  # — mirrors Thai bank Reconciliation & Reporting workflows that
+  # feed into ธปท. regulatory submissions.
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
@@ -167,14 +316,16 @@ services:
     ports:
       - "8082:8080"
     healthcheck:
-      test: [ "CMD", "curl", "--fail", "http://localhost:8080/health" ]
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 5
     restart: unless-stopped
     depends_on:
-      - airflow-init
-      - postgres
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   airflow-scheduler:
     <<: *airflow-common
@@ -182,15 +333,110 @@ services:
     command: scheduler
     restart: unless-stopped
     depends_on:
-      - airflow-init
-      - postgres
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
+  # ── LAYER 6: MONITORING (Prometheus + Grafana Stack) ────────
+  # Banking Relevance: Dedicated monitoring stack must be
+  # independently operational even during pipeline maintenance —
+  # required for SLA tracking and regulatory audit readiness.
+
+  prometheus:
+    image: prom/prometheus:v2.49.0
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - crypto-network
+
+  grafana:
+    image: grafana/grafana:10.3.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: cryptostream_admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/cryptostream_overview.json
+      GF_SERVER_ROOT_URL: "http://localhost:3000"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - crypto-network
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - crypto-network
+
+  # ── LAYER 7: METRICS EXPORTERS ──────────────────────────────
+  # Translate Kafka JMX and Postgres stats into Prometheus format
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka-exporter
+    restart: unless-stopped
+    ports:
+      - "9308:9308"
+    command:
+      - '--kafka.server=kafka:29092'
+      - '--group.filter=flink_processor_v3|lake_writer_v1'
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - crypto-network
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://user:password@postgres:5432/crypto_stream_db?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - crypto-network
+
+# ── NETWORKS ────────────────────────────────────────────────
 networks:
   crypto-network:
     driver: bridge
+    name: crypto-stream-ai_crypto-network
 
+# ── VOLUMES ─────────────────────────────────────────────────
 volumes:
   postgres_data:
   airflow_logs:
-
-
+  prometheus_data:
+  grafana_data:

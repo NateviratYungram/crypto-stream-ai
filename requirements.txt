@@ -1,16 +1,31 @@
-kafka-python
-websocket-client
-psycopg2-binary
-python-dotenv
-pandas
-pyarrow          # Parquet read/write for Data Lake (Phase 3B)
-sqlalchemy
-# apache-flink
-# apache-flink-libraries
+# ============================================================
+# CryptoStream AI — Python Dependencies
+# Shared across: producer.py, lake_writer.py, load_tester.py,
+#                flink_processor.py, mcp_server/, test_e2e.py
+# ============================================================
 
-# MCP Server Dependencies
-fastapi
-uvicorn
-requests
-slowapi
-pydantic
+# ── Kafka ─────────────────────────────────────────────────
+kafka-python          # Kafka producer/consumer for ingestion & lake writer
+websocket-client      # Binance WebSocket stream (producer.py)
+
+# ── Database ───────────────────────────────────────────────
+psycopg2-binary       # PostgreSQL client (MCP server, test_e2e.py, Airflow DAGs)
+sqlalchemy            # ORM / connection pooling for MCP server
+
+# ── Data Lake ─────────────────────────────────────────────
+pandas                # DataFrame transformations in lake_writer.py
+pyarrow               # Parquet read/write with explicit schema enforcement
+
+# ── Utilities ─────────────────────────────────────────────
+python-dotenv         # Load .env files for local dev secret management
+
+# ── MCP Server (Phase 6 — AI Agent Integration) ──────────
+fastapi               # REST API framework for MCP server
+uvicorn               # ASGI server for FastAPI
+requests              # HTTP client for health checks and MCP tests
+slowapi               # Rate limiting middleware for FastAPI (API key protection)
+pydantic              # Data validation for MCP request/response models
+
+# ── PyFlink (uncomment when running inside Flink container) ──
+# apache-flink==1.18.1
+# apache-flink-libraries==1.18.1

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import time
 import random
 import uuid
@@ -13,9 +14,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("load_tester")
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — reads KAFKA_BROKER from env var, falls back to localhost
 # ---------------------------------------------------------------------------
-KAFKA_BROKER = 'localhost:9092'
+KAFKA_BROKER = os.environ.get('KAFKA_BROKER', 'localhost:9092')
 KAFKA_TOPIC = 'trade_stream'
 TARGET_TPS = 1000
 DURATION_SECONDS = 10

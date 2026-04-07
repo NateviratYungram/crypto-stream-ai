@@ -37,11 +37,17 @@ from kafka.errors import KafkaError
 
 # ---------------------------------------------------------------------------
 # Configuration
+# Environment variables allow the same script to run on localhost OR inside
+# the Docker 'lake-writer' container without any code changes.
 # ---------------------------------------------------------------------------
-KAFKA_BROKER        = 'localhost:9092'
+KAFKA_BROKER        = os.environ.get('KAFKA_BROKER', 'localhost:9092')
 KAFKA_TOPIC         = 'trade_stream'
 KAFKA_GROUP_ID      = 'lake_writer_v1'
-DATALAKE_BASE_PATH  = os.path.join(os.path.dirname(__file__), '..', 'datalake', 'raw')
+
+# Docker service mounts datalake/ to /opt/datalake_output.
+# When running locally, falls back to the relative datalake/raw/ path.
+_default_lake_path  = os.path.join(os.path.dirname(__file__), '..', 'datalake', 'raw')
+DATALAKE_BASE_PATH  = os.environ.get('DATALAKE_OUTPUT_PATH', _default_lake_path)
 
 # Flush policy: write parquet file after N records OR N seconds
 FLUSH_RECORD_LIMIT  = 1_000   # records

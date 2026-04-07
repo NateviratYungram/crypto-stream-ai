@@ -1,7 +1,7 @@
 # 🌊 CryptoStream AI 
 
 ![Architecture](https://img.shields.io/badge/Architecture-Data%20Lakehouse-blue)
-![Tech Stack](https://img.shields.io/badge/Tech-Kafka%20%7C%20Flink%20%7C%20PostgreSQL-orange)
+![Tech Stack](https://img.shields.io/badge/Tech-Kafka%20%7C%20Flink%20%7C%20Postgres-orange)
 ![AI Ready](https://img.shields.io/badge/AI-MCP%20Server-green)
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-success)
 
@@ -13,55 +13,61 @@ This platform ingests, processes, and persists high-throughput cryptocurrency tr
 
 ## 🏗️ System Architecture
 
-### 1. Ingestion Layer (Apache Kafka)
-- **High-Throughput Streaming:** Ingests live WebSocket data or local simulated trades into Kafka topics (`trade_stream`).
-- **HA Ready:** Supported by a 3-node Zookeeper ensemble for robust partition leadership.
+### 1. Ingestion Layer (Apache Kafka & Python)
+- **High-Throughput Streaming:** Ingests live Binance WebSocket data (`producer.py`) or local simulated trades (`load_tester.py`) into Kafka topics (`trade_stream`).
+- **Resilient Message Broker:** 3-partition Kafka topic handling high parallelism and fault-tolerant ingestion.
 
 ### 2. Processing Layer (Apache Flink)
 - **Real-time VWAP Calculation:** Aggregates streams into 1-minute Volume Weighted Average Price (VWAP) windows.
-- **Data Quality Engine:** Identifies anomalies (e.g. negative prices, null quantities) and routes them into an isolated Dead Letter Queue (`trade_stream_dlq`).
-- **Whale Detection:** Detects high-volume trades (>0.5 BTC) in real time.
+- **Data Quality (DQ) Engine:** Identifies anomalies (negative prices, null quantities) and routes them into an isolated Dead Letter Queue (`trade_stream_dlq`) and a Postgres audit log.
+- **Whale Detection:** Detects high-volume trades (>0.5 BTC) in real time for AML monitoring.
 
-### 3. Persistance Layer (PostgreSQL)
-- **The Lakehouse:** Holds enriched operational data (`enriched_trades`), aggregated metrics (`market_metrics`), and DQ logs.
-- **Security First:** Implements isolated Read-Only roles for agent access and decoupled data access patterns.
+### 3. Lakehouse Persistence (PostgreSQL & Parquet)
+- **Hot Layer (Postgres):** Holds enriched operational data (`enriched_trades`), aggregated metrics (`market_metrics`), and DQ logs for real-time query.
+- **Cold Layer (Datalake):** Hive-partitioned Parquet files (`lake_writer.py`) for long-term immutable auditing (5-10 year BOL/AMLO retention).
 
-### 4. Orchestration (Apache Airflow)
-- **Daily Reporting:** Nightly batch processing mirroring standard End-of-Day (EOD) bank reporting.
-- **DLQ Sweeping:** Automatically retries or parses stranded messages from the Data Quality queue.
-
-### 5. AI Integration (MCP Server - FastAPI)
-- **Agent Sandbox:** Exposes introspective `/api/v1/schemas` and execution `/api/v1/query` endpoints natively to GenAI frameworks.
-- **Production Hardened:** Fortified with strict Rate Limiting (SlowAPI), API Key Authentication, SQL-Injection protections (Regex blocking destructive keywords), and a permanent `mcp_audit_log`.
+### 4. Orchestration & Monitoring
+- **Workflow:** **Apache Airflow** managing EOD reconciliation reports and DAG-based data recovery.
+- **Observability:** Full **Prometheus + Grafana** stack with Alertmanager for real-time SLA tracking and pipeline health monitoring.
 
 ---
 
-## 🚦 Quick Start (Local Development)
+## 🚦 Quick Start (Unified Single-Command)
 
 ### Prerequisites
-- Docker & Docker Compose
-- Python 3.10+
+- Docker & Docker Compose (Desktop or Engine)
+- Python 3.10+ (for local testing)
 
-### 1. Spin up the Infrastructure
+### 1. Spin up the Full Stack
 ```bash
 docker compose up -d
 ```
-*Starts Zookeeper, Kafka, PostgreSQL, Flink, and Airflow inside the local `crypto-network`.*
+*Starts Kafka, PostgreSQL, Flink Cluster, Airflow, Ingestion Producer [Binance WebSocket], Lake Writer [Parquet], and the Monitoring Stack (Prometheus/Grafana).*
 
-### 2. Run the End-to-End Pipeline
+### 2. Submit the Stream Processor
+```bash
+docker exec -d jobmanager flink run -py /opt/streaming/flink_processor.py
+```
+*Activates the real-time Whale Detection and VWAP Aggregation logic on the Flink cluster.*
+
+### 3. Run the Automated E2E Test
 ```bash
 python test_e2e.py
 ```
-*This command orchestrates:*
-1. 1,000 TPS Simulated Data Load.
-2. Flink real-time transformation.
-3. Automated Security Penetration Testing of the MCP Server.
+*Verifies the entire 5-phase pipeline: Infrastructure -> Streaming -> Load test -> DB Integrity -> AI Agent (MCP) Audit.*
 
-### 3. Access Monitoring Systems
-- **Kafka UI:** [http://localhost:8080](http://localhost:8080)
-- **Flink Dashboard:** [http://localhost:8081](http://localhost:8081)
-- **Airflow Webserver:** [http://localhost:8082](http://localhost:8082) (admin / admin)
-- **Grafana (WIP):** [http://localhost:3000](http://localhost:3000)
+---
+
+## 📊 Monitoring & Access
+
+| Service | URL | Credentials |
+| :--- | :--- | :--- |
+| **Kafka UI** | [http://localhost:8080](http://localhost:8080) | (None) |
+| **Flink Dashboard** | [http://localhost:8081](http://localhost:8081) | (None) |
+| **Airflow Webserver** | [http://localhost:8082](http://localhost:8082) | `admin` / `admin` |
+| **Grafana Dashboards**| [http://localhost:3000](http://localhost:3000) | `admin` / `cryptostream_admin` |
+| **Prometheus** | [http://localhost:9090](http://localhost:9090) | (None) |
+| **Alertmanager** | [http://localhost:9093](http://localhost:9093) | (None) |
 
 ---
 
@@ -71,7 +77,9 @@ The `/k8s/` directory contains production-grade manifests ready for deployment o
 
 Included manifests:
 - **StatefulSets** for Kafka and Zookeeper (with PersistentVolumeClaims)
-- **NetworkPolicies** to enforce zero-trust lateral isolation
-- **Ingress Resources** with NGINX rate-limiting and security headers
+- **HPA (Horizontal Pod Autoscaler)** for Flink TaskManagers
+- **NetworkPolicies** to enforce zero-trust lateral isolation between data layers
+- **Ingress Resources** with NGINX security headers and rate-limiting
 
-*Note: You must inject your secrets using HashiCorp Vault or AWS Secrets Manager before deploying to production.*
+*Note: In production, secrets are managed via Kubernetes Secrets or External Secrets Operator (Vault/AWS SM).*
+

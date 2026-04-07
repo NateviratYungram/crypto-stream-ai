@@ -1,22 +1,25 @@
 import json
 import logging
+import os
 import websocket
 from kafka import KafkaProducer
-from kafka.errors import KafkaError # import KafkaError
+from kafka.errors import KafkaError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Kafka Configuration
-KAFKA_BROKER = 'localhost:9092'
+# KAFKA_BROKER is overridden by the 'ingestion-producer' Docker Compose service
+# to use the internal address kafka:29092. Defaults to localhost for local dev.
+KAFKA_BROKER = os.environ.get('KAFKA_BROKER', 'localhost:9092')
 KAFKA_TOPIC = 'trade_stream'
 
 # Binance WebSocket URL
 # Symbol: btcusdt, Stream: trade
 BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
 
-# Global Producer
+# Global Producer (initialised in main())
 producer = None
 message_count = 0
 

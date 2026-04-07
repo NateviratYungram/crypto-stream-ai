@@ -18,6 +18,7 @@ Architecture (Phase 3):
         |-- VALID   --> enriched_trades (PostgreSQL)
         |               market_metrics (PostgreSQL)  [1-min VWAP]
         |-- INVALID --> trade_stream_dlq (Kafka DLQ)
+        |               data_quality_log (PostgreSQL)  [Real-time Audit]
 """
 
 import logging
@@ -145,6 +146,26 @@ def main():
     """)
 
     # -----------------------------------------------------------------------
+    # 5.1 SINK: PostgreSQL — data_quality_log (Real-time Audit Trail)
+    #    Banking: Provides immediate visibility into DQ failures.
+    # -----------------------------------------------------------------------
+    logger.info("Registering SINK: PostgreSQL table 'data_quality_log'")
+    t_env.execute_sql("""
+        CREATE TABLE data_quality_log_sink (
+            trade_id        STRING,
+            error_reason    STRING,
+            raw_payload     STRING
+        ) WITH (
+            'connector'     = 'jdbc',
+            'url'           = 'jdbc:postgresql://postgres:5432/crypto_stream_db',
+            'table-name'    = 'data_quality_log',
+            'username'      = 'user',
+            'password'      = 'password'
+        )
+    """)
+
+
+    # -----------------------------------------------------------------------
     # 6. DATA QUALITY VALIDATION (Phase 3 — Core Logic)
     #    Rules (mirrors basic Financial Data Quality standards):
     #      - price must not be NULL and must be > 0
@@ -194,7 +215,23 @@ def main():
         WHERE error_reason IS NOT NULL
     """)
 
-    logger.info("Data Quality views created: tagged_trades, valid_trades, invalid_trades")
+    # Step 4: Prepare JSON payload for Postgres Audit Sink
+    # We construct a simple JSON string from the fields
+    t_env.execute_sql("""
+        CREATE VIEW invalid_trades_json AS
+        SELECT
+            trade_id,
+            error_reason,
+            '{"trade_id":"' || COALESCE(trade_id, 'null') ||
+            '","symbol":"' || COALESCE(symbol, 'null') ||
+            '","price":' || CAST(COALESCE(price, 0) AS STRING) ||
+            ',"quantity":' || CAST(COALESCE(quantity, 0) AS STRING) ||
+            ',"timestamp":' || CAST(COALESCE(`timestamp`, 0) AS STRING) || '}' as raw_payload
+        FROM invalid_trades
+    """)
+
+    logger.info("Data Quality views created: tagged_trades, valid_trades, invalid_trades, invalid_trades_json")
+
 
     # -----------------------------------------------------------------------
     # 7. WHALE DETECTION + ENRICHMENT (Phase 2, applied on valid_trades only)
@@ -250,20 +287,32 @@ def main():
     """)
 
     # Sink 3: DLQ — invalid records to Kafka DLQ topic
+    #    Banking: Invalid records are NEVER dropped silently. They are routed
+    #    to the Kafka DLQ for investigation and separate audit persistence.
     statement_set.add_insert_sql("""
         INSERT INTO trade_stream_dlq
         SELECT trade_id, symbol, price, quantity, `timestamp`, is_buyer_maker, error_reason
         FROM invalid_trades
     """)
 
-    logger.info("Submitting Flink job with 3 sinks: enriched_trades, market_metrics, trade_stream_dlq")
+    # Sink 4: Postgres Audit Log — real-time DQ visibility for AI Agent (MCP)
+    #    Banking: Provides immediate, queryable audit trail for regulators.
+    statement_set.add_insert_sql("""
+        INSERT INTO data_quality_log_sink
+        SELECT trade_id, error_reason, raw_payload
+        FROM invalid_trades_json
+    """)
+
+    logger.info("Submitting Flink job with 4 sinks: enriched_trades, market_metrics, trade_stream_dlq, data_quality_log")
 
     # Execute — this is a blocking call, the job runs indefinitely
-    job_client = statement_set.execute()
+    # The returned TableResult is used for monitoring / cancellation
+    result = statement_set.execute()
 
-    logger.info(f"Flink job submitted successfully.")
-    logger.info("Monitoring: Check Flink UI at http://localhost:8081")
-    logger.info("DLQ Monitor: Check Kafka UI at http://localhost:8080 -> topic: trade_stream_dlq")
+    logger.info("Flink job submitted successfully. Job ID: %s", result.get_job_client().get_job_id() if result.get_job_client() else "N/A")
+    logger.info("Monitoring  : Flink UI  -> http://localhost:8081")
+    logger.info("DLQ Monitor : Kafka UI  -> http://localhost:8080  (topic: trade_stream_dlq)")
+    logger.info("DQ Audit    : PostgreSQL -> SELECT * FROM data_quality_log ORDER BY detected_at DESC LIMIT 20;")
 
 
 if __name__ == '__main__':
