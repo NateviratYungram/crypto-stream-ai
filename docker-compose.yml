@@ -38,11 +38,13 @@ x-airflow-common: &airflow-common
     # Internal connection strings used by Airflow DAGs
     AIRFLOW_CONN_CRYPTO_POSTGRES: postgresql://user:password@postgres:5432/crypto_stream_db
     AIRFLOW_CONN_KAFKA_DEFAULT: kafka://kafka:29092
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-key.json
     # pip packages needed by DAGs
-    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow"
+    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow apache-airflow-providers-google"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./datalake:/opt/datalake
+    - ./gcp-key.json:/opt/airflow/gcp-key.json:ro
     - airflow_logs:/opt/airflow/logs
   depends_on:
     postgres:
@@ -278,6 +280,8 @@ services:
     environment:
       KAFKA_BROKER: kafka:29092
       DATALAKE_OUTPUT_PATH: /opt/datalake_output
+      FLUSH_RECORD_LIMIT: 10
+      FLUSH_TIME_LIMIT: 10
     volumes:
       - ./streaming:/opt/streaming
       - ./datalake:/opt/datalake_output

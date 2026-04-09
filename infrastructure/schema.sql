@@ -68,4 +68,60 @@ CREATE TABLE IF NOT EXISTS mcp_audit_log (
     created_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ==========================================
+-- Precomputed OHLCV Candlestick Aggregations
+-- ==========================================
+-- Banking Relevance: Fast path for AI and Dashboards to fetch exact candlestick
+-- charts without overloading the Database querying raw trades.
 
+CREATE TABLE IF NOT EXISTS candles_m5 (
+    window_start TIMESTAMP,
+    window_end TIMESTAMP,
+    symbol VARCHAR(20),
+    open_price DECIMAL(20, 8),
+    high_price DECIMAL(20, 8),
+    low_price DECIMAL(20, 8),
+    close_price DECIMAL(20, 8),
+    total_volume DECIMAL(20, 8),
+    trade_count INT,
+    PRIMARY KEY (window_start, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS candles_m15 (
+    window_start TIMESTAMP,
+    window_end TIMESTAMP,
+    symbol VARCHAR(20),
+    open_price DECIMAL(20, 8),
+    high_price DECIMAL(20, 8),
+    low_price DECIMAL(20, 8),
+    close_price DECIMAL(20, 8),
+    total_volume DECIMAL(20, 8),
+    trade_count INT,
+    PRIMARY KEY (window_start, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS candles_h1 (
+    window_start TIMESTAMP,
+    window_end TIMESTAMP,
+    symbol VARCHAR(20),
+    open_price DECIMAL(20, 8),
+    high_price DECIMAL(20, 8),
+    low_price DECIMAL(20, 8),
+    close_price DECIMAL(20, 8),
+    total_volume DECIMAL(20, 8),
+    trade_count INT,
+    PRIMARY KEY (window_start, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS candles_h4 (
+    window_start TIMESTAMP,
+    window_end TIMESTAMP,
+    symbol VARCHAR(20),
+    open_price DECIMAL(20, 8),
+    high_price DECIMAL(20, 8),
+    low_price DECIMAL(20, 8),
+    close_price DECIMAL(20, 8),
+    total_volume DECIMAL(20, 8),
+    trade_count INT,
+    PRIMARY KEY (window_start, symbol)
+);

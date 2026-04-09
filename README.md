@@ -1,85 +1,71 @@
-# 🌊 CryptoStream AI 
+# 🛸 CryptoStream AI: Institutional Tactical Terminal
 
-![Architecture](https://img.shields.io/badge/Architecture-Data%20Lakehouse-blue)
-![Tech Stack](https://img.shields.io/badge/Tech-Kafka%20%7C%20Flink%20%7C%20Postgres-orange)
-![AI Ready](https://img.shields.io/badge/AI-MCP%20Server-green)
-![Status](https://img.shields.io/badge/Status-Production%20Ready-success)
-
-A highly scalable, distributed **Data Lakehouse Architecture** designed from the ground up for generative AI integrations under strict Virtual Banking regulatory standards (BOT/AMLO).
-
-This platform ingests, processes, and persists high-throughput cryptocurrency trading data (1,000+ TPS) in real-time. It provides a hardened security layer via the **Model Context Protocol (MCP)**, allowing AI Agents (Current generation LLMs) to query the aggregated financial data autonomously while maintaining a full zero-trust audit trail.
+**CryptoStream AI** is a bank-grade real-time market intelligence system. It combines high-throughput data engineering (Kafka/Flink) with advanced LLM reasoning (Gemini 2.5 Flash) to provide actionable trading insights for the Virtual Banking sector.
 
 ---
 
-## 🏗️ System Architecture
+## 🏛️ Project Vision
+Designed for high-availability analytics, this platform demonstrates the "Tactical Terminal" design philosophy—prioritizing data density, readability, and sub-second intelligence delivery while maintaining full regulatory audit trails for the Thailand Virtual Banking landscape.
 
-### 1. Ingestion Layer (Apache Kafka & Python)
-- **High-Throughput Streaming:** Ingests live Binance WebSocket data (`producer.py`) or local simulated trades (`load_tester.py`) into Kafka topics (`trade_stream`).
-- **Resilient Message Broker:** 3-partition Kafka topic handling high parallelism and fault-tolerant ingestion.
-
-### 2. Processing Layer (Apache Flink)
-- **Real-time VWAP Calculation:** Aggregates streams into 1-minute Volume Weighted Average Price (VWAP) windows.
-- **Data Quality (DQ) Engine:** Identifies anomalies (negative prices, null quantities) and routes them into an isolated Dead Letter Queue (`trade_stream_dlq`) and a Postgres audit log.
-- **Whale Detection:** Detects high-volume trades (>0.5 BTC) in real time for AML monitoring.
-
-### 3. Lakehouse Persistence (PostgreSQL & Parquet)
-- **Hot Layer (Postgres):** Holds enriched operational data (`enriched_trades`), aggregated metrics (`market_metrics`), and DQ logs for real-time query.
-- **Cold Layer (Datalake):** Hive-partitioned Parquet files (`lake_writer.py`) for long-term immutable auditing (5-10 year BOL/AMLO retention).
-
-### 4. Orchestration & Monitoring
-- **Workflow:** **Apache Airflow** managing EOD reconciliation reports and DAG-based data recovery.
-- **Observability:** Full **Prometheus + Grafana** stack with Alertmanager for real-time SLA tracking and pipeline health monitoring.
+## 🚀 Key Technologies
+- **Intelligence:** Google Gemini 2.5 Flash via Model Context Protocol (MCP)
+- **Data Streaming:** Apache Kafka (7+ partitions)
+- **Real-time Compute:** Apache Flink (Stateful Window Processing)
+- **Analytics Bridge:** FastAPI + Python 3.10+
+- **Interactive UI:** React 19 + Vite (Tailwind CSS v4)
+- **Archive Layer:** Google BigQuery (Analytical Data Warehouse)
+- **Infrastructure:** Docker Compose, Prometheus, Grafana
 
 ---
 
-## 🚦 Quick Start (Unified Single-Command)
+## 🌊 Data Flow — จากตลาดโลกสู่หน้าจอคุณ
 
-### Prerequisites
-- Docker & Docker Compose (Desktop or Engine)
-- Python 3.10+ (for local testing)
+ทุกครั้งที่มีการซื้อขาย BTC บน Binance ข้อมูลนั้นจะเดินทางผ่านระบบของเราภายในเวลาไม่ถึง **1 วินาที** ก่อนที่คุณจะได้เห็นมันบนหน้าจอ Tactical Terminal — นี่คือเส้นทางทั้งหมดครับ:
 
-### 1. Spin up the Full Stack
-```bash
-docker compose up -d
-```
-*Starts Kafka, PostgreSQL, Flink Cluster, Airflow, Ingestion Producer [Binance WebSocket], Lake Writer [Parquet], and the Monitoring Stack (Prometheus/Grafana).*
+![CryptoStream AI Data Flow](./docs/dataflow.png)
 
-### 2. Submit the Stream Processor
-```bash
-docker exec -d jobmanager flink run -py /opt/streaming/flink_processor.py
-```
-*Activates the real-time Whale Detection and VWAP Aggregation logic on the Flink cluster.*
-
-### 3. Run the Automated E2E Test
-```bash
-python test_e2e.py
-```
-*Verifies the entire 5-phase pipeline: Infrastructure -> Streaming -> Load test -> DB Integrity -> AI Agent (MCP) Audit.*
+> 💡 **อ่านแผนผังให้เข้าใจ:** ข้อมูลไหล **จากซ้ายไปขวา** — เริ่มจาก Binance ไปสิ้นสุดที่หน้าจอของคุณ ทุก Trade จะถูก Flink ตรวจสอบคุณภาพ หากเป็น "วาฬ" (> 0.5 BTC) จะส่ง Alert ทันที หากข้อมูลผิดปกติจะถูกเก็บใน DLQ ข้อมูลที่ดีจะไหลเข้า PostgreSQL → AI → หน้าจอคุณ และจะถูก Archive ขึ้น BigQuery ทุกคืน 02:00 AM อัตโนมัติครับ
 
 ---
 
-## 📊 Monitoring & Access
 
-| Service | URL | Credentials |
-| :--- | :--- | :--- |
-| **Kafka UI** | [http://localhost:8080](http://localhost:8080) | (None) |
-| **Flink Dashboard** | [http://localhost:8081](http://localhost:8081) | (None) |
-| **Airflow Webserver** | [http://localhost:8082](http://localhost:8082) | `admin` / `admin` |
-| **Grafana Dashboards**| [http://localhost:3000](http://localhost:3000) | `admin` / `cryptostream_admin` |
-| **Prometheus** | [http://localhost:9090](http://localhost:9090) | (None) |
-| **Alertmanager** | [http://localhost:9093](http://localhost:9093) | (None) |
+
+
+## ⚡ Quick Start (The "จัดเลย" Sequence)
+
+To launch the entire institutional stack, follow the **Boot Sequence** in our [USER_GUIDE.md](./USER_GUIDE.md):
+
+1. **Infrastructure:** `docker compose up -d`
+2. **AI Bridge:** `python -m uvicorn mcp_server.main:app --port 8000`
+3. **Analytics Server:** `python chat_server.py`
+4. **Terminal UI:** `cd frontend && npm run dev`
 
 ---
 
-## ☁️ Cloud Deployment (Kubernetes)
+## 💎 Institutional Highlights
+- **Real-time Whale Detection:** Flink-powered tracking of large-scale BTC movements (> 0.5 BTC).
+- **Dual-Persona Reasoning:** Seamless switching between *Quant Strategist* and *Technical Architect*.
+- **Data Quality Governance:** Automated rejected-record logging (DLQ) for regulatory audit.
+- **Micro-Batch Data Lake:** High-efficiency Parquet compression for multi-year retention.
 
-The `/k8s/` directory contains production-grade manifests ready for deployment on **AWS EKS, GCP GKE, or Azure AKS**. 
+## 📂 Project Structure
+- `/mcp_server`: The core bridge connecting AI to the PostgreSQL Lakehouse.
+- `/frontend`: The high-end Tactical Terminal React application.
+- `/streaming`: Flink processors and Kafka producers/consumers.
+- `/airflow`: Automated DAGs for EOD reporting and BigQuery archival.
+- `/monitoring`: Prometheus/Grafana stacks for sub-second system observability.
+- `/scripts` & `/tests`: Maintenance and E2E verification suites.
+- `/datalake`: Parquet-based cold storage for historical regulatory audit.
+- **Archive Layer (BigQuery):** Global analytics layer for long-term retention.
 
-Included manifests:
-- **StatefulSets** for Kafka and Zookeeper (with PersistentVolumeClaims)
-- **HPA (Horizontal Pod Autoscaler)** for Flink TaskManagers
-- **NetworkPolicies** to enforce zero-trust lateral isolation between data layers
-- **Ingress Resources** with NGINX security headers and rate-limiting
+---
 
-*Note: In production, secrets are managed via Kubernetes Secrets or External Secrets Operator (Vault/AWS SM).*
+## 🔗 Critical Endpoints
+- **Main Terminal:** [http://localhost:8888](http://localhost:8888)
+- **Intelligence API:** [http://localhost:8000](http://localhost:8000)
+- **System Metrics:** [http://localhost:3000](http://localhost:3000)
 
+---
+
+> [!IMPORTANT]
+> **Regulatory Notice:** All market data handled by this system is intended for institutional analytics. Real-time data quality logs are preserved in `postgres.dq_audit_log` for regulatory reporting compliance.

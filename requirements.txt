@@ -23,8 +23,14 @@ python-dotenv         # Load .env files for local dev secret management
 fastapi               # REST API framework for MCP server
 uvicorn               # ASGI server for FastAPI
 requests              # HTTP client for health checks and MCP tests
+# ── AI / LLM ──────────────────────────────────────────────
+google-genai          # Google's next-gen AI SDK for Gemini 2.5 Flash
+python-dotenv         # Load .env files for local dev secret management
 slowapi               # Rate limiting middleware for FastAPI (API key protection)
 pydantic              # Data validation for MCP request/response models
+# ── Real-time Analytics (Phase 2 Additions) ─────────
+aiokafka              # Async Kafka client for FastAPI WebSocket bridge
+lightweight-charts    # Financial charts for institutional deep-dives
 
 # ── PyFlink (uncomment when running inside Flink container) ──
 # apache-flink==1.18.1

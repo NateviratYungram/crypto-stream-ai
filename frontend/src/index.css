@@ -1,0 +1,165 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+
+:root {
+  --bg-base: #020617;
+  --bg-surface: #0f172a;
+  --bg-card: #1e293b;
+  --accent: #38bdf8;
+  --accent-glow: rgba(56, 189, 248, 0.2);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(15, 23, 42, 0.6);
+  --glow-color: rgba(59, 130, 246, 0.15);
+  
+  /* Institutional HSL Tokens */
+  --intel-primary: 217 91% 60%;
+  --intel-secondary: 224 71% 4%;
+  --whale-alert: 45 93% 47%;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-200 antialiased;
+    font-family: 'Inter Tight', sans-serif;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(29, 78, 216, 0.05) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(79, 70, 229, 0.05) 0px, transparent 50%);
+  }
+}
+
+@layer components {
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .glass-card {
+    @apply bg-slate-900/40 backdrop-blur-xl border border-white/5 shadow-2xl;
+  }
+  
+  .glass-glow {
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .glass-glow::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      800px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), 
+      rgba(255, 255, 255, 0.06),
+      transparent 40%
+    );
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .mesh-active {
+    background-image: 
+      radial-gradient(circle at 50% 50%, rgba(59, 130, 246, 0.1) 0%, transparent 50%),
+      radial-gradient(circle at 100% 100%, rgba(99, 102, 241, 0.15) 0%, transparent 50%);
+  }
+  
+  .status-breath {
+    animation: breath 3s ease-in-out infinite;
+  }
+
+  .infra-pulse {
+    animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  @keyframes breath {
+    0%, 100% { opacity: 0.6; transform: scale(0.95); }
+    50% { opacity: 1; transform: scale(1.05); }
+  }
+
+  @keyframes pulse-ring {
+    0% { transform: scale(0.95); opacity: 0.8; }
+    50% { transform: scale(1.05); opacity: 0.4; }
+    100% { transform: scale(0.95); opacity: 0.8; }
+  }
+
+  .glow-bloom {
+    filter: drop-shadow(0 0 8px currentColor);
+  }
+
+  .terminal-scanline {
+    background: linear-gradient(
+      to bottom,
+      transparent 50%,
+      rgba(0, 0, 0, 0.1) 50%
+    );
+    background-size: 100% 4px;
+    pointer-events: none;
+  }
+}
+
+/* Tactical Terminal Prose Overrides */
+.prose {
+  --tw-prose-body: theme('colors.slate.300');
+  --tw-prose-headings: theme('colors.white');
+  --tw-prose-links: theme('colors.blue.400');
+  --tw-prose-bold: theme('colors.blue.300');
+  --tw-prose-counters: theme('colors.slate.500');
+  --tw-prose-bullets: theme('colors.blue.900');
+  --tw-prose-hr: rgba(255, 255, 255, 0.1);
+  --tw-prose-quotes: theme('colors.slate.400');
+  --tw-prose-quote-borders: theme('colors.blue.900');
+  --tw-prose-captions: theme('colors.slate.500');
+  --tw-prose-code: theme('colors.blue.400');
+  --tw-prose-pre-code: theme('colors.slate.200');
+  --tw-prose-pre-bg: theme('colors.slate.900');
+  --tw-prose-th-borders: rgba(255, 255, 255, 0.1);
+  --tw-prose-td-borders: rgba(255, 255, 255, 0.05);
+}
+
+.prose hr {
+  @apply mb-10;
+  border-top-width: 1px;
+  background: linear-gradient(to right, transparent, rgba(56, 189, 248, 0.2), transparent);
+  height: 1px;
+  border: none;
+}
+
+.prose table {
+  @apply my-6 w-full border-collapse rounded-xl overflow-hidden text-xs bg-slate-900/40;
+}
+
+.prose thead {
+  @apply bg-blue-600/10 border-b border-blue-500/20;
+}
+
+.prose th {
+  @apply px-4 py-3 font-black uppercase tracking-widest text-[10px] text-blue-400 text-left border-r last:border-r-0 border-white/5;
+}
+
+.prose td {
+  @apply px-4 py-3 border-b border-white/5 border-r last:border-r-0 text-slate-300 font-medium;
+}
+
+.prose tr:last-child td {
+  border-bottom: none;
+}
+
+.prose code {
+  @apply px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 font-bold;
+}
+
+.prose code::before, .prose code::after {
+  content: "" !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-800 rounded-full;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-700;
+}

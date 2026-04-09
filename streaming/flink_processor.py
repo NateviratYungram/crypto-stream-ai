@@ -157,13 +157,37 @@ def main():
             raw_payload     STRING
         ) WITH (
             'connector'     = 'jdbc',
-            'url'           = 'jdbc:postgresql://postgres:5432/crypto_stream_db',
+            'url'           = 'jdbc:postgresql://postgres:5432/crypto_stream_db?stringtype=unspecified',
             'table-name'    = 'data_quality_log',
             'username'      = 'user',
             'password'      = 'password'
         )
     """)
 
+    # -----------------------------------------------------------------------
+    # 5B. REGISTER POSTGRES SINKS: OHLCV Precomputations (M5, M15, H1, H4)
+    # -----------------------------------------------------------------------
+    logger.info("Registering SINKs: PostgreSQL tables for OHLCV candles")
+    for table_name in ["candles_m5", "candles_m15", "candles_h1", "candles_h4"]:
+        t_env.execute_sql(f"""
+            CREATE TABLE {table_name}_sink (
+                window_start    TIMESTAMP(3),
+                window_end      TIMESTAMP(3),
+                symbol          STRING,
+                open_price      DECIMAL(20, 8),
+                high_price      DECIMAL(20, 8),
+                low_price       DECIMAL(20, 8),
+                close_price     DECIMAL(20, 8),
+                total_volume    DECIMAL(20, 8),
+                trade_count     INT
+            ) WITH (
+                'connector'     = 'jdbc',
+                'url'           = 'jdbc:postgresql://postgres:5432/crypto_stream_db',
+                'table-name'    = '{table_name}',
+                'username'      = 'user',
+                'password'      = 'password'
+            )
+        """)
 
     # -----------------------------------------------------------------------
     # 6. DATA QUALITY VALIDATION (Phase 3 — Core Logic)
@@ -303,7 +327,32 @@ def main():
         FROM invalid_trades_json
     """)
 
-    logger.info("Submitting Flink job with 4 sinks: enriched_trades, market_metrics, trade_stream_dlq, data_quality_log")
+    # Sink 5-8: OHLCV Precomputations (M5, M15, H1, H4)
+    for interval_val, interval_unit, table_name in [
+        ("5",  "MINUTE", "candles_m5"),
+        ("15", "MINUTE", "candles_m15"),
+        ("1",  "HOUR",   "candles_h1"),
+        ("4",  "HOUR",   "candles_h4")
+    ]:
+        statement_set.add_insert_sql(f"""
+            INSERT INTO {table_name}_sink
+            SELECT
+                window_start,
+                window_end,
+                symbol,
+                FIRST_VALUE(price)           AS open_price,
+                MAX(price)                   AS high_price,
+                MIN(price)                   AS low_price,
+                LAST_VALUE(price)            AS close_price,
+                SUM(quantity)                AS total_volume,
+                CAST(COUNT(trade_id) AS INT) AS trade_count
+            FROM TABLE(
+                TUMBLE(TABLE enriched_valid_trades, DESCRIPTOR(ts), INTERVAL '{interval_val}' {interval_unit})
+            )
+            GROUP BY window_start, window_end, symbol
+        """)
+
+    logger.info("Submitting Flink job with 8 sinks: enriched_trades, market_metrics, trade_stream_dlq, data_quality_log, candles (M5, M15, H1, H4)")
 
     # Execute — this is a blocking call, the job runs indefinitely
     # The returned TableResult is used for monitoring / cancellation

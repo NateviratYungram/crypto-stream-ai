@@ -50,8 +50,9 @@ _default_lake_path  = os.path.join(os.path.dirname(__file__), '..', 'datalake', 
 DATALAKE_BASE_PATH  = os.environ.get('DATALAKE_OUTPUT_PATH', _default_lake_path)
 
 # Flush policy: write parquet file after N records OR N seconds
-FLUSH_RECORD_LIMIT  = 1_000   # records
-FLUSH_TIME_LIMIT    = 300     # seconds (5 minutes)
+# For production hardening, we allow these to be overridden via env vars.
+FLUSH_RECORD_LIMIT  = int(os.environ.get('FLUSH_RECORD_LIMIT', 100))  # records
+FLUSH_TIME_LIMIT    = int(os.environ.get('FLUSH_TIME_LIMIT', 60))    # seconds (1 minute)
 
 # ---------------------------------------------------------------------------
 # Logging Setup
@@ -125,6 +126,7 @@ def flush_to_parquet(records: list, flush_time: datetime) -> None:
         df = df[[field.name for field in PARQUET_SCHEMA]]
 
         # Cast types explicitly to match PyArrow schema
+        df['trade_id'] = df['trade_id'].astype(str)
         df['price']    = pd.to_numeric(df['price'],    errors='coerce')
         df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce')
         df['timestamp']= pd.to_numeric(df['timestamp'],errors='coerce').astype('Int64')

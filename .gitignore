@@ -1,25 +1,34 @@
-# Virtual Environment
+# Secrets & Config
+.env
+gcp-key.json
+*.json
+!package.json
+!tsconfig.json
+
+# Logs & Diagnostics
+*.log
+server_rescue.log
+bucket_creation.log
+airflow_logs/
+
+# Python & Environment
 venv/
 env/
-.env
-
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
 
-# IDEs
-.vscode/
-.idea/
-*.swp
-
-# Docker / Database Data (CRITICAL to ignore)
+# Docker & Persistence
 postgres_data/
-airflow_logs/
 datalake/
 
-# Testing / Temporary
-.pytest_cache/
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temp & Build
+scratch/
+static/
+*.pytest_cache/
 htmlcov/
-fix_db.py
