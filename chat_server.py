@@ -387,11 +387,30 @@ def init_persistence_db():
             reasoning TEXT,
             price REAL,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS system_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            time DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
     conn.close()
     logger.info(f"✅ Persistence DB initialized: {PERSISTENCE_DB}")
+
+def _log_system_event(event_type: str, detail: str):
+    """Write a row to system_events (SQLite) — used as local audit trail."""
+    try:
+        conn = sqlite3.connect(PERSISTENCE_DB)
+        conn.execute(
+            "INSERT INTO system_events (type, detail) VALUES (?, ?)",
+            (event_type, detail[:500])
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # never break the caller over a log write
 
 def get_db_pool() -> pg_pool.ThreadedConnectionPool:
     global _db_pool
@@ -1144,11 +1163,11 @@ class LoginRequest(BaseModel):
     password: str
 
 class UpdateProfileRequest(BaseModel):
-    full_name: str = ""
-    phone: str = ""
-    country: str = ""
-    bio: str = ""
-    account_type: str = ""
+    full_name:    str | None = None
+    phone:        str | None = None
+    country:      str | None = None
+    bio:          str | None = None
+    account_type: str | None = None
 
 # ── Auth Endpoints (Phase 16) ────────────────────────────────────────────────
 @app.post("/api/auth/register")
@@ -1173,6 +1192,7 @@ def auth_register(req: RegisterRequest):
     conn.commit()
     conn.close()
     token = _create_token(user_id, req.email.lower())
+    _log_system_event("USER_REGISTER", f"New user registered: {req.email.lower()} ({req.account_type})")
     return {"token": token, "user": {"id": user_id, "email": req.email.lower(), "username": req.username.lower(), "full_name": req.full_name, "account_type": req.account_type}}
 
 @app.post("/api/auth/login")
@@ -1184,6 +1204,7 @@ def auth_login(req: LoginRequest):
     if not row or not _verify_password(req.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = _create_token(row["id"], row["email"])
+    _log_system_event("USER_LOGIN", f"Login: {row['email']} ({row['account_type']})")
     return {"token": token, "user": {"id": row["id"], "email": row["email"], "username": row["username"], "full_name": row["full_name"], "account_type": row["account_type"], "phone": row["phone"] or "", "country": row["country"] or "", "bio": row["bio"] or ""}}
 
 @app.get("/api/auth/me")
@@ -1193,10 +1214,11 @@ def auth_me(current_user: dict = Depends(get_current_user)):
 @app.put("/api/auth/profile")
 def auth_update_profile(req: UpdateProfileRequest, current_user: dict = Depends(get_current_user)):
     updates, params = [], []
-    if req.full_name:  updates.append("full_name=?");  params.append(req.full_name)
-    if req.phone:      updates.append("phone=?");      params.append(req.phone)
-    if req.country:    updates.append("country=?");    params.append(req.country)
-    if req.bio:        updates.append("bio=?");        params.append(req.bio)
+    # Use `is not None` so empty string clears the field
+    if req.full_name  is not None: updates.append("full_name=?");    params.append(req.full_name)
+    if req.phone      is not None: updates.append("phone=?");         params.append(req.phone)
+    if req.country    is not None: updates.append("country=?");       params.append(req.country)
+    if req.bio        is not None: updates.append("bio=?");           params.append(req.bio)
     if req.account_type in ("retail", "institutional"):
         updates.append("account_type=?"); params.append(req.account_type)
     if not updates:
@@ -1206,6 +1228,7 @@ def auth_update_profile(req: UpdateProfileRequest, current_user: dict = Depends(
     conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
     conn.commit()
     conn.close()
+    _log_system_event("PROFILE_UPDATE", f"User {current_user.get('email','?')} updated profile")
     return {"ok": True}
 
 # ── Chat Models ───────────────────────────────────────────────────────────────
@@ -3314,6 +3337,7 @@ async def get_all_whales(request: Request, limit: int = 60):
 def get_dashboard_data(category: str):
     """
     Data Proxy: Fetches specific institutional datasets using pre-defined safe queries.
+    Falls back to local SQLite data when PostgreSQL/MCP is unavailable.
     """
     queries = {
         "whales": "SELECT symbol, quantity, price, timestamp, is_buyer_maker FROM enriched_trades WHERE is_whale = TRUE ORDER BY timestamp DESC LIMIT 20",
@@ -3325,17 +3349,37 @@ def get_dashboard_data(category: str):
             ORDER BY time DESC LIMIT 20
         """
     }
-    
+
     if category not in queries:
         raise HTTPException(status_code=404, detail="Category not found")
-        
+
     result = _execute_sql(queries[category])
-    
-    # Return raw database results - no synthetic data fabrication
-    # Trading platforms must only display verified market data
+
+    # ── SQLite fallback for audits (works without Docker/MCP) ────────────────
+    if category == "audits" and ("error" in result or not result.get("data")):
+        try:
+            conn = sqlite3.connect(PERSISTENCE_DB)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT type, detail, time FROM system_events
+                UNION ALL
+                SELECT 'SNIPER_SIGNAL' as type,
+                       symbol || ' confidence=' || ROUND(confidence,2) || ' ' || COALESCE(reasoning,'') as detail,
+                       timestamp as time
+                FROM sniper_audit_log
+                ORDER BY time DESC LIMIT 30
+                """
+            ).fetchall()
+            conn.close()
+            result = {"data": [dict(r) for r in rows]}
+        except Exception as e:
+            logger.warning(f"audit SQLite fallback error: {e}")
+            result = {"data": []}
+
     if "data" not in result:
         result = {"data": []}
-    
+
     return result
 
 @app.get("/api/signals")
@@ -4709,6 +4753,8 @@ async def open_paper_trade(req: PaperTradeOpenRequest, request: Request):
                 volume=req.volume, price=req.price
             )
         )
+        if result.get("status") == "SUCCESS":
+            _log_system_event("PAPER_TRADE", f"Opened {req.side} {req.symbol} x{req.volume} @ {result.get('entry_price', '—')}")
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4737,6 +4783,7 @@ async def close_paper_trade(trade_id: str, req: PaperTradeCloseRequest, request:
             f"P&L: `{'%+.2f' % pnl} USD`  |  {outcome}\n"
             f"Exit: `{result.get('exit_price', '—')}`"
         ))
+        _log_system_event("PAPER_TRADE", f"Closed {symbol} | P&L: {'%+.2f' % pnl} USD | {outcome}")
 
         return result
     except HTTPException:
