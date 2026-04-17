@@ -28,16 +28,24 @@ export const ScreenerView = () => {
   const [ran,          setRan]          = useState(false);
   const [matchCount,   setMatchCount]   = useState(0);
 
-  const run = async () => {
+  const run = async (overrides?: { rsiMin?: string; rsiMax?: string; volSpike?: string; pct52wh?: string; retMin?: string; retMax?: string; universe?: string }) => {
+    const _uni      = overrides?.universe  ?? universe;
+    const _rsiMin   = overrides?.rsiMin    ?? rsiMin;
+    const _rsiMax   = overrides?.rsiMax    ?? rsiMax;
+    const _volSpike = overrides?.volSpike  ?? volSpike;
+    const _pct52wh  = overrides?.pct52wh   ?? pct52wh;
+    const _retMin   = overrides?.retMin    ?? retMin;
+    const _retMax   = overrides?.retMax    ?? retMax;
+
     setLoading(true); setRan(true);
     try {
-      const params = new URLSearchParams({ universe });
-      if (rsiMin)   params.set('rsi_min',       rsiMin);
-      if (rsiMax)   params.set('rsi_max',       rsiMax);
-      if (volSpike) params.set('vol_spike',     volSpike);
-      if (pct52wh)  params.set('pct_from_52wh', pct52wh);
-      if (retMin)   params.set('min_return_1w', retMin);
-      if (retMax)   params.set('max_return_1w', retMax);
+      const params = new URLSearchParams({ universe: _uni });
+      if (_rsiMin)   params.set('rsi_min',       _rsiMin);
+      if (_rsiMax)   params.set('rsi_max',       _rsiMax);
+      if (_volSpike) params.set('vol_spike',     _volSpike);
+      if (_pct52wh)  params.set('pct_from_52wh', _pct52wh);
+      if (_retMin)   params.set('min_return_1w', _retMin);
+      if (_retMax)   params.set('max_return_1w', _retMax);
 
       const res = await fetch(`/api/screener?${params}`, { headers: { 'X-API-Key': API_KEY() } });
       const d   = await res.json();
@@ -110,11 +118,16 @@ export const ScreenerView = () => {
         <div className="flex gap-2 flex-wrap items-center">
           <span className="text-[11px] font-black text-slate-600 uppercase tracking-widest">Presets:</span>
           {[
-            { label: 'Oversold Bounce', apply: () => { setRsiMax('35'); setVolSpike('1.5'); setPct52wh('30'); setRsiMin(''); setRetMin(''); setRetMax(''); } },
-            { label: 'Breakout Setup',  apply: () => { setVolSpike('3'); setRsiMin('50'); setRsiMax(''); setPct52wh(''); setRetMin('5'); setRetMax(''); } },
-            { label: 'Momentum',        apply: () => { setRetMin('10'); setVolSpike('2'); setRsiMin('60'); setRsiMax(''); setPct52wh(''); setRetMax(''); } },
+            { label: 'Oversold Bounce', filters: { rsiMax: '45', volSpike: '1.2', pct52wh: '40', rsiMin: '', retMin: '', retMax: '' } },
+            { label: 'Breakout Setup',  filters: { volSpike: '2', rsiMin: '50', rsiMax: '', pct52wh: '', retMin: '3', retMax: '' } },
+            { label: 'Momentum',        filters: { retMin: '5', volSpike: '1.5', rsiMin: '55', rsiMax: '', pct52wh: '', retMax: '' } },
           ].map(p => (
-            <button key={p.label} onClick={p.apply}
+            <button key={p.label} onClick={() => {
+              setRsiMin(p.filters.rsiMin); setRsiMax(p.filters.rsiMax);
+              setVolSpike(p.filters.volSpike); setPct52wh(p.filters.pct52wh);
+              setRetMin(p.filters.retMin); setRetMax(p.filters.retMax);
+              run(p.filters);
+            }}
               className="px-3 py-1.5 text-[11px] font-black uppercase tracking-widest border border-white/10 rounded-xl text-slate-500 hover:text-white hover:border-blue-500/30 transition-all">
               {p.label}
             </button>
@@ -125,7 +138,7 @@ export const ScreenerView = () => {
           </button>
         </div>
 
-        <button onClick={run} disabled={loading}
+        <button onClick={() => run()} disabled={loading}
           className="w-full flex items-center justify-center gap-3 py-4 bg-blue-600/20 border border-blue-500/30 hover:border-blue-500/60 rounded-2xl text-blue-400 font-black text-sm transition-all disabled:opacity-50">
           <Search className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           {loading ? `Scanning ${universe}...` : `Scan ${universe}`}
