@@ -171,12 +171,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
   }, []);
 
   useEffect(() => {
-    if (initialMessage && !hasTriggeredInitial.current) {
+    if (initialMessage && !hasTriggeredInitial.current && sessions.length > 0) {
       hasTriggeredInitial.current = true;
       sendMessage(initialMessage);
       onClearInitialMessage?.();
     }
-  }, [initialMessage, onClearInitialMessage]);
+  }, [initialMessage, sessions, onClearInitialMessage]);
 
   const syncSessionToServer = async (sess: ChatSession) => {
     try {
