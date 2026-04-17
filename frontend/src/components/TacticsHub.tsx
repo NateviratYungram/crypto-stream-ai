@@ -125,13 +125,13 @@ export const TacticsHub = () => {
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-[0.2em]">
             <Zap className="w-3.5 h-3.5 glow-bloom text-purple-400" />
-            Intelligence V8 Deep Brain Evolution
+            AI Trading Tactics
           </div>
           <h1 className="text-3xl font-black text-white tracking-tighter uppercase italic">
-            Institutional Tactics Hub
+            Trading Tactics
           </h1>
           <p className="text-slate-500 text-sm font-medium">
-            Strategic execution engine with explicit Triggers, Invalidation, and TP zones.
+            แนวทางการเทรดพร้อม Entry · Stop Loss · Take Profit — <span className="text-amber-400 font-bold">ไม่ใช่คำแนะนำทางการเงิน</span>
           </p>
         </div>
 
