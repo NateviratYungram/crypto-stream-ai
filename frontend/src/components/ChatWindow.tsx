@@ -339,6 +339,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
       if (res.status === 403) {
         throw new Error("Access Denied: Invalid Institutional Key");
       }
+      if (res.status === 429) {
+        throw new Error("⏱️ Rate limit reached — please wait a moment before sending another message.");
+      }
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       if (!res.body) throw new Error("No response body from intelligence enclave");
 

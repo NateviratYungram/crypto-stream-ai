@@ -4726,6 +4726,18 @@ async def close_paper_trade(trade_id: str, req: PaperTradeCloseRequest, request:
         )
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
+
+        # Telegram notification on trade close
+        pnl     = result.get("pnl_usd", 0) or 0
+        outcome = result.get("result", "")
+        symbol  = result.get("symbol", trade_id)
+        emoji   = "✅" if pnl >= 0 else "❌"
+        asyncio.create_task(notifier.send_telegram_alert(
+            f"{emoji} *Paper Trade Closed* — {symbol}\n"
+            f"P&L: `{'%+.2f' % pnl} USD`  |  {outcome}\n"
+            f"Exit: `{result.get('exit_price', '—')}`"
+        ))
+
         return result
     except HTTPException:
         raise
