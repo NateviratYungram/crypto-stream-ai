@@ -82,5 +82,33 @@ AI ของเรามีความสามารถพิเศษใน�
 
 ---
 
+## 🏛️ 5. ฟีเจอร์ระดับสถาบัน (Institutional Intelligence)
+
+ระบบได้รับการอัปเกรดให้รองรับฟีเจอร์ระดับกองทุน (Hedge Fund Grade):
+
+### 🔔 5.1 Smart Alerts (Telegram)
+AI สามารถเฝ้าตลาดให้คุณได้ตลอด 24 ชม. ผ่านระบบ Background Poller:
+- **คำสั่ง:** "เฝ้าทองให้หน่อย ถ้าต่ำกว่า 2280 แจ้งเตือนใน Telegram"
+- **การทำงาน:** ระบบจะไปบันทึกใน Alert Engine และยิงเข้า Telegram เมื่อเงื่อนไขเป็นจริง
+
+### 🐋 5.2 Onchain & Options Flow
+ดึงข้อมูล "Big Money" ของจริง:
+- **Onchain flow:** ดึง Real-time Volume และ Market Cap ผ่าน CoinGecko API
+- **Options Flow:** วิเคราะห์ Put/Call Ratio และ GEX (Gamma Exposure) ผ่าน Unusual Whales API (ต้องการ API Key ใน `.env`)
+
+### 📰 5.3 Social Sentiment Scanner
+วิเคราะห์ "ความโลภและความกลัว" จากข่าวจริง:
+- **Data Source:** CryptoPanic (API / RSS)
+- **AI Logic:** วิเคราะห์ Headline ข่าวเพื่อคำนวณ Hype Score (0-100)
+
+### 📊 5.4 AI Trade Journal & Dashboard
+วิเคราะห์การเทรดของคุณแบบมืออาชีพ:
+- **Review:** สั่ง AI "รีวิวการเทรดของฉันหน่อย" เพื่อดู Critique และ Win-Rate ย้อนหลัง
+- **Dashboard:** เข้าหน้าจอ **"Alerts & Reviews"** ทางด้านซ้าย เพื่อดูสถานะการแจ้งเตือนและประวัติการวิจารณ์ของ AI ทั้งหมด
+
+---
+
+---
+
 > [!TIP]
 > **Pro Tip:** หาก Chat Server รันไม่ได้ หรือ AI ค้าง ให้ลองใช้ไฟล์ `debug.bat` หรือ `run_ui.bat` ในหน้าแรกเพื่อ Reset ระบบโดยรวมอัตโนมัติครับ

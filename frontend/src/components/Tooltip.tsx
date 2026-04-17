@@ -42,7 +42,7 @@ export const FinancialTerm = ({ term, children }: { term: string; children?: Rea
             transition={{ duration: 0.15 }}
             className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-3 rounded-xl bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-2xl z-[99999]"
           >
-            <p className="text-[10px] font-black text-white mb-1 uppercase tracking-widest">{term}</p>
+            <p className="text-xs font-black text-white mb-1 uppercase tracking-widest">{term}</p>
             <p className="text-[11px] text-slate-300 font-medium leading-relaxed">{def}</p>
             {/* Triangle pointing down */}
             <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800/95" />

@@ -7,10 +7,12 @@
 # ── Kafka ─────────────────────────────────────────────────
 kafka-python          # Kafka producer/consumer for ingestion & lake writer
 websocket-client      # Binance WebSocket stream (producer.py)
+websockets            # Async WebSocket client for Binance live price broadcaster
 
 # ── Database ───────────────────────────────────────────────
 psycopg2-binary       # PostgreSQL client (MCP server, test_e2e.py, Airflow DAGs)
 sqlalchemy            # ORM / connection pooling for MCP server
+redis                 # Cache client — market_tools.py (market_regime, market_features TTL cache)
 
 # ── Data Lake ─────────────────────────────────────────────
 pandas                # DataFrame transformations in lake_writer.py
@@ -23,14 +25,35 @@ python-dotenv         # Load .env files for local dev secret management
 fastapi               # REST API framework for MCP server
 uvicorn               # ASGI server for FastAPI
 requests              # HTTP client for health checks and MCP tests
+
+# ── Auth (Phase 16 — User Registration & Login) ───────────
+passlib[bcrypt]       # Password hashing with bcrypt
+python-jose[cryptography]  # JWT token generation and verification
 # ── AI / LLM ──────────────────────────────────────────────
 google-genai          # Google's next-gen AI SDK for Gemini 2.5 Flash
-python-dotenv         # Load .env files for local dev secret management
+anthropic             # Multi-Agent strategy synthesis (Claude 3.1)
+
+
 slowapi               # Rate limiting middleware for FastAPI (API key protection)
 pydantic              # Data validation for MCP request/response models
-# ── Real-time Analytics (Phase 2 Additions) ─────────
+sqlparse              # SQL validation for MCP server
+httpx                 # Async HTTP client for notifications
+
+# ── Intelligence Layer (Phase 6 / QuantAgent Upgrade) ─────
+ta                    # Technical indicator calculation engine
+mplfinance            # Candlestick and trendline chart generation
+matplotlib            # Plotting backend for mplfinance (agg mode)
+feedparser            # RSS feed parser for Sentiment Agent
+yfinance              # Yahoo Finance data fetching for market indices (crypto-fear-greed, cnn-fear-greed, indices)
 aiokafka              # Async Kafka client for FastAPI WebSocket bridge
-lightweight-charts    # Financial charts for institutional deep-dives
+
+# ── Machine Learning (Phase 15 — Self-Learning Signal Model) ─────────────
+scikit-learn          # GradientBoostingClassifier for win-probability prediction
+joblib                # Fast model serialization (complement to scikit-learn)
+
+# ── Real-time Analytics (Phase 2 Additions) ─────────
+# aiokafka              # Async Kafka client for FastAPI WebSocket bridge
+# lightweight-charts    # Financial charts for institutional deep-dives
 
 # ── PyFlink (uncomment when running inside Flink container) ──
 # apache-flink==1.18.1

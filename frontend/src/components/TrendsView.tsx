@@ -1,265 +1,248 @@
-import { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { TrendingUp, BarChart, RefreshCcw, ArrowUpRight, ArrowDownRight, Target, Clock } from 'lucide-react';
-import { HoverGlowCard } from './HoverGlowCard';
-import { LiveChart } from './LiveChart';
-import { OrderBookPanel } from './OrderBookPanel';
-import { MarketSummary } from './MarketSummary';
-import { AnimatedCounter } from './AnimatedCounter';
+import React, { useEffect, useRef } from 'react';
+import { AreaChart, RefreshCcw } from 'lucide-react';
 import { useMode } from '../contexts/ModeContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 
-interface MarketItem {
-  symbol: string;
-  avg_price: number;
-  total_volume: number;
-  trade_count: number;
-  history: { time: number; value: number }[];
-  vwap_baseline: number;
-  sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  delta: number;
-  lastTickAt: number;
-}
-
-export const TrendsView = () => {
-  const [data, setData] = useState<MarketItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [now, setNow] = useState(Date.now());
-  const { isConnected, lastMessage, latency } = useWebSocket();
-
-  // Clock for latency display
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const getSymbolColor = (symbol: string) => {
-    if (symbol.startsWith('BTC')) return '#f59e0b'; // Orange
-    if (symbol.startsWith('ETH')) return '#3b82f6'; // Blue
-    if (symbol.startsWith('SOL')) return '#8b5cf6'; // Purple
-    if (symbol.startsWith('BNB')) return '#eab308'; // Yellow
-    return '#10b981'; // Emerald default
-  };
-
-  const getSymbolIcon = (symbol: string) => {
-    const color = getSymbolColor(symbol);
-    return (
-      <div className="w-10 h-10 rounded-2xl flex items-center justify-center relative overflow-hidden group-hover:scale-110 transition-transform duration-500" style={{ backgroundColor: `${color}15`, border: `1px solid ${color}30` }}>
-        <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent" />
-        <span className="text-sm font-black" style={{ color }}>{symbol[0]}</span>
-      </div>
-    );
-  };
-
-  // Generate unique seed-based history to avoid identical charts
-  const generateHistory = (price: number, symbol: string) => {
-    const seed = symbol.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    return Array.from({ length: 30 }, (_, i) => {
-      const noise = (Math.sin(i * 0.5 + seed) * 0.002) + (Math.cos(i * 0.2 + seed) * 0.001);
-      return {
-        time: Date.now() - (30 - i) * 1000,
-        value: price * (1 + noise)
-      };
-    });
-  };
-
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/data/trends');
-      const json = await res.json();
-      const enriched: MarketItem[] = (json.data || []).map((item: any) => {
-        const p = parseFloat(item.avg_price);
-        return {
-          ...item,
-          avg_price: p,
-          total_volume: parseFloat(item.total_volume),
-          trade_count: parseInt(item.trade_count),
-          vwap_baseline: p,
-          history: generateHistory(p, item.symbol),
-          sentiment: 'NEUTRAL' as const,
-          delta: 0,
-          lastTickAt: Date.now(),
-        }
-      });
-      setData(enriched);
-    } catch (error) {
-      console.error('Fetch error:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { fetchData(); }, []);
+// Generic Component specifically for injecting TradingView Widget scripts securely
+const TVWidget = ({ src, config, className = '' }: { src: string, config: any, className?: string }) => {
+  const container = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (lastMessage?.type !== 'TICK') return;
-    const tick = lastMessage.data;
-    setData(prev => prev.map(item => {
-      if (item.symbol !== tick.symbol) return item;
-      const newPrice = parseFloat(tick.price);
-      const delta = ((newPrice - item.vwap_baseline) / item.vwap_baseline) * 100;
-      const sentiment: MarketItem['sentiment'] = delta > 0.02 ? 'BULLISH' : delta < -0.02 ? 'BEARISH' : 'NEUTRAL';
-      const newHistory = [...item.history, { time: Date.now(), value: newPrice }].slice(-30);
-      return {
-        ...item,
-        avg_price: newPrice,
-        sentiment,
-        delta,
-        total_volume: item.total_volume + parseFloat(tick.quantity),
-        trade_count: item.trade_count + 1,
-        history: newHistory,
-        lastTickAt: Date.now(),
-      };
-    }));
-  }, [lastMessage]);
+    if (!container.current) return;
+    // Clear previous
+    container.current.innerHTML = '';
+    
+    // Create new script template
+    const script = document.createElement("script");
+    script.src = src;
+    script.type = "text/javascript";
+    script.async = true;
+    script.innerHTML = JSON.stringify(config);
+    
+    // Widget container wrapping
+    const div = document.createElement("div");
+    div.className = "tradingview-widget-container__widget w-full h-full";
+    container.current.appendChild(div);
+    container.current.appendChild(script);
+  }, [src, JSON.stringify(config)]);
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-950/20 custom-scrollbar overflow-y-auto pb-20">
+    <div className={`tradingview-widget-container flex-1 overflow-hidden relative ${className}`} ref={container} />
+  );
+};
+
+export const TrendsView = () => {
+  const { isConnected } = useWebSocket();
+
+  return (
+    <div className="flex-1 flex flex-col h-full bg-slate-950/20 overflow-y-auto pb-8 custom-scrollbar">
       {/* Header */}
-      <header className="h-20 border-b border-white/5 flex items-center justify-between pl-8 pr-10 bg-slate-950/40 backdrop-blur-3xl z-30 sticky top-0 shrink-0 shadow-2xl">
+      <header className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-slate-950/40 backdrop-blur-3xl z-30 sticky top-0 shrink-0 shadow-2xl">
         <div className="flex items-center gap-5">
           <div className="w-12 h-12 bg-blue-600/10 rounded-2xl flex items-center justify-center border border-blue-500/20 shadow-inner">
-            <TrendingUp className="w-6 h-6 text-blue-400" />
+            <AreaChart className="w-6 h-6 text-blue-400" />
           </div>
           <div className="space-y-0.5">
-            <h1 className="text-2xl font-black text-white tracking-tighter uppercase italic">Market Trends</h1>
+            <h1 className="text-2xl font-black text-white tracking-tighter uppercase italic">Institutional Macro Hub</h1>
             <div className="flex items-center gap-3">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.8)] animate-pulse' : 'bg-rose-500'}`} />
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
-                {isConnected ? 'Institutional Core Active' : 'Offline'}
+              <span className="text-xs font-black text-slate-400 uppercase tracking-widest leading-none flex items-center gap-2">
+                <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 shadow-[0_0_8px_#10b981] animate-pulse' : 'bg-slate-600'}`} />
+                {isConnected ? 'LIVE DATA SYNC · TRADINGVIEW ENGINE' : 'OFFLINE'}
               </span>
-              {latency && (
-                <div className="px-1.5 py-0.5 bg-white/5 rounded border border-white/5">
-                  <span className="text-[9px] font-mono text-slate-500">{latency}ms</span>
-                </div>
-              )}
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="hidden lg:flex items-center gap-2.5 px-4 py-2 bg-slate-900/50 border border-white/10 rounded-2xl">
-            <Target className="w-3.5 h-3.5 text-blue-400" />
-            <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Global Order Monitor</span>
-          </div>
-          <button
-            onClick={fetchData}
-            className="group flex items-center gap-2.5 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 border border-blue-400/30 rounded-2xl text-[11px] font-black text-white uppercase tracking-widest transition-all shadow-xl shadow-blue-600/20 hover:shadow-blue-600/40 active:scale-95 overflow-hidden relative"
-          >
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-            <RefreshCcw className={`w-4 h-4 ${loading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
-            REFRESH ENGINE
-          </button>
-        </div>
       </header>
 
-      <div className="p-10 space-y-10 max-w-[1600px] mx-auto w-full">
-        <MarketSummary />
-
-        {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {[1,2,3,4,5,6].map(i => <div key={i} className="h-96 bg-slate-900/40 animate-pulse rounded-[2.5rem] border border-white/5" />)}
+      {/* Main Dashboard Grid */}
+      <div className="p-8 max-w-[1920px] mx-auto w-full flex flex-col gap-6">
+        
+        {/* Top Row: Main Highlight & Indices */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" style={{ minHeight: '520px' }}>
+          {/* Top-Left: Global Main Highlight (Spans 2 columns) */}
+          <div className="lg:col-span-2 rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+            <TVWidget 
+              src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
+              config={{
+                "autosize": true,
+                "symbol": "BINANCE:BTCUSDT",
+                "interval": "D",
+                "timezone": "Etc/UTC",
+                "theme": "dark",
+                "style": "1",
+                "locale": "th",
+                "enable_publishing": false,
+                "allow_symbol_change": true,
+                "calendar": false,
+                "support_host": "https://www.tradingview.com"
+              }}
+            />
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-10">
-            {data.map((item) => {
-              const secsAgo = Math.floor((now - item.lastTickAt) / 1000);
-              const isFresh = secsAgo < 5;
-              const assetColor = getSymbolColor(item.symbol);
-              return (
-                <HoverGlowCard key={item.symbol} className="p-8 rounded-[2.5rem] border-white/10 group relative overflow-hidden flex flex-col gap-6 bg-slate-900/40 backdrop-blur-sm shadow-2xl transition-all duration-500 hover:border-blue-500/30">
-                  {/* Symbol dynamic glow */}
-                  <div className="absolute -top-24 -right-24 w-60 h-60 blur-[100px] opacity-20 rounded-full transition-all duration-1000 group-hover:opacity-40" style={{ backgroundColor: assetColor }} />
 
-                  {/* Title row */}
-                  <div className="flex justify-between items-start relative z-10">
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: assetColor }} />
-                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] font-mono">SPOT · INTERFACE</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <h3 className="text-3xl font-black text-white tracking-tighter font-mono group-hover:text-blue-400 transition-colors uppercase">{item.symbol}</h3>
-                        <AnimatePresence mode="wait">
-                          {item.sentiment !== 'NEUTRAL' && (
-                            <motion.span
-                              initial={{ opacity: 0, scale: 0.7, x: -10 }}
-                              animate={{ opacity: 1, scale: 1, x: 0 }}
-                              exit={{ opacity: 0 }}
-                              className={`px-2.5 py-1 rounded-lg text-[9px] font-black tracking-widest uppercase border ${
-                                item.sentiment === 'BULLISH'
-                                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                                  : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
-                              }`}
-                            >{item.sentiment}</motion.span>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    </div>
-                    {getSymbolIcon(item.symbol)}
-                  </div>
-
-                  {/* Price Area */}
-                  <div className="relative z-10 bg-slate-950/40 p-5 rounded-3xl border border-white/5 group-hover:border-white/10 transition-colors">
-                    <div className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-2 flex justify-between items-center">
-                      <span>Index Entry Price</span>
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-1.5 h-1.5 rounded-full ${isFresh ? 'bg-emerald-500 animate-pulse' : 'bg-slate-700'}`} />
-                        <span className="text-[9px] font-mono lowercase">{secsAgo}s</span>
-                      </div>
-                    </div>
-                    <div className="flex items-end justify-between gap-2">
-                      <span className={`text-4xl font-mono font-black tracking-tighter tabular-nums transition-colors duration-300 ${
-                        item.sentiment === 'BULLISH' ? 'text-emerald-400' : item.sentiment === 'BEARISH' ? 'text-rose-400' : 'text-slate-50'
-                      }`}>
-                        $<AnimatedCounter value={item.avg_price} decimals={2} />
-                      </span>
-                      <div className={`px-2.5 py-1.5 border rounded-xl flex items-center gap-1.5 text-[11px] font-black shadow-lg ${
-                        item.delta >= 0 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 shadow-emerald-500/5' : 'bg-rose-500/10 border-rose-500/20 text-rose-400 shadow-rose-500/5'
-                      }`}>
-                        {item.delta >= 0 ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
-                        {Math.abs(item.delta).toFixed(3)}%
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Visual Chart */}
-                  <div className="h-24 w-full relative">
-                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950/20 to-transparent pointer-events-none" />
-                    <LiveChart
-                      data={item.history}
-                      color={item.sentiment === 'BULLISH' ? '#10b981' : item.sentiment === 'BEARISH' ? '#f43f5e' : assetColor}
-                    />
-                  </div>
-
-                  {/* High Frequency Order Book */}
-                  <div className="border-t border-white/5 pt-6 relative z-10">
-                    <OrderBookPanel symbol={item.symbol} currentPrice={item.avg_price} history={item.history} />
-                  </div>
-
-                  {/* Quantitative Stats */}
-                  <div className="grid grid-cols-2 gap-6 border-t border-white/5 pt-6 relative z-10">
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em] flex items-center gap-2">
-                        <BarChart className="w-3 h-3" /> Agg. Volume
-                      </span>
-                      <div className="text-base font-mono font-bold text-slate-200 tabular-nums">
-                        {item.total_volume.toLocaleString(undefined, { maximumFractionDigits: 1 })} <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{item.symbol.replace('USDT','')}</span>
-                      </div>
-                    </div>
-                    <div className="text-right space-y-1">
-                      <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Strategy Rank</span>
-                      <div className="text-base font-mono font-black text-blue-400 tabular-nums">
-                        #{Math.floor(item.trade_count / 100).toLocaleString()} <span className="text-[10px] text-slate-500 font-bold">PTS</span>
-                      </div>
-                    </div>
-                  </div>
-                </HoverGlowCard>
-              );
-            })}
+          {/* Top-Right: Global Indices List */}
+          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+            <TVWidget 
+              src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              config={{
+                "colorTheme": "dark",
+                "dateRange": "12M",
+                "showChart": true,
+                "locale": "th",
+                "width": "100%",
+                "height": "100%",
+                "isTransparent": true,
+                "showSymbolLogo": true,
+                "showFloatingTooltip": true,
+                "plotLineColorGrowing": "rgba(41, 98, 255, 1)",
+                "plotLineColorFalling": "rgba(41, 98, 255, 1)",
+                "gridLineColor": "rgba(240, 243, 250, 0)",
+                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "belowLineFillColorGrowing": "rgba(41, 98, 255, 0.12)",
+                "belowLineFillColorFalling": "rgba(41, 98, 255, 0.12)",
+                "belowLineFillColorGrowingBottom": "rgba(41, 98, 255, 0)",
+                "belowLineFillColorFallingBottom": "rgba(41, 98, 255, 0)",
+                "symbolActiveColor": "rgba(41, 98, 255, 0.12)",
+                "tabs": [
+                  {
+                    "title": "ดัชนีหลักโลก",
+                    "symbols": [
+                      { "s": "FOREXCOM:SPXUSD", "d": "S&P 500" },
+                      { "s": "FOREXCOM:NSXUSD", "d": "NASDAQ 100" },
+                      { "s": "FOREXCOM:DJI", "d": "DOW JONES" },
+                      { "s": "OANDA:JP225USD", "d": "JAPAN 225" },
+                      { "s": "OANDA:UK100GBP", "d": "FTSE 100" },
+                      { "s": "OANDA:EU50EUR", "d": "EURO STOXX 50" }
+                    ],
+                    "originalTitle": "Indices"
+                  }
+                ]
+              }}
+            />
           </div>
-        )}
+        </div>
+
+        {/* Bottom Row: Crypto, FX, US Tech */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" style={{ minHeight: '520px' }}>
+          {/* Bottom-Left: Crypto Macro */}
+          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+            <TVWidget 
+              src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              config={{
+                "colorTheme": "dark",
+                "dateRange": "1M",
+                "showChart": true,
+                "locale": "th",
+                "width": "100%",
+                "height": "100%",
+                "isTransparent": true,
+                "showSymbolLogo": true,
+                "showFloatingTooltip": true,
+                "plotLineColorGrowing": "rgba(41, 98, 255, 1)",
+                "plotLineColorFalling": "rgba(41, 98, 255, 1)",
+                "gridLineColor": "rgba(240, 243, 250, 0)",
+                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "belowLineFillColorGrowing": "rgba(41, 98, 255, 0.12)",
+                "belowLineFillColorFalling": "rgba(41, 98, 255, 0.12)",
+                "belowLineFillColorGrowingBottom": "rgba(41, 98, 255, 0)",
+                "belowLineFillColorFallingBottom": "rgba(41, 98, 255, 0)",
+                "symbolActiveColor": "rgba(41, 98, 255, 0.12)",
+                "tabs": [
+                  {
+                    "title": "เจาะลึก คริปโต",
+                    "symbols": [
+                      { "s": "CRYPTOCAP:TOTAL", "d": "Market Cap กองรวม" },
+                      { "s": "CRYPTOCAP:BTC.D", "d": "Bitcoin Dominance" },
+                      { "s": "BINANCE:BTCUSDT", "d": "Bitcoin" },
+                      { "s": "BINANCE:ETHUSDT", "d": "Ethereum" },
+                      { "s": "BINANCE:SOLUSDT", "d": "Solana" }
+                    ],
+                    "originalTitle": "Crypto"
+                  }
+                ]
+              }}
+            />
+          </div>
+
+          {/* Bottom-Middle: FX & Commodities */}
+          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+            <TVWidget 
+              src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              config={{
+                "colorTheme": "dark",
+                "dateRange": "1M",
+                "showChart": true,
+                "locale": "th",
+                "width": "100%",
+                "height": "100%",
+                "isTransparent": true,
+                "showSymbolLogo": true,
+                "showFloatingTooltip": true,
+                "plotLineColorGrowing": "rgba(16, 185, 129, 1)",
+                "plotLineColorFalling": "rgba(244, 63, 94, 1)",
+                "gridLineColor": "rgba(240, 243, 250, 0)",
+                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "belowLineFillColorGrowing": "rgba(16, 185, 129, 0.12)",
+                "belowLineFillColorFalling": "rgba(244, 63, 94, 0.12)",
+                "belowLineFillColorGrowingBottom": "rgba(16, 185, 129, 0)",
+                "belowLineFillColorFallingBottom": "rgba(244, 63, 94, 0)",
+                "symbolActiveColor": "rgba(41, 98, 255, 0.12)",
+                "tabs": [
+                  {
+                    "title": "FX & สินค้าโภคภัณฑ์",
+                    "symbols": [
+                      { "s": "FX_IDC:USDTHB", "d": "USD ต่อ THB" },
+                      { "s": "OANDA:XAUUSD", "d": "ทองคำตลาดโลก" },
+                      { "s": "OANDA:NATGASUSD", "d": "ก๊าซธรรมชาติ" },
+                      { "s": "OANDA:XCUUSD", "d": "ทองแดง" },
+                      { "s": "TVC:USOIL", "d": "น้ำมันดิบครูด (WTI)" }
+                    ]
+                  }
+                ]
+              }}
+            />
+          </div>
+
+          {/* Bottom-Right: US Tech & Top Stocks */}
+          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+            <TVWidget 
+              src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              config={{
+                "colorTheme": "dark",
+                "dateRange": "1M",
+                "showChart": true,
+                "locale": "th",
+                "width": "100%",
+                "height": "100%",
+                "isTransparent": true,
+                "showSymbolLogo": true,
+                "showFloatingTooltip": true,
+                "plotLineColorGrowing": "rgba(245, 158, 11, 1)",
+                "plotLineColorFalling": "rgba(245, 158, 11, 1)",
+                "gridLineColor": "rgba(240, 243, 250, 0)",
+                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "belowLineFillColorGrowing": "rgba(245, 158, 11, 0.12)",
+                "belowLineFillColorFalling": "rgba(245, 158, 11, 0.12)",
+                "belowLineFillColorGrowingBottom": "rgba(245, 158, 11, 0)",
+                "belowLineFillColorFallingBottom": "rgba(245, 158, 11, 0)",
+                "symbolActiveColor": "rgba(41, 98, 255, 0.12)",
+                "tabs": [
+                  {
+                    "title": "หุ้น Big Tech สหรัฐฯ",
+                    "symbols": [
+                      { "s": "NASDAQ:AAPL", "d": "Apple Inc." },
+                      { "s": "NASDAQ:MSFT", "d": "Microsoft Corp" },
+                      { "s": "NASDAQ:NVDA", "d": "NVIDIA Corp" },
+                      { "s": "NASDAQ:TSLA", "d": "Tesla Inc." },
+                      { "s": "NASDAQ:GOOGL", "d": "Alphabet (Google)" }
+                    ]
+                  }
+                ]
+              }}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );
 };
+

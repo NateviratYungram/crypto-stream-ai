@@ -44,7 +44,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-DRY_RUN = False  # Set to False to actually push to Google Cloud
+DRY_RUN = True   # ⚠️  KEEP TRUE until GCP project is intentionally enabled.
+                 # Changing to False will upload to GCS + load into BigQuery
+                 # and WILL incur real costs. Requires gcp-key.json with valid credentials.
 
 GCP_CONN_ID = 'google_cloud_default'
 # Reads from Airflow Variable; falls back to 'crypto-stream-lake-01' if not set

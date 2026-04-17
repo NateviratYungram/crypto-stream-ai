@@ -30,8 +30,8 @@ x-airflow-common: &airflow-common
   image: apache/airflow:2.8.1
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://user:password@postgres:5432/airflow
-    AIRFLOW__CORE__FERNET_KEY: 'ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg='
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW_FERNET_KEY:-ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=}'
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
@@ -40,7 +40,7 @@ x-airflow-common: &airflow-common
     AIRFLOW_CONN_KAFKA_DEFAULT: kafka://kafka:29092
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-key.json
     # pip packages needed by DAGs
-    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow apache-airflow-providers-google"
+    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow apache-airflow-providers-google multitasking==0.0.9 yfinance==0.2.36"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./datalake:/opt/datalake
@@ -160,19 +160,38 @@ services:
       - crypto-network
 
   # ── LAYER 2: STORAGE ────────────────────────────────────────
+
+  # Redis: in-memory cache for frequent AI queries (market regime, features,
+  # sentiment). Reduces PostgreSQL load and cuts AI response latency from
+  # ~300ms to ~5ms for repeated questions.
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    hostname: redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - crypto-network
+
   # Banking Relevance: PostgreSQL acts as "Hot Storage" for recent
   # enriched trades, DQ audit logs, and EOD summaries — all of which
   # are queryable by the MCP AI Agent and Airflow DAGs.
   postgres:
-    image: postgres:15
+    image: pgvector/pgvector:pg15   # postgres:15 + pgvector extension pre-installed
     hostname: postgres
     container_name: postgres
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: crypto_stream_db
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}
+      POSTGRES_DB: ${POSTGRES_DB:-crypto_stream_db}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # init_db.sh creates the 'airflow' database on first boot
@@ -263,6 +282,39 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - crypto-network
+
+  # yfinance-ingester: Polls Yahoo Finance every 15 min for Macro/Stock OHLCV
+  # and persists to market_ohlcv table so the AI agent can answer from DB
+  # instead of making live API calls (faster, more reliable).
+  yfinance-ingester:
+    build:
+      context: .
+      dockerfile: infrastructure/flink/Dockerfile
+    container_name: yfinance-ingester
+    # WORKDIR in the Flink image is /opt/flink, so we set PYTHONPATH to /opt
+    # so that both `services` (/opt/services) and `intelligence` (/opt/intelligence)
+    # packages are importable when running `python -m services.yfinance_ingestion_service`.
+    command: ["python", "-m", "services.yfinance_ingestion_service"]
+    environment:
+      PYTHONPATH: /opt
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: crypto_stream_db
+      DB_USER: user
+      DB_PASS: password
+      YF_MACRO_POLL_INTERVAL: "900"    # 15 min
+      YF_STOCKS_POLL_INTERVAL: "86400" # 24 h
+      YF_BATCH_SIZE: "20"
+      YF_BATCH_SLEEP: "2"
+    volumes:
+      - ./services:/opt/services
+      - ./intelligence:/opt/intelligence
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - crypto-network
@@ -374,8 +426,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: cryptostream_admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-CHANGE_ME_IN_ENV}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/cryptostream_overview.json
       GF_SERVER_ROOT_URL: "http://localhost:3000"
@@ -425,7 +477,7 @@ services:
     ports:
       - "9187:9187"
     environment:
-      DATA_SOURCE_NAME: "postgresql://user:password@postgres:5432/crypto_stream_db?sslmode=disable"
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}@postgres:5432/${POSTGRES_DB:-crypto_stream_db}?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy

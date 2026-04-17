@@ -42,7 +42,7 @@ export const RiskAuditsView = () => {
     <div className="flex-1 p-8 overflow-y-auto space-y-10 custom-scrollbar">
       <header className="flex justify-between items-center border-b border-white/5 pb-8">
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-indigo-500 font-bold text-[10px] uppercase tracking-[0.2em]">
+          <div className="flex items-center gap-2 text-indigo-500 font-bold text-xs uppercase tracking-[0.2em]">
              <div className={`w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)] ${
                 wsStatus === 'connected' ? 'bg-indigo-500 status-breath' : 'bg-slate-700'
              }`} />
@@ -57,7 +57,7 @@ export const RiskAuditsView = () => {
           {wsStatus === 'connected' && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
               <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-              <span className="text-[10px] text-emerald-400 font-black uppercase tracking-tighter">DLQ MONITOR ACTIVE</span>
+              <span className="text-xs text-emerald-400 font-black uppercase tracking-tighter">DLQ MONITOR ACTIVE</span>
             </div>
           )}
           <button 
@@ -92,15 +92,15 @@ export const RiskAuditsView = () => {
                   <div className="flex-1 space-y-3">
                     <div className="flex justify-between items-center">
                       <div className="flex items-center gap-3">
-                         <span className={`text-[10px] font-black uppercase tracking-[0.15em] px-2 py-0.5 rounded ${
+                         <span className={`text-xs font-black uppercase tracking-[0.15em] px-2 py-0.5 rounded ${
                             log.type === 'DQ_ERROR' ? 'bg-rose-500/10 text-rose-400' : 'bg-blue-500/10 text-blue-400'
                          }`}>
                             {log.type === 'DQ_ERROR' ? 'DQ VIOLATION' : 'AI TRACE'}
                          </span>
                          <div className="h-1 w-1 rounded-full bg-slate-700" />
-                         <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Node: Delta-01</span>
+                         <span className="text-xs text-slate-500 font-bold uppercase tracking-widest">Node: Delta-01</span>
                       </div>
-                      <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono font-bold">
+                      <div className="flex items-center gap-2 text-xs text-slate-500 font-mono font-bold">
                         <Clock className="w-3.5 h-3.5 opacity-50" />
                         {new Date(log.time).toLocaleString()}
                       </div>
@@ -113,7 +113,7 @@ export const RiskAuditsView = () => {
                        </p>
                     </div>
 
-                    <div className="flex items-center gap-6 text-[10px] font-bold">
+                    <div className="flex items-center gap-6 text-xs font-bold">
                       <span className="flex items-center gap-1.5 text-emerald-500/80">
                         <ShieldCheck className="w-3.5 h-3.5" />
                         VERIFIED ENCLAVE

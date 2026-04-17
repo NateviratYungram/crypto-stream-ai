@@ -71,11 +71,16 @@ export const IntelligenceHub = () => {
       {/* Header */}
       <header className="flex justify-between items-center border-b border-white/5 pb-8 relative z-10">
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-blue-400 font-bold text-[10px] uppercase tracking-[0.2em]">
+          <div className="flex items-center gap-2 text-blue-400 font-bold text-xs uppercase tracking-[0.2em]">
             <Brain className="w-3.5 h-3.5 glow-bloom" />
             Predictive Intelligence Engine
           </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">Strategy Intelligence Hub</h2>
+            <h1 className="text-3xl font-black text-white tracking-tighter uppercase italic flex items-center gap-3">
+              Intelligence Hub
+              <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-lg not-italic">
+                DEMO MODE
+              </span>
+            </h1>
           <p className="text-slate-500 text-sm font-medium">
             {isRetail ? 'ระบบ AI วิเคราะห์ความน่าจะเป็นและทิศทางตลาด (ไม่ใช่คำแนะนำทางการเงิน)' : 'AI signals derived from live market_metrics + whale flow data.'}
           </p>
@@ -84,7 +89,7 @@ export const IntelligenceHub = () => {
         <div className={`flex items-center gap-3 px-5 py-3 rounded-2xl border ${regime.bg} ${regime.border}`}>
           <Cpu className={`w-4 h-4 ${regime.color}`} />
           <div>
-            <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">
+            <p className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
               <FinancialTerm term="Regime">Market Regime</FinancialTerm>
             </p>
             <p className={`text-sm font-black ${regime.color} uppercase tracking-tight`}><FinancialTerm term={regime.label}>{regime.label}</FinancialTerm></p>
@@ -101,14 +106,14 @@ export const IntelligenceHub = () => {
               <div className="flex justify-between items-start mb-6">
                 <div>
                   <h3 className="text-xl font-black text-white font-mono">{asset.symbol}</h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">{asset.status}</p>
+                  <p className="text-xs text-slate-400 font-bold uppercase tracking-widest mt-1">{asset.status}</p>
                 </div>
                 <div className="flex flex-col items-end">
                    <div className="p-2 bg-blue-600/10 rounded-xl border border-blue-500/20 mb-1">
                      <Target className="w-4 h-4 text-blue-400" />
                    </div>
                    {!isRetail && (
-                     <span className="text-[8px] font-black text-slate-500 tracking-widest uppercase">Q-Score: {asset.quality}</span>
+                     <span className="text-xs font-black text-slate-500 tracking-widest uppercase">Q-Score: {asset.quality}</span>
                    )}
                 </div>
               </div>
@@ -134,14 +139,14 @@ export const IntelligenceHub = () => {
 
                 <div className="grid grid-cols-2 gap-4 pt-4 border-t border-white/5">
                   <div>
-                    <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Signal</p>
+                    <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest">Signal</p>
                     <p className={`text-sm font-black mt-1 ${
                       asset.direction === 'BUY' ? 'text-emerald-400' :
                       asset.direction === 'SELL' ? 'text-rose-400' : 'text-amber-400'
                     }`}>{asset.direction}</p>
                   </div>
                   <div>
-                    <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Delta</p>
+                    <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest">Delta</p>
                     <p className={`text-sm font-black font-mono mt-1 ${asset.delta >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {asset.delta >= 0 ? '+' : ''}{asset.delta.toFixed(3)}%
                     </p>
@@ -182,10 +187,10 @@ export const IntelligenceHub = () => {
                 { label: 'DQ Guard', ok: true },
               ].map((item, i) => (
                 <div key={i} className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{item.label}</span>
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{item.label}</span>
                   <div className={`flex items-center gap-1.5 ${item.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
                     <div className={`w-1.5 h-1.5 rounded-full ${item.ok ? 'bg-emerald-500 status-breath' : 'bg-rose-500 animate-pulse'}`} />
-                    <span className="text-[9px] font-black uppercase tracking-widest">{item.ok ? 'OK' : 'FAIL'}</span>
+                    <span className="text-[11px] font-black uppercase tracking-widest">{item.ok ? 'OK' : 'FAIL'}</span>
                   </div>
                 </div>
               ))}

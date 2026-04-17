@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, TrendingUp, BarChart3, MessageSquare, Shield, Brain, HelpCircle, RefreshCcw, Download } from 'lucide-react';
+import { Search, TrendingUp, BarChart3, MessageSquare, Shield, Brain, HelpCircle, RefreshCcw, Download, Newspaper } from 'lucide-react';
 import { useMode } from '../contexts/ModeContext';
 
 interface CommandItem {
@@ -27,6 +27,7 @@ export const CommandPalette = ({ open, onClose, onNavigate }: Props) => {
 
   const COMMANDS: CommandItem[] = [
     { id: 'trends', label: 'Market Trends', sublabel: 'Real-time price feed', icon: TrendingUp, category: 'Navigation', keywords: ['market', 'price', 'trend', 'btc', 'eth'], action: () => { onNavigate('Market Trends'); onClose(); } },
+    { id: 'sentiment', label: 'Sentiment Hub', sublabel: 'News & macro sentiment', icon: Newspaper, category: 'Navigation', keywords: ['news', 'sentiment', 'fear', 'greed', 'cnn', 'macro', 'ข่าว', 'เซนติเมนต์'], action: () => { onNavigate('Sentiment Hub'); onClose(); } },
     { id: 'intelligence', label: 'Intelligence Hub', sublabel: 'AI signals & regime detection', icon: Brain, category: 'Navigation', keywords: ['ai', 'signal', 'intelligence', 'regime', 'buy', 'sell'], action: () => { onNavigate('Intelligence Hub'); onClose(); } },
     { id: 'whale', label: 'Whale Tracker', sublabel: 'Institutional flow monitor', icon: BarChart3, category: 'Navigation', keywords: ['whale', 'flow', 'institutional', 'large', 'order'], action: () => { onNavigate('Whale Tracker'); onClose(); } },
     { id: 'risk', label: 'Risk Audits', sublabel: 'Pipeline health & DQ metrics', icon: Shield, category: 'Navigation', keywords: ['risk', 'audit', 'health', 'pipeline', 'dq'], action: () => { onNavigate('Risk Audits'); onClose(); } },
@@ -97,6 +98,10 @@ export const CommandPalette = ({ open, onClose, onNavigate }: Props) => {
             exit={{ opacity: 0, scale: 0.96, y: -10 }}
             transition={{ type: 'spring', stiffness: 500, damping: 35 }}
             className="fixed top-[20%] left-1/2 -translate-x-1/2 z-[9999] w-full max-w-lg"
+            data-testid="command-palette"
+            role="dialog"
+            aria-label="Command palette"
+            aria-modal="true"
           >
             <div className="bg-slate-900/95 backdrop-blur-3xl border border-white/10 rounded-[1.5rem] shadow-2xl shadow-black/60 overflow-hidden">
               {/* Search input */}
@@ -109,7 +114,7 @@ export const CommandPalette = ({ open, onClose, onNavigate }: Props) => {
                   placeholder="Search commands..."
                   className="flex-1 bg-transparent text-sm text-white placeholder:text-slate-500 font-bold focus:outline-none"
                 />
-                <kbd className="text-[9px] text-slate-600 font-black border border-slate-700 rounded px-1.5 py-0.5">ESC</kbd>
+                <kbd className="text-[11px] text-slate-600 font-black border border-slate-700 rounded px-1.5 py-0.5">ESC</kbd>
               </div>
 
               {/* Results */}
@@ -122,7 +127,7 @@ export const CommandPalette = ({ open, onClose, onNavigate }: Props) => {
                 ) : (
                   Object.entries(grouped).map(([cat, items]) => (
                     <div key={cat}>
-                      <p className="px-4 py-2 text-[9px] font-black text-slate-600 uppercase tracking-widest">{cat}</p>
+                      <p className="px-4 py-2 text-[11px] font-black text-slate-600 uppercase tracking-widest">{cat}</p>
                       {items.map((cmd) => {
                         const Icon = cmd.icon;
                         const globalIdx = filtered.indexOf(cmd);
@@ -141,10 +146,10 @@ export const CommandPalette = ({ open, onClose, onNavigate }: Props) => {
                             </div>
                             <div className="flex-1">
                               <p className="text-[12px] font-black">{cmd.label}</p>
-                              {cmd.sublabel && <p className="text-[10px] text-slate-500 font-medium">{cmd.sublabel}</p>}
+                              {cmd.sublabel && <p className="text-xs text-slate-500 font-medium">{cmd.sublabel}</p>}
                             </div>
                             {isSelected && (
-                              <kbd className="text-[9px] text-blue-400 font-black border border-blue-500/30 rounded px-1.5 py-0.5">↵</kbd>
+                              <kbd className="text-[11px] text-blue-400 font-black border border-blue-500/30 rounded px-1.5 py-0.5">↵</kbd>
                             )}
                           </button>
                         );
@@ -157,12 +162,12 @@ export const CommandPalette = ({ open, onClose, onNavigate }: Props) => {
               {/* Footer */}
               <div className="px-4 py-3 border-t border-white/5 flex items-center gap-4">
                 <div className="flex items-center gap-1.5">
-                  <kbd className="text-[9px] text-slate-600 font-black border border-slate-700 rounded px-1 py-0.5">↑↓</kbd>
-                  <span className="text-[9px] text-slate-600 font-bold">Navigate</span>
+                  <kbd className="text-[11px] text-slate-600 font-black border border-slate-700 rounded px-1 py-0.5">↑↓</kbd>
+                  <span className="text-[11px] text-slate-600 font-bold">Navigate</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <kbd className="text-[9px] text-slate-600 font-black border border-slate-700 rounded px-1 py-0.5">↵</kbd>
-                  <span className="text-[9px] text-slate-600 font-bold">Select</span>
+                  <kbd className="text-[11px] text-slate-600 font-black border border-slate-700 rounded px-1 py-0.5">↵</kbd>
+                  <span className="text-[11px] text-slate-600 font-bold">Select</span>
                 </div>
               </div>
             </div>

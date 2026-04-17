@@ -1,5 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 :root {
   --bg-base: #020617;
@@ -28,6 +29,41 @@
 }
 
 @layer components {
+  /* ── Markdown prose overrides for dark AI chat UI ── */
+  .prose {
+    --tw-prose-body: theme(colors.slate.300);
+    --tw-prose-headings: theme(colors.white);
+    --tw-prose-lead: theme(colors.slate.400);
+    --tw-prose-links: theme(colors.blue.400);
+    --tw-prose-bold: theme(colors.white);
+    --tw-prose-counters: theme(colors.slate.400);
+    --tw-prose-bullets: theme(colors.slate.500);
+    --tw-prose-hr: theme(colors.white / 0.1);
+    --tw-prose-quotes: theme(colors.slate.300);
+    --tw-prose-quote-borders: theme(colors.blue.500 / 0.4);
+    --tw-prose-captions: theme(colors.slate.500);
+    --tw-prose-code: theme(colors.blue.300);
+    --tw-prose-pre-code: theme(colors.slate.200);
+    --tw-prose-pre-bg: theme(colors.slate.950 / 0.8);
+    --tw-prose-th-borders: theme(colors.white / 0.1);
+    --tw-prose-td-borders: theme(colors.white / 0.05);
+    font-size: 0.875rem;
+    line-height: 1.75;
+  }
+  .prose h1, .prose h2, .prose h3 { margin-top: 1.25em; margin-bottom: 0.5em; }
+  .prose p { margin-top: 0.5em; margin-bottom: 0.5em; }
+  .prose ul, .prose ol { padding-left: 1.25em; }
+  .prose li { margin-top: 0.25em; margin-bottom: 0.25em; }
+  .prose code { background: rgba(59,130,246,0.1); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.8em; }
+  .prose pre { background: rgba(2,6,23,0.8); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 1em; overflow-x: auto; }
+  .prose pre code { background: transparent; padding: 0; }
+  .prose strong { color: #fff; }
+  .prose table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .prose th { background: rgba(255,255,255,0.05); padding: 0.5em 0.75em; text-align: left; }
+  .prose td { padding: 0.4em 0.75em; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .prose blockquote { border-left: 3px solid rgba(59,130,246,0.4); padding-left: 1em; color: theme(colors.slate.400); font-style: italic; }
+  .prose hr { border-color: rgba(255,255,255,0.08); }
+
   .font-mono {
     font-family: 'JetBrains Mono', monospace;
   }
@@ -92,6 +128,24 @@
     background-size: 100% 4px;
     pointer-events: none;
   }
+
+  .animate-marquee-slow {
+    animation: marquee 30s linear infinite;
+  }
+
+  @keyframes marquee {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+  }
+
+  .task-check-fade {
+    animation: check-fade 0.5s ease-out forwards;
+  }
+
+  @keyframes check-fade {
+    from { opacity: 0; transform: scale(0.5); }
+    to { opacity: 1; transform: scale(1); }
+  }
 }
 
 /* Tactical Terminal Prose Overrides */
@@ -148,6 +202,42 @@
 .prose code::before, .prose code::after {
   content: "" !important;
 }
+
+  .field-label {
+    @apply block text-xs font-black uppercase tracking-widest text-slate-400 mb-1.5;
+  }
+
+  .safe-pb {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* ── Trade Confirmation Block ── */
+  .confirm-block {
+    @apply my-4 rounded-2xl border border-blue-500/30 bg-blue-950/30 overflow-hidden;
+  }
+  .confirm-label {
+    @apply block px-4 py-2 text-[10px] font-black uppercase tracking-widest text-blue-400/70 border-b border-blue-500/10;
+  }
+  .confirm-inner {
+    @apply flex items-center justify-between gap-3 px-4 py-3;
+  }
+  .confirm-code {
+    @apply flex-1 text-sm font-black text-blue-300 font-mono tracking-wider bg-transparent border-none;
+  }
+  .confirm-copy-btn {
+    @apply shrink-0 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-black uppercase tracking-widest transition-all active:scale-95 cursor-pointer;
+  }
+
+  /* ── Generic Code Block with Copy button ── */
+  .code-block-wrap {
+    @apply relative my-3;
+  }
+  .code-copy-btn {
+    @apply absolute top-2 right-2 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-slate-400 hover:text-white text-xs font-black transition-all cursor-pointer z-10;
+  }
+  .code-block-wrap pre {
+    @apply pr-10;
+  }
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {

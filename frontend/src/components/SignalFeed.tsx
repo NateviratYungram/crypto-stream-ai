@@ -52,7 +52,7 @@ export const SignalFeed = () => {
           <Zap className="w-4 h-4 text-yellow-400 glow-bloom" />
           <h3 className="text-[11px] font-black text-white uppercase tracking-widest">AI Signal Feed</h3>
         </div>
-        <span className="text-[9px] font-bold text-slate-600 uppercase tracking-widest">
+        <span className="text-[11px] font-bold text-slate-600 uppercase tracking-widest">
           {lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
         </span>
       </div>
@@ -64,8 +64,8 @@ export const SignalFeed = () => {
           ))
         ) : signals.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-32 text-center">
-            <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">No signals generated</p>
-            <p className="text-[9px] text-slate-700 mt-1">Insufficient data in last 10 minutes</p>
+            <p className="text-xs text-slate-600 font-bold uppercase tracking-widest">No signals generated</p>
+            <p className="text-[11px] text-slate-700 mt-1">Insufficient data in last 10 minutes</p>
           </div>
         ) : (
           <AnimatePresence mode="popLayout">
@@ -87,7 +87,7 @@ export const SignalFeed = () => {
                       </div>
                       <div>
                         <span className="text-sm font-black text-white tracking-tight">{signal.symbol}</span>
-                        <span className={`ml-2 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${cfg.bg} ${cfg.text} border ${cfg.border}`}>
+                        <span className={`ml-2 text-[11px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${cfg.bg} ${cfg.text} border ${cfg.border}`}>
                           {cfg.label}
                         </span>
                       </div>
@@ -110,16 +110,16 @@ export const SignalFeed = () => {
                     </div>
                   </div>
 
-                  <p className="text-[10px] text-slate-400 leading-relaxed font-medium line-clamp-2">{signal.reason}</p>
+                  <p className="text-xs text-slate-400 leading-relaxed font-medium line-clamp-2">{signal.reason}</p>
 
                   <div className="flex items-center gap-4 mt-2">
-                    <span className="text-[9px] font-mono text-slate-500">
+                    <span className="text-[11px] font-mono text-slate-500">
                       ${signal.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
-                    <span className={`text-[9px] font-bold font-mono ${signal.delta_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                      {signal.delta_pct >= 0 ? '+' : ''}{signal.delta_pct.toFixed(3)}%
+                    <span className={`text-[11px] font-bold font-mono ${(signal.delta_pct ?? 0) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      {(signal.delta_pct ?? 0) >= 0 ? '+' : ''}{(signal.delta_pct ?? 0).toFixed(3)}%
                     </span>
-                    <span className="text-[9px] text-slate-600 font-bold">Vol ×{signal.vol_surge}</span>
+                    <span className="text-[11px] text-slate-600 font-bold">Vol ×{signal.vol_surge ?? 1.0}</span>
                   </div>
 
                   {/* Shine effect on hover */}

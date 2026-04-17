@@ -3,215 +3,412 @@ import sys
 import json
 import requests
 from google import genai
+from google.genai import types
 from dotenv import load_dotenv
-
-# โหลด Environment Variables จากไฟล์ .env อัตโนมัติ
+# Load environment variables
 load_dotenv()
 
-# ==========================================
-# 1. ตั้งค่าการเชื่อมต่อ
-# ==========================================
-# ดึง API Key จาก Environment (ต้อง set ก่อนรัน)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-MCP_API_KEY = os.environ.get("MCP_API_KEY", "CHANGE_ME_LOCAL_DEV_KEY")
-MCP_URL = "http://localhost:8000"
+MODEL_ID = os.environ.get("MODEL_ID", "gemini-2.5-flash")
 
-# เช็คว่ามี Gemini API Key หรือยัง
 if not GEMINI_API_KEY:
-    print("❌ ไม่พบ GEMINI_API_KEY!")
-    print("กรุณาสร้างไฟล์ .env ก่อนรัน (ดูตัวอย่างที่ .env.example)")
+    print("❌ MISSING GEMINI_API_KEY in .env")
     sys.exit(1)
 
-# เริ่มต้นการทำงานของ Gemini ด้วย SDK แบบใหม่
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_ID = 'gemini-2.5-flash'
 
 # ==========================================
-# 2. ฟังก์ชันคุยกับ MCP Server
+# Agent Configuration
 # ==========================================
-def get_schema():
-    """ถาม MCP ว่าตอนนี้มีตารางและคอลัมน์อะไรให้ AI ใช้ได้บ้าง"""
-    headers = {"X-API-Key": MCP_API_KEY}
+def execute_tool(fn_name, fn_args):
+    """Safe tool executor for CLI agent."""
     try:
-        response = requests.get(f"{MCP_URL}/api/v1/schemas", headers=headers)
-        if response.status_code != 200:
-            print(f"❌ ดึง Schema ไม่ได้ (ลืมเปิด MCP Server หรือเปล่า?): {response.text}")
-            return None
-        return response.json()
+        from intelligence.tools import market_tools
+        func = getattr(market_tools, fn_name, None)
+        
+        if not func:
+            return {"error": f"Tool {fn_name} not found"}
+            
+        if isinstance(fn_args, dict):
+            return func(**fn_args)
+        return func()
     except Exception as e:
-        print(f"❌ เชื่อมต่อ MCP Server ไม่ได้: {e}")
-        return None
+        return {"error": str(e)}
 
-def execute_sql(sql: str):
-    """ส่งคำสั่ง SQL ที่ AI คิดได้ ไปรันที่ MCP Server"""
-    headers = {"X-API-Key": MCP_API_KEY, "Content-Type": "application/json"}
-    payload = {"sql": sql, "max_rows": 100} # จำกัดให้ดึงข้อมูลได้สูงสุด 100 แถวเพื่อความปลอดภัย
-    response = requests.post(f"{MCP_URL}/api/v1/query", headers=headers, json=payload)
-    if response.status_code != 200:
-       return {"error": response.text}
-    return response.json()
+gemini_tools = [types.Tool(function_declarations=[
+    types.FunctionDeclaration(
+        name="get_market_analysis",
+        description="Fetch technical indicators and price action for a symbol.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(type="STRING", description="Ticker symbol (e.g. BTC, GOLD, NVDA)"),
+                "timeframe": types.Schema(type="STRING", description="Timeframe (1m, 5m, 15m, 1h, 1d)"),
+                "asset_class": types.Schema(type="STRING", description="Asset type (CRYPTO, STOCK, MACRO)")
+            },
+            required=["symbol"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_macro_sentiment",
+        description="Get overall market regime and sentiment scores.",
+        parameters=types.Schema(type="OBJECT", properties={})
+    ),
+    types.FunctionDeclaration(
+        name="get_news_impact",
+        description="Fetch the latest news and calculate market impact for a symbol.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(type="STRING", description="Ticker symbol")
+            },
+            required=["symbol"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="prepare_mt5_trade_draft",
+        description="Step 1: Draft a trade and get a Draft ID. MUST show to user.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(type="STRING", description="MT5 symbol"),
+                "side": types.Schema(type="STRING", description="BUY/SELL"),
+                "volume": types.Schema(type="NUMBER", description="Lot size"),
+            },
+            required=["symbol", "side", "volume"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="execute_approved_mt5_trade",
+        description="Step 2: Execute trade AFTER user confirms Draft ID.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "draft_id": types.Schema(type="STRING", description="Confirmed ID")
+            },
+            required=["draft_id"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_market_opportunities",
+        description="Scan for top movers. asset_class='STOCK' or 'CRYPTO'.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "asset_class": types.Schema(type="STRING", description="'STOCK' or 'CRYPTO'")
+            },
+            required=["asset_class"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="calculate_math_expression",
+        description="Safely evaluate a mathematical expression.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "expression": types.Schema(type="STRING", description="Math expression to evaluate")
+            },
+            required=["expression"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="set_smart_alert",
+        description="Set a background monitoring alert for a specific market condition.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "condition": types.Schema(type="STRING", description="Condition to monitor"),
+                "target_symbol": types.Schema(type="STRING", description="Symbol to monitor"),
+                "message": types.Schema(type="STRING", description="Message to send when triggered")
+            },
+            required=["condition", "target_symbol", "message"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_user_portfolio",
+        description="Retrieve MT5 portfolio context aligned to a specific user.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "user_id": types.Schema(type="STRING", description="Optional user ID, defaults to 'default'")
+            }
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_onchain_flow",
+        description="Fetch Whale money flows and exchange net inflows for Crypto.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(type="STRING", description="Token symbol e.g., 'BTC'")
+            },
+            required=["symbol"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_options_flow",
+        description="Fetch Put/Call Ratio and Gamma Exposure (GEX) for TradFi/Crypto options.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(type="STRING", description="Symbol e.g., 'NVDA', 'BTC'")
+            },
+            required=["symbol"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="analyze_trade_performance",
+        description="Analyze recent closed trades to provide an automated AI journal/review of performance.",
+        parameters=types.Schema(type="OBJECT", properties={})
+    ),
+    types.FunctionDeclaration(
+        name="get_social_sentiment",
+        description="Scan social media hype, Reddit mentions, and influence scores for a specific token or asset.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "keyword": types.Schema(type="STRING", description="Keyword or ticker to scan")
+            },
+            required=["keyword"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_trading_tactics",
+        description=(
+            "Institutional Intelligence: Aggregates SMC, Trend, and Mean Reversion strategies "
+            "to provide explicit entry/SL/TP 'moves' for a given symbol. "
+            "Supports: CRYPTO (BTC, ETH, SOL, BNB, XRP, DOGE, AVAX, LINK, ADA, DOT, MATIC), "
+            "COMMODITIES (GOLD/XAUUSD, SILVER/XAGUSD, OIL/USOIL), "
+            "INDICES (NASDAQ/US100, SP500/US500, DOW/US30, GER40, UK100), "
+            "FOREX (EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF). "
+            "Pass the short symbol (e.g. 'BTC', 'GOLD', 'OIL', 'NASDAQ', 'EURUSD')."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(
+                    type="STRING",
+                    description="Short symbol: BTC, ETH, GOLD, OIL, NASDAQ, SP500, EURUSD, GBPUSD, etc."
+                )
+            },
+            required=["symbol"]
+        )
+    ),
+    # ── Phase 14 New Tools ────────────────────────────────────
+    types.FunctionDeclaration(
+        name="get_fear_greed_index",
+        description="Return Crypto & Stock Fear & Greed Index scores. Use for overall sentiment check.",
+        parameters=types.Schema(type="OBJECT", properties={})
+    ),
+    types.FunctionDeclaration(
+        name="get_economic_calendar",
+        description="Fetch upcoming high-impact macro events (Fed, CPI, NFP, GDP, earnings).",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "days_ahead": types.Schema(type="INTEGER", description="Look-ahead days (default 7)")
+            }
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_liquidation_heatmap",
+        description="Fetch crypto liquidation clusters — levels where mass long/short liquidations occur.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(type="STRING", description="Crypto symbol e.g. BTC, ETH")
+            },
+            required=["symbol"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="scan_multi_timeframe",
+        description="Run analysis across 5m/15m/1h/4h/1d and return a confluence score.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol":      types.Schema(type="STRING", description="Ticker symbol"),
+                "asset_class": types.Schema(type="STRING", description="CRYPTO | STOCK | MACRO")
+            },
+            required=["symbol"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_portfolio_correlation",
+        description="Compute pairwise correlation matrix and flag concentration risk (>0.85).",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbols": types.Schema(type="ARRAY", description="List of symbols",
+                                        items=types.Schema(type="STRING")),
+                "period":  types.Schema(type="STRING", description="1mo | 3mo | 6mo | 1y")
+            }
+        )
+    ),
+    types.FunctionDeclaration(
+        name="generate_weekly_report",
+        description="Generate AI weekly performance report with win rate, P&L, and recommendations.",
+        parameters=types.Schema(type="OBJECT", properties={})
+    ),
+    types.FunctionDeclaration(
+        name="paper_trade",
+        description="Simulate trades without real capital. action: OPEN | CLOSE | LIST | RESET",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "action":   types.Schema(type="STRING", description="OPEN | CLOSE | LIST | RESET"),
+                "symbol":   types.Schema(type="STRING", description="Ticker symbol"),
+                "side":     types.Schema(type="STRING", description="BUY or SELL"),
+                "volume":   types.Schema(type="NUMBER", description="Lot/unit size"),
+                "price":    types.Schema(type="NUMBER", description="Entry price (optional)"),
+                "trade_id": types.Schema(type="STRING", description="Paper trade ID for CLOSE")
+            },
+            required=["action"]
+        )
+    ),
+    # ── Phase 15 New Tools ────────────────────────────────────
+    types.FunctionDeclaration(
+        name="get_funding_rates",
+        description="Fetch perpetual futures funding rates for crypto. Positive = longs pay shorts (bearish signal). Negative = shorts pay longs (bullish signal).",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbols": types.Schema(type="ARRAY", description="List of symbols e.g. ['BTC','ETH']. Empty = top 10.",
+                                        items=types.Schema(type="STRING"))
+            }
+        )
+    ),
+    types.FunctionDeclaration(
+        name="suggest_portfolio_rebalance",
+        description="Analyze current portfolio weights vs target allocation and suggest rebalancing trades.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "risk_profile": types.Schema(type="STRING", description="conservative | balanced | aggressive")
+            }
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_iv_rank",
+        description="Return Implied Volatility Rank (IVR) and Historical Volatility percentile for a symbol to gauge options premium.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "symbol": types.Schema(type="STRING", description="Ticker symbol e.g. BTC, NVDA")
+            },
+            required=["symbol"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="get_etf_flows",
+        description="Fetch ETF fund flow data — AUM changes, inflows/outflows for major ETFs (BTC spot ETFs, QQQ, SPY, GLD).",
+        parameters=types.Schema(type="OBJECT", properties={})
+    ),
+    types.FunctionDeclaration(
+        name="run_custom_screener",
+        description="Run a custom market screener with filters: RSI range, volume spike, % from 52w high, weekly return.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "universe":      types.Schema(type="STRING", description="NASDAQ100 | SP500 | CRYPTO"),
+                "rsi_min":       types.Schema(type="NUMBER", description="Min RSI threshold"),
+                "rsi_max":       types.Schema(type="NUMBER", description="Max RSI threshold"),
+                "vol_spike_min": types.Schema(type="NUMBER", description="Minimum volume spike multiplier"),
+                "pct_from_high": types.Schema(type="NUMBER", description="Max % below 52w high"),
+                "min_return_1w": types.Schema(type="NUMBER", description="Min 1-week return %"),
+                "max_return_1w": types.Schema(type="NUMBER", description="Max 1-week return %"),
+            }
+        )
+    ),
+])]
 
-# ==========================================
-# 3. ห้องแชทอัจฉริยะ (Main Chat)
-# ==========================================
+AGENT_SYSTEM_PROMPT = """
+YOU ARE THE 'CRYPTOSTREAM AI' MASTER AGENT — A SENIOR QUANT STRATEGIST.
+Your goal is to provide professional, data-driven trading advice using institutional tactics.
+
+SAFETY PROTOCOL (HUMAN-IN-THE-LOOP):
+- You are STRICTLY FORBIDDEN from executing trades directly.
+- STEP 1: Call `get_trading_tactics` to identify institutional moves.
+- STEP 2: Call `prepare_mt5_trade_draft` if a clear opportunity exists.
+- STEP 3: Present the Draft ID and ask user to confirm with "ยืนยัน [ID]".
+- STEP 4: Only call `execute_approved_mt5_trade` AFTER confirmation.
+
+STRICT RESPONSE STRUCTURE:
+1. 🎯 **วิเคราะห์ท่าเทรด (Tactical Analysis)**: Summary from `get_trading_tactics` (SMC Shark, Trend Sentinel, Mean Reversion).
+2. 📊 **แนวโน้ม (Trend)**: Higher timeframe market structure.
+3. 📰 **Intel**: Relevant news sentiment using `get_news_impact`.
+4. 🎯 **จุดเข้า (Entry Zone)**: Price range based on Order Blocks/FVG.
+5. 🛑 **Stop Loss (SL)**: Invalidation price.
+6. 🎯 **Take Profit (TP)**: Profit targets.
+7. ⚡ **กลยุทธ์ (Strategy)**: Final BUY/SELL/HOLD advice.
+
+GUIDELINES:
+- ALWAYS use `get_trading_tactics` when asked about a specific symbol or "ท่าเทรด".
+- Focus on NEWS RELEVANCE for the specific symbol.
+- Use professional Thai.
+"""
+
 def chat():
     print("="*60)
-    print("📊 CryptoStream AI — Institutional Trading Intelligence")
-    print("   Senior Quant Strategist | Powered by Gemini + MCP")
-    print("   ระบุตลาด/สัญลักษณ์ที่ต้องการวิเคราะห์ หรือพิมพ์ 'exit' เพื่อออก")
+    print("🤖 CryptoStream AI — Master Agent (CLI Mode)")
+    print("   Institutional Intelligence | Tool-Calling Enabled")
     print("="*60)
     
-    # AI ต้องรู้ก่อนว่าระบบคุณมีคอลัมน์อะไรบ้าง (Context Injection)
-    schema = get_schema()
-    if not schema:
-        return
-        
-    schema_str = json.dumps(schema, indent=2)
+    history = []
 
     while True:
         try:
-            user_input = input("\n👤 คำถามของคุณ: ")
-            if user_input.lower() in ['exit', 'quit']:
-                break
-            if not user_input.strip():
-                continue
-                
-            print("⏳ [AI กำลังวิเคราะห์และแปลภาษาไทยเป็น SQL...]")
+            user_input = input("\n👤 คุณ: ")
+            if user_input.lower() in ['exit', 'quit']: break
+            if not user_input.strip(): continue
+
+            # Append user message to history
+            history.append(types.Content(role="user", parts=[types.Part(text=f"SYSTEM: {AGENT_SYSTEM_PROMPT}\n\nUSER: {user_input}")]))
+
+            print("⏳ [Agent กำลังคิดและเลือกใช้เครื่องมือ...]")
             
-            # Step 1: Intent Detection & Text-to-SQL
-            # เราจะให้ AI แยกแยะก่อนว่าเป็นคำถามเกี่ยวกับอะไร เพื่อเลือกโครงสร้างการสรุปที่เหมาะสม
-            sql_prompt = f"""
-You are the advanced reasoning core of CryptoStream AI.
-Your personality is a dual-mode intelligence:
-1. [Primary] Senior Institutional Quant Strategist (Elite, Precise, Data-Driven)
-2. [Secondary] System Architect & Partner (Transparent, Helpful, Tech-Savvy)
-
-Database Schema:
-{schema_str}
-
-User Question: {user_input}
-
-TASK:
-Identify the intent and generate the necessary data query if needed. 
-Return ONLY a JSON object with this structure:
-{{
-  "intent": "MARKET" | "SYSTEM" | "GENERAL",
-  "explanation": "Brief internal reason for this classification",
-  "query": "PostgreSQL query or null",
-  "persona_lean": "QUANT" | "ARCHITECT" | "PARTNER"
-}}
-
-CLASSIFICATION RULES:
-- MARKET: Any question requiring price action, trends, whale moves, support/resistance, or data from the schema.
-- SYSTEM: Questions about YOURSELF, your model (Gemini 2.5 Flash), technical architecture, MCP, Postgres, or how the app works. You are allowed to be transparent here!
-- GENERAL: Greetings, casual chat, or non-technical/non-market questions.
-
-SQL RULES:
-- If intent is MARKET, produce valid PostgreSQL using available schema.
-- Symbol format: append 'USDT' to crypto tickers (BTC -> BTCUSDT).
-- If intent is SYSTEM/GENERAL, query remains null.
-
-Return ONLY the raw JSON.
-"""
-            
-            intent_response = client.models.generate_content(
+            # Step 1: Initial thought & tool call decision
+            response = client.models.generate_content(
                 model=MODEL_ID,
-                contents=sql_prompt,
-                config={'response_mime_type': 'application/json'}
+                contents=history,
+                config=types.GenerateContentConfig(tools=gemini_tools)
             )
-            
-            intent_data = json.loads(intent_response.text)
-            intent = intent_data.get("intent", "GENERAL")
-            sql_query = intent_data.get("query")
-            persona_lean = intent_data.get("persona_lean", "PARTNER")
-            
-            print(f"🧠 [Intent Detected]: {intent} ({persona_lean})")
 
-            if intent == "MARKET" and sql_query:
-                print(f"🔍 [SQL ที่สร้างได้]: {sql_query}")
+            # Process potential tool calls
+            tool_results = []
+            for part in response.candidates[0].content.parts:
+                if part.function_call:
+                    fn_name = part.function_call.name
+                    fn_args = part.function_call.args
+                    print(f"🛠️  [เรียกใช้ Tool]: {fn_name}({fn_args})")
+                    
+                    result = execute_tool(fn_name, fn_args)
+                    tool_results.append(types.Part(
+                        function_response=types.FunctionResponse(name=fn_name, response=result)
+                    ))
+
+            # Step 2: If tools were used, send results back for final analysis
+            if tool_results:
+                # Add the model's call and the results to history
+                history.append(response.candidates[0].content)
+                history.append(types.Content(role="user", parts=tool_results))
                 
-                # Step 2: ให้ระบบ MCP รัน SQL แทน AI (เพื่อความปลอดภัย ไม่ยอมให้ AI ใช้ DB ตรงๆ)
-                print("⏳ [ดึงข้อมูลจาก Postgres ด้วยความปลอดภัยระดับองค์กร...]")
-                result = execute_sql(sql_query)
-                
-                if "error" in result:
-                    print(f"❌ ฐานข้อมูลปฏิเสธคำสั่ง: {result['error']}")
-                    continue
+                final_response = client.models.generate_content(
+                    model=MODEL_ID,
+                    contents=history,
+                    config=types.GenerateContentConfig(tools=gemini_tools)
+                )
+                print(f"\n📊 CryptoStream AI Analysis:\n{final_response.text}")
+                # Keep history clean for next turn (optional: keep history for context)
+                history.append(final_response.candidates[0].content)
             else:
-                result = {"data": "No database query executed for this intent."}
-                
-            # Step 3: Adaptive Summary (Tailored to Persona)
-            print("⏳ [AI กำลังเรียบเรียงคำตอบที่เหมาะสมกับบริบท...]")
-            summary_prompt = f"""
-You are CryptoStream AI. Respond to the User based on the detected intent and persona lean.
+                print(f"\n📊 CryptoStream AI:\n{response.text}")
+                history.append(response.candidates[0].content)
 
-CONTEXT:
-- User Question: {user_input}
-- Detected Intent: {intent}
-- Recommended Persona: {persona_lean}
-- Background Data (if any): {json.dumps(result)}
-
-STRICT FORMATTING PROTOCOL:
-To maintain institutional readability, follow this layout exactly:
-
-[MARKET INTENT LAYOUT]
----
-🧭 **ภาพรวมตลาด (MARKET OVERVIEW)**
-- <Summary of trend in 2-3 brief sentences>
-- <Key dynamic or volatility context>
-
----
-⚡ **การวิเคราะห์เชิงปริมาณ (QUANT INSIGHTS)**
-- Use `monospace` for all prices: `{symbol}` at `{price}`.
-- Highlight whale activity with `monospace` values.
-- Keep paragraphs punchy (max 2-3 lines).
-
----
-🎯 **แผนกลยุทธ์ (STRATEGY MAP)**
-| Action | Zone / Level | Note |
-| :--- | :--- | :--- |
-| **ENTRY** | `price_range` | <condition> |
-| **STOP LOSS** | `price` | <invalidation> |
-| **TAKE PROFIT** | `target_p1` / `target_p2` | <objective> |
-
-> [!TIP]
-> **Executive Summary**: <One-line punchy takeaway>
-
----
-🛡️ **การบริหารความเสี่ยง (RISK PROTOCOL)**
-- <Specific warning about data quality or market conditions>
-- "นี่เป็นการวิเคราะห์เชิงข้อมูล ไม่ใช่คำแนะนำการลงทุน ควรบริหารความเสี่ยงทุกครั้ง"
-
-[SYSTEM INTENT LAYOUT]
-🤖 **สถานะข้อมูลและระบบ (SYSTEM ARCHITECTURE)**
----
-- **Identity**: Gemini 2.5 Flash Autonomous Node
-- **Core Stack**: FastAPI + Model Context Protocol (MCP) Bridge
-- **Persistence**: High-Frequency PostgreSQL Cluster
-- **Streams**: Real-time Kafka / Flink Pipeline
----
-<Detailed technical explanation in professional Thai>
-
-[GENERAL INTENT LAYOUT]
-🤝 **CryptoStream Partner Response**
----
-<Natural, intelligent, and warm conversation in Thai>
----
-
-Final output must be professional, impressively formatted, and visually distinct. Use double line breaks between sections.
-"""
-            
-            summary_response = client.models.generate_content(
-                model=MODEL_ID,
-                contents=summary_prompt,
-            )
-            print(f"\n📊 CryptoStream AI Analysis:\n{summary_response.text}\n")
-            print("-" * 60)
-            
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(f"⚠️ เกิดข้อผิดพลาดของระบบ: {e}")
+            print(f"⚠️ Error: {e}")
 
 if __name__ == "__main__":
     chat()

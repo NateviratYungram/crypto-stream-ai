@@ -13,6 +13,7 @@ airflow_logs/
 
 # Python & Environment
 venv/
+.venv/
 env/
 __pycache__/
 *.py[cod]
@@ -32,3 +33,11 @@ scratch/
 static/
 *.pytest_cache/
 htmlcov/
+
+# Runtime Cache
+cache/
+.yf_cache/
+
+# Internal Review Docs
+CRITICAL_FIXES_APPLIED.md
+ENTERPRISE_CODE_REVIEW.md

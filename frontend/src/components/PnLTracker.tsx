@@ -131,12 +131,12 @@ export const PnLTracker = () => {
       {/* Open Positions */}
       {positions.length > 0 && (
         <div className="space-y-2 mt-2">
-          <p className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Open Positions</p>
+          <p className="text-[11px] font-black text-slate-600 uppercase tracking-widest">Open Positions</p>
           {positions.slice(0, 4).map((pos) => (
             <div key={pos.symbol} className="flex items-center justify-between p-3 bg-slate-950/50 rounded-xl border border-white/5">
               <div>
                 <span className="text-[11px] font-black text-slate-200">{pos.symbol}</span>
-                <span className={`ml-2 text-[9px] font-bold ${pos.direction === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                <span className={`ml-2 text-[11px] font-bold ${pos.direction === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {pos.direction}
                 </span>
               </div>
@@ -153,7 +153,7 @@ export const PnLTracker = () => {
         </div>
       )}
 
-      <p className="text-[8px] text-slate-700 font-bold uppercase tracking-widest text-center">
+      <p className="text-xs text-slate-700 font-bold uppercase tracking-widest text-center">
         Simulated only · Not financial advice
       </p>
     </div>
@@ -166,7 +166,7 @@ const StatCard = ({ label, value, positive, icon: Icon }: {
   <div className="p-3 bg-slate-950/50 rounded-xl border border-white/5 space-y-1">
     <div className="flex items-center gap-1.5">
       <Icon className={`w-3 h-3 ${positive ? 'text-emerald-500' : 'text-rose-500'}`} />
-      <span className="text-[9px] font-bold text-slate-600 uppercase tracking-widest">{label}</span>
+      <span className="text-[11px] font-bold text-slate-600 uppercase tracking-widest">{label}</span>
     </div>
     <span className={`text-sm font-black font-mono ${positive ? 'text-emerald-400' : 'text-rose-400'}`}>{value}</span>
   </div>
