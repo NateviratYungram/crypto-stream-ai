@@ -101,7 +101,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
   // Smart Deletion State
   const [showDeleteModal, setShowDeleteModal] = useState<string | null>(null);
   const [dontShowAgain, setDontShowAgain] = useState(false);
-  
+  const [isInitialized, setIsInitialized] = useState(false);
+
   const activeSession = sessions.find(s => s.id === activeId) || sessions[0];
   const messages = activeSession?.messages || [];
 
@@ -165,18 +166,20 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
       } catch (e) {
         console.error("History sync error:", e);
         setSessions([{ id: 'default', title: 'Strategy Briefing', messages: [], updatedAt: Date.now() }]);
+      } finally {
+        setIsInitialized(true);
       }
     };
     initHistory();
   }, []);
 
   useEffect(() => {
-    if (initialMessage && !hasTriggeredInitial.current && sessions.length > 0) {
+    if (initialMessage && !hasTriggeredInitial.current && isInitialized) {
       hasTriggeredInitial.current = true;
       sendMessage(initialMessage);
       onClearInitialMessage?.();
     }
-  }, [initialMessage, sessions, onClearInitialMessage]);
+  }, [initialMessage, isInitialized]);
 
   const syncSessionToServer = async (sess: ChatSession) => {
     try {
