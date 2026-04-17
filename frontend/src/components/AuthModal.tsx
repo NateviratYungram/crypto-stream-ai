@@ -63,6 +63,7 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
       if (!res.ok) { setError(data.detail || 'Login failed'); return; }
       localStorage.setItem('cs_jwt', data.token);
       localStorage.setItem('cs_user', JSON.stringify(data.user));
+      localStorage.setItem('crypto_terminal_key', 'demo');
       onSuccess(data.token, data.user);
     } catch {
       setError('Network error — please try again');
@@ -92,6 +93,7 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
       setSuccess('Account created! Logging you in…');
       localStorage.setItem('cs_jwt', data.token);
       localStorage.setItem('cs_user', JSON.stringify(data.user));
+      localStorage.setItem('crypto_terminal_key', 'demo');
       setTimeout(() => onSuccess(data.token, data.user), 800);
     } catch {
       setError('Network error — please try again');

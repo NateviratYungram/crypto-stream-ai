@@ -78,6 +78,7 @@ function AppShell() {
         setCurrentUser(user)
         setIsAuthorized(true)
         setMode(user.account_type === 'institutional' ? 'institutional' : 'retail')
+        localStorage.setItem('crypto_terminal_key', 'demo')
       } catch { /* corrupted — ignore, will re-login */ }
     }
   }, [setMode])

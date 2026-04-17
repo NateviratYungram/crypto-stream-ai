@@ -378,7 +378,6 @@ def init_persistence_db():
             created_at DATETIME
         )
     """)
-    # Sniper Audit Log (Intelligence V7 Sniper Core)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sniper_audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -387,7 +386,9 @@ def init_persistence_db():
             reasoning TEXT,
             price REAL,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
+        )
+    """)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS system_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL,
@@ -1256,16 +1257,20 @@ from fastapi import Header
 # Concurrent Gemini request guard — prevent queue buildup under heavy load
 _GEMINI_SEMAPHORE = asyncio.Semaphore(5)  # max 5 simultaneous AI calls
 
-def verify_token(x_api_key: str = Header(None)):
-    """Validate API key. Accepts APP_API_KEY from env or 'demo' for local dev."""
-    # In production set APP_API_KEY in .env — never use 'demo' in prod
+def verify_token(x_api_key_or_request=None, x_api_key: str = Header(None)):
+    """Validate API key. Called either as verify_token(request) or as a FastAPI dependency."""
+    from starlette.requests import Request as StarletteRequest
+    if isinstance(x_api_key_or_request, StarletteRequest):
+        key = x_api_key_or_request.headers.get("x-api-key") or x_api_key_or_request.headers.get("X-API-Key")
+    else:
+        key = x_api_key_or_request or x_api_key
     dev_mode = not APP_API_KEY or APP_API_KEY in ("", "changeme")
     valid_keys = {APP_API_KEY} if APP_API_KEY else set()
-    valid_keys.add("demo")  # always allow demo for local dev
+    valid_keys.add("demo")
     if dev_mode:
-        return  # no key configured → open for local development
-    if x_api_key not in valid_keys:
-        logger.warning(f"Unauthorized access attempt — key: {str(x_api_key)[:8]}...")
+        return
+    if key not in valid_keys:
+        logger.warning(f"Unauthorized access attempt — key: {str(key)[:8]}...")
         raise HTTPException(status_code=403, detail="Unauthorized")
 
 from fastapi.responses import StreamingResponse
