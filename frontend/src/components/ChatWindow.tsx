@@ -131,6 +131,18 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
   // Proactive trigger removed — let user start the conversation naturally
 
   useEffect(() => {
+    const freshId = Date.now().toString();
+
+    // If launched with an initial message (e.g. from Watchlist), spin up a
+    // fresh session immediately so sendMessage has a valid activeId without
+    // waiting for the server history fetch.
+    if (initialMessage) {
+      setSessions([{ id: freshId, title: 'Strategy Briefing', messages: [], updatedAt: Date.now() }]);
+      setActiveId(freshId);
+      setIsInitialized(true);
+      return;
+    }
+
     const initHistory = async () => {
       try {
         const authKey = localStorage.getItem('APP_API_KEY') || 'demo';
@@ -140,24 +152,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
         if (res.ok) {
           const serverSessions = await res.json();
           if (serverSessions.length > 0) {
-            // Load messages for the active one immediately or wait for switch
             const firstSess = serverSessions[0];
-            const authKey = localStorage.getItem('APP_API_KEY') || 'demo';
             const msgRes = await fetch(`/api/history/${firstSess.id}`, {
               headers: { 'X-API-Key': authKey }
             });
             const msgs = msgRes.ok ? await msgRes.json() : [];
-            
             const fullSessions = serverSessions.map((s: any, i: number) => ({
               ...s,
               messages: i === 0 ? msgs : [],
               updatedAt: new Date(s.updatedAt).getTime()
             }));
-            
             setSessions(fullSessions);
             setActiveId(fullSessions[0].id);
           } else {
-            // New session if none exists
             const defId = Date.now().toString();
             setSessions([{ id: defId, title: 'Strategy Briefing', messages: [], updatedAt: Date.now() }]);
             setActiveId(defId);
