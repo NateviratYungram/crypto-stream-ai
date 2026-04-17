@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { RefreshCcw, TrendingUp, TrendingDown, Zap, AlertTriangle } from 'lucide-react';
+import { RefreshCcw, TrendingUp, TrendingDown, Zap, AlertTriangle, HelpCircle } from 'lucide-react';
 
 interface FundingRow {
   symbol:     string;
@@ -46,7 +46,7 @@ export const FundingRatesView = () => {
           </div>
           <h2 className="text-3xl font-extrabold text-white tracking-tight">Funding Rates</h2>
           <p className="text-slate-500 text-sm">
-            Funding rate สูงมาก = Long ล้นตลาด → โอกาส Contrarian Short &nbsp;·&nbsp; Updated {lastUpdated}
+            อัตราค่าธรรมเนียม Futures รายชั่วโมง — อัพเดท {lastUpdated}
           </p>
         </div>
         <button onClick={fetch} className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-amber-500/40 rounded-xl text-slate-300 text-xs font-bold transition-all">

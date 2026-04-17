@@ -191,6 +191,15 @@ export const PaperTradingDashboard = () => {
         )}
       </AnimatePresence>
 
+      {/* Simulation Notice */}
+      <div className="flex items-center gap-3 p-4 bg-blue-500/5 border border-blue-500/20 rounded-2xl">
+        <FlaskConical className="w-4 h-4 text-blue-400 shrink-0" />
+        <div>
+          <span className="text-xs font-black text-blue-400 uppercase tracking-widest">🎮 Simulation Mode</span>
+          <span className="text-sm text-slate-400 ml-3">ไม่ใช้เงินจริง — ทุกการเทรดเป็นการจำลองเพื่อฝึกฝนเท่านั้น ไม่มีความเสี่ยงทางการเงิน</span>
+        </div>
+      </div>
+
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>

@@ -62,6 +62,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           wsStatus={wsStatus}
+          mode={mode}
         />
 
         {/* Mobile drawer overlay */}
@@ -90,6 +91,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                   setActiveTab={setActiveTab}
                   wsStatus={wsStatus}
                   onNavClick={() => setMobileNavOpen(false)}
+                  mode={mode}
                 />
               </motion.div>
             </>
@@ -126,7 +128,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                   <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/5 rounded-full border border-blue-500/10">
                     <div className="w-1 h-1 bg-blue-500 rounded-full animate-ping" />
                     <span className="text-[9px] font-black text-blue-400/80 uppercase tracking-widest font-mono">
-                      Institutional Quant Feed Active
+                      {mode === 'institutional' ? 'Institutional Quant Feed' : 'Live Market Feed'}
                     </span>
                   </div>
                 </div>

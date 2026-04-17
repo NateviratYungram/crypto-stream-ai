@@ -2,7 +2,6 @@ import React from 'react';
 import {
   Activity,
   MessageSquare,
-  Radar,
   ShieldAlert,
   PieChart,
   Newspaper,
@@ -31,58 +30,105 @@ interface AppSidebarProps {
   setActiveTab: (tab: string) => void;
   wsStatus: string;
   onNavClick?: () => void;
+  mode?: 'retail' | 'institutional';
 }
 
-export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab, wsStatus, onNavClick }) => {
-  const menuGroups = [
+export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab, wsStatus, onNavClick, mode = 'retail' }) => {
+  const isRetail = mode === 'retail';
+
+  // Retail: 8 essential tabs — no jargon, no advanced tools
+  const retailGroups = [
+    {
+      label: 'Markets',
+      items: [
+        { id: 'Market Trends',    label: 'Market Overview',   icon: LayoutGrid        },
+        { id: 'Sentiment Hub',    label: 'News & Sentiment',  icon: Newspaper         },
+        { id: 'Screener',         label: 'Stock Screener',    icon: SlidersHorizontal },
+        { id: 'Watchlist',        label: 'My Watchlist',      icon: Star              },
+        { id: 'Economic Calendar',label: 'Economic Calendar', icon: CalendarDays      },
+      ]
+    },
+    {
+      label: 'Trading Tools',
+      items: [
+        { id: 'Strategy Chat',    label: 'AI Assistant',      icon: MessageSquare     },
+        { id: 'Paper Trading',    label: 'Practice Trading',  icon: ClipboardList     },
+        { id: 'Trading Journal',  label: 'Trade Journal',     icon: BookOpen          },
+      ]
+    },
+    {
+      label: 'Account',
+      items: [
+        { id: 'Profile Settings', label: 'Profile & Account', icon: UserCircle        },
+      ]
+    }
+  ];
+
+  // Institutional: all tabs with professional labels
+  const institutionalGroups = [
     {
       label: 'Market Intelligence',
       items: [
-        { id: 'Market Trends',        label: 'Tactical Dashboard',  icon: LayoutGrid        },
-        { id: 'Sentiment Hub',        label: 'News Sentiment',       icon: Newspaper         },
-        { id: 'Intelligence Hub',     label: 'Quant Intelligence',   icon: Brain             },
-        { id: 'Trading Tactics',      label: 'Trading Tactics',      icon: Target            },
-        { id: 'Screener',             label: 'Market Screener',      icon: SlidersHorizontal },
+        { id: 'Market Trends',        label: 'Tactical Dashboard',   icon: LayoutGrid        },
+        { id: 'Sentiment Hub',        label: 'News Sentiment',        icon: Newspaper         },
+        { id: 'Intelligence Hub',     label: 'Market Signals',        icon: Brain             },
+        { id: 'Trading Tactics',      label: 'Trading Tactics',       icon: Target            },
+        { id: 'Screener',             label: 'Market Screener',       icon: SlidersHorizontal },
       ]
     },
     {
       label: 'Tracking & Signals',
       items: [
-        { id: 'Whale Tracker',        label: 'Whale Radar',          icon: Zap               },
-        { id: 'Funding Rates',        label: 'Funding Rates',        icon: DollarSign        },
-        { id: 'ETF Flows',            label: 'ETF Flows',            icon: BarChart2         },
-        { id: 'Watchlist',            label: 'Watchlist',            icon: Star              },
+        { id: 'Whale Tracker',        label: 'Whale Tracker',         icon: Zap               },
+        { id: 'Funding Rates',        label: 'Funding Rates',         icon: DollarSign        },
+        { id: 'ETF Flows',            label: 'ETF Flows',             icon: BarChart2         },
+        { id: 'Watchlist',            label: 'Watchlist',             icon: Star              },
       ]
     },
     {
       label: 'AI & Chat',
       items: [
-        { id: 'Strategy Chat',        label: 'AI Strategy Chat',     icon: MessageSquare     },
-        { id: 'AI Persona',           label: 'AI Persona',           icon: Bot               },
+        { id: 'Strategy Chat',        label: 'AI Strategy Chat',      icon: MessageSquare     },
+        { id: 'AI Persona',           label: 'AI Persona',            icon: Bot               },
       ]
     },
     {
       label: 'Risk & Portfolio',
       items: [
-        { id: 'Institutional Assets', label: 'Portfolio Analytics',  icon: PieChart          },
-        { id: 'Risk Audits',          label: 'Compliance Audit',     icon: ShieldAlert       },
-        { id: 'Trading Journal',      label: 'Trading Journal',      icon: BookOpen          },
-        { id: 'Paper Trading',        label: 'Paper Trading',        icon: ClipboardList     },
-        { id: 'Backtester',           label: 'Strategy Backtester',  icon: FlaskConical      },
-        { id: 'Alerts & Reviews',     label: 'Alerts & Reviews',     icon: Bell              },
+        { id: 'Institutional Assets', label: 'Portfolio Analytics',   icon: PieChart          },
+        { id: 'Risk Audits',          label: 'Risk Monitor',          icon: ShieldAlert       },
+        { id: 'Trading Journal',      label: 'Trading Journal',       icon: BookOpen          },
+        { id: 'Paper Trading',        label: 'Paper Trading',         icon: ClipboardList     },
+        { id: 'Backtester',           label: 'Strategy Backtester',   icon: FlaskConical      },
+        { id: 'Alerts & Reviews',     label: 'Alerts & Reviews',      icon: Bell              },
       ]
     },
     {
       label: 'Tools & Settings',
       items: [
-        { id: 'Economic Calendar',    label: 'Economic Calendar',    icon: CalendarDays      },
-        { id: 'Profile Settings',     label: 'Profile & Account',    icon: UserCircle        },
+        { id: 'Economic Calendar',    label: 'Economic Calendar',     icon: CalendarDays      },
+        { id: 'ML Model',             label: 'ML Model Stats',         icon: Activity          },
+        { id: 'Profile Settings',     label: 'Profile & Account',     icon: UserCircle        },
       ]
     }
   ];
 
+  const menuGroups = isRetail ? retailGroups : institutionalGroups;
+
   return (
     <aside className={`w-68 border-r border-white/5 bg-slate-950 flex-col h-full z-40 transition-all duration-300 ${onNavClick ? 'flex' : 'hidden lg:flex'}`}>
+      {/* Mode badge */}
+      <div className="px-4 pt-4">
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
+          isRetail
+            ? 'bg-emerald-500/5 border-emerald-500/15 text-emerald-400'
+            : 'bg-blue-500/5 border-blue-500/15 text-blue-400'
+        }`}>
+          <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${isRetail ? 'bg-emerald-400' : 'bg-blue-400'}`} />
+          {isRetail ? '👤 Retail Mode' : '🏛 Institutional Mode'}
+        </div>
+      </div>
+
       {/* Search Input Container */}
       <div className="p-4 mt-2">
         <div className="relative group">

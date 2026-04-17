@@ -197,6 +197,20 @@ export const WhaleTrackerView = () => {
         </div>
       </header>
 
+      {/* What is Whale Data? */}
+      <div className="flex items-start gap-3 p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
+        <TrendingUp className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+        <div className="space-y-1">
+          <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">วิธีอ่านข้อมูล Whale</p>
+          <p className="text-sm text-slate-400">
+            <span className="text-white font-bold">Whale</span> = นักลงทุนสถาบันหรือกองทุนขนาดใหญ่ที่ซื้อ/ขายเป็นจำนวนมาก •{' '}
+            <span className="text-emerald-300 font-bold">สีเขียว</span> = ซื้อ (Bullish) •{' '}
+            <span className="text-rose-300 font-bold">สีแดง</span> = ขาย (Bearish) •{' '}
+            ธุรกรรมขนาดใหญ่บ่งบอกถึงความเคลื่อนไหวของ "เงินสมาร์ท" — ใช้เป็นสัญญาณประกอบการตัดสินใจ ไม่ใช่สัญญาณซื้อขายโดยตรง
+          </p>
+        </div>
+      </div>
+
       {/* Aggregate Stats */}
       <div className="grid grid-cols-4 gap-4">
         {[

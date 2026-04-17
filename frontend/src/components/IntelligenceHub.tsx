@@ -68,6 +68,15 @@ export const IntelligenceHub = () => {
 
   return (
     <div className="flex-1 p-8 overflow-y-auto space-y-8 custom-scrollbar relative">
+      {/* NOT Financial Advice Banner */}
+      <div className="flex items-center gap-3 p-3 bg-rose-500/5 border border-rose-500/20 rounded-2xl relative z-10">
+        <ShieldCheck className="w-4 h-4 text-rose-400 shrink-0" />
+        <p className="text-xs text-slate-400">
+          <span className="text-rose-400 font-black uppercase tracking-widest mr-2">⚠ NOT Financial Advice</span>
+          สัญญาณ AI ทั้งหมดเป็นเพียงข้อมูลเพื่อการศึกษาเท่านั้น — กรุณาทำการวิเคราะห์ของคุณเองก่อนตัดสินใจลงทุนทุกครั้ง
+        </p>
+      </div>
+
       {/* Header */}
       <header className="flex justify-between items-center border-b border-white/5 pb-8 relative z-10">
         <div className="space-y-1">

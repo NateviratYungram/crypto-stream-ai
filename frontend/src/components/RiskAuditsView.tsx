@@ -46,18 +46,18 @@ export const RiskAuditsView = () => {
              <div className={`w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)] ${
                 wsStatus === 'connected' ? 'bg-indigo-500 status-breath' : 'bg-slate-700'
              }`} />
-             Integrity Guard {wsStatus === 'connected' && '• LIVE'}
+             System Monitor {wsStatus === 'connected' && '• LIVE'}
           </div>
           <h2 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
-             Risk Intel Terminal
+             Risk Monitor
           </h2>
-          <p className="text-slate-500 text-sm font-medium">Monitoring DQ isolation gates and autonomous AI query permissions.</p>
+          <p className="text-slate-500 text-sm font-medium">บันทึกกิจกรรมระบบ — การ login, การเทรด, และการแจ้งเตือนข้อมูลผิดปกติ</p>
         </div>
         <div className="flex items-center gap-4">
           {wsStatus === 'connected' && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
               <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-              <span className="text-xs text-emerald-400 font-black uppercase tracking-tighter">DLQ MONITOR ACTIVE</span>
+              <span className="text-xs text-emerald-400 font-black uppercase tracking-tighter">Live Monitor Active</span>
             </div>
           )}
           <button 
@@ -95,7 +95,7 @@ export const RiskAuditsView = () => {
                          <span className={`text-xs font-black uppercase tracking-[0.15em] px-2 py-0.5 rounded ${
                             log.type === 'DQ_ERROR' ? 'bg-rose-500/10 text-rose-400' : 'bg-blue-500/10 text-blue-400'
                          }`}>
-                            {log.type === 'DQ_ERROR' ? 'DQ VIOLATION' : 'AI TRACE'}
+                            {log.type === 'DQ_ERROR' ? 'Data Alert' : log.type === 'USER_LOGIN' ? 'Login' : log.type === 'USER_REGISTER' ? 'New User' : log.type === 'PAPER_TRADE' ? 'Trade' : log.type === 'PROFILE_UPDATE' ? 'Profile' : 'System'}
                          </span>
                          <div className="h-1 w-1 rounded-full bg-slate-700" />
                          <span className="text-xs text-slate-500 font-bold uppercase tracking-widest">Node: Delta-01</span>
@@ -118,7 +118,7 @@ export const RiskAuditsView = () => {
                         <ShieldCheck className="w-3.5 h-3.5" />
                         VERIFIED ENCLAVE
                       </span>
-                      <span className="text-slate-600 uppercase">ACTION: {log.type === 'DQ_ERROR' ? 'ISOLATED_IN_DLQ' : 'LOGGED_IN_AUDIT'}</span>
+                      <span className="text-slate-600 uppercase">ACTION: {log.type === 'DQ_ERROR' ? 'FLAGGED' : 'LOGGED'}</span>
                     </div>
                   </div>
                 </HoverGlowCard>

@@ -114,6 +114,15 @@ export function BacktesterView() {
         </div>
       </div>
 
+      {/* Disclaimer Banner */}
+      <div className="flex items-start gap-3 p-4 bg-amber-500/5 border border-amber-500/20 rounded-2xl">
+        <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+        <div>
+          <p className="text-xs font-black text-amber-400 uppercase tracking-widest mb-1">Past Performance Disclaimer</p>
+          <p className="text-sm text-slate-400">ผลลัพธ์จากการ backtest เป็นข้อมูลในอดีตเท่านั้น — <span className="text-amber-300 font-bold">ไม่ใช่การรับประกันผลลัพธ์ในอนาคต</span> ใช้เพื่อศึกษาและทดสอบกลยุทธ์เท่านั้น ไม่ใช่คำแนะนำการลงทุน</p>
+        </div>
+      </div>
+
       {/* Config Panel */}
       <div className="bg-slate-900/60 border border-white/5 rounded-2xl p-5 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {/* Symbol */}

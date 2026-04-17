@@ -103,7 +103,7 @@ function MLSignalCard({ alert, onDismiss }: { alert: Alert; onDismiss: (id: numb
           {/* Win probability bar */}
           <div className="mb-2">
             <div className="flex justify-between mb-1">
-              <span className="text-[9px] text-slate-500 uppercase tracking-widest">Win Probability</span>
+              <span className="text-[9px] text-slate-500 uppercase tracking-widest">โอกาสชนะ (Win Probability)</span>
               <span className={`text-[9px] font-black tabular-nums ${textColor}`}>{winPct}%</span>
             </div>
             <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
@@ -119,7 +119,7 @@ function MLSignalCard({ alert, onDismiss }: { alert: Alert; onDismiss: (id: numb
           <div className="flex items-center gap-3 flex-wrap">
             {auc > 0 && (
               <span className="text-[10px] text-slate-500">
-                Model AUC <span className="text-slate-300 font-bold">{auc.toFixed(3)}</span>
+                ความแม่นยำ AI (AUC) <span className="text-slate-300 font-bold">{auc.toFixed(3)}</span> <span className="text-slate-600">/ 1.0</span>
               </span>
             )}
             <span className="text-[10px] text-slate-600 flex items-center gap-1">
@@ -201,6 +201,15 @@ export function AlertsReviewsView() {
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </button>
+      </div>
+
+      {/* Disclaimer */}
+      <div className="flex items-center gap-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-2xl">
+        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+        <p className="text-xs text-slate-400">
+          <span className="text-amber-400 font-black mr-2">⚠ NOT Financial Advice</span>
+          สัญญาณ ML และการแจ้งเตือนทั้งหมดเป็นข้อมูลเพื่อการศึกษาเท่านั้น — ไม่ใช่คำแนะนำการซื้อขาย
+        </p>
       </div>
 
       {/* KPI Row */}
