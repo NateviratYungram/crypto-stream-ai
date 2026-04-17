@@ -18,6 +18,11 @@ export default defineConfig({
       '/ws': {
         target: 'http://localhost:8888',
         ws: true,
+        changeOrigin: true,
+        rewriteWsOrigin: true,
+        configure: (proxy) => {
+          proxy.on('error', () => { /* suppress ECONNABORTED noise during backend restarts */ });
+        },
       },
     },
   },
