@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AppSidebar } from './AppSidebar';
 import { AppNavbar } from './AppNavbar';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -37,6 +37,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
   onLogout
 }) => {
   const TICKER_SYMBOLS = ['BTC', 'ETH', 'SOL', 'NVDA', 'TSLA', 'GOLD', 'NASDAQ', 'SP500'];
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex flex-col overflow-hidden font-inter selection:bg-blue-500/30 selection:text-white relative">
@@ -46,20 +47,54 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-600/10 blur-[120px] rounded-full" />
       </div>
 
-      <AppNavbar 
-        mode={mode} 
-        setMode={setMode} 
-        onOpenCommand={onOpenCommand} 
-        isAuthorized={true} 
+      <AppNavbar
+        mode={mode}
+        setMode={setMode}
+        onOpenCommand={onOpenCommand}
+        isAuthorized={true}
         onLogout={onLogout}
+        onMobileMenuClick={() => setMobileNavOpen(true)}
       />
 
       <div className="flex-1 flex overflow-hidden relative z-10">
-        <AppSidebar 
-          activeTab={activeTab} 
-          setActiveTab={setActiveTab} 
-          wsStatus={wsStatus} 
+        {/* Desktop sidebar */}
+        <AppSidebar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          wsStatus={wsStatus}
         />
+
+        {/* Mobile drawer overlay */}
+        <AnimatePresence>
+          {mobileNavOpen && (
+            <>
+              <motion.div
+                key="overlay"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="lg:hidden fixed inset-0 z-[980] bg-black/60 backdrop-blur-sm"
+                onClick={() => setMobileNavOpen(false)}
+              />
+              <motion.div
+                key="drawer"
+                initial={{ x: '-100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '-100%' }}
+                transition={{ type: 'tween', duration: 0.25 }}
+                className="lg:hidden fixed top-0 left-0 h-full w-72 z-[990] flex flex-col"
+              >
+                <AppSidebar
+                  activeTab={activeTab}
+                  setActiveTab={setActiveTab}
+                  wsStatus={wsStatus}
+                  onNavClick={() => setMobileNavOpen(false)}
+                />
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
 
         <main className="flex-1 flex flex-col relative overflow-hidden bg-[#060b14]/50">
           {/* Ticker Tape */}

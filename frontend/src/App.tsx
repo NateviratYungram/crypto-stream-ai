@@ -36,6 +36,7 @@ const ProfileSettings  = lazy(() => import('./components/ProfileSettings').then(
 const PaperTrading     = lazy(() => import('./components/PaperTradingDashboard').then(m => ({ default: m.PaperTradingDashboard })))
 const EconomicCalendar = lazy(() => import('./components/EconomicCalendarView').then(m => ({ default: m.EconomicCalendarView })))
 const MLStats          = lazy(() => import('./components/MLStatsPanel'))
+const BacktesterView   = lazy(() => import('./components/BacktesterView').then(m => ({ default: m.BacktesterView })))
 
 interface Toast { id: string; message: string }
 
@@ -267,6 +268,7 @@ function AppShell() {
             case 'AI Persona':           return <ErrorBoundary tabName="AI Persona"><PersonaSettings /></ErrorBoundary>
             case 'Profile Settings':     return <ErrorBoundary tabName="Profile Settings"><ProfileSettings /></ErrorBoundary>
             case 'Paper Trading':        return <ErrorBoundary tabName="Paper Trading"><PaperTrading /></ErrorBoundary>
+            case 'Backtester':           return <ErrorBoundary tabName="Backtester"><BacktesterView /></ErrorBoundary>
             case 'Economic Calendar':    return <ErrorBoundary tabName="Economic Calendar"><EconomicCalendar /></ErrorBoundary>
             case 'ML Model':             return <ErrorBoundary tabName="ML Model"><MLStats /></ErrorBoundary>
             case 'Strategy Chat':

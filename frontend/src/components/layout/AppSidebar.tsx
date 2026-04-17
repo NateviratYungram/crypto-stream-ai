@@ -21,7 +21,8 @@ import {
   Zap,
   CalendarDays,
   UserCircle,
-  ClipboardList
+  ClipboardList,
+  FlaskConical
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
@@ -29,9 +30,10 @@ interface AppSidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   wsStatus: string;
+  onNavClick?: () => void;
 }
 
-export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab, wsStatus }) => {
+export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab, wsStatus, onNavClick }) => {
   const menuGroups = [
     {
       label: 'Market Intelligence',
@@ -66,6 +68,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
         { id: 'Risk Audits',          label: 'Compliance Audit',     icon: ShieldAlert       },
         { id: 'Trading Journal',      label: 'Trading Journal',      icon: BookOpen          },
         { id: 'Paper Trading',        label: 'Paper Trading',        icon: ClipboardList     },
+        { id: 'Backtester',           label: 'Strategy Backtester',  icon: FlaskConical      },
         { id: 'Alerts & Reviews',     label: 'Alerts & Reviews',     icon: Bell              },
       ]
     },
@@ -79,7 +82,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
   ];
 
   return (
-    <aside className="w-68 border-r border-white/5 bg-slate-950 flex flex-col h-full z-40 transition-all duration-300 hidden lg:flex">
+    <aside className={`w-68 border-r border-white/5 bg-slate-950 flex-col h-full z-40 transition-all duration-300 ${onNavClick ? 'flex' : 'hidden lg:flex'}`}>
       {/* Search Input Container */}
       <div className="p-4 mt-2">
         <div className="relative group">
@@ -99,7 +102,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
             {group.items.map((item) => (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => { setActiveTab(item.id); onNavClick?.(); }}
                 className={`w-full group flex items-center justify-between px-3 py-2.5 rounded-xl transition-all relative ${
                   activeTab === item.id
                     ? 'bg-blue-600/15 border border-blue-500/20 text-blue-400 shadow-[0_0_20px_rgba(37,99,235,0.05)]'

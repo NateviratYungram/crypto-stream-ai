@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, Command, Search, ShieldCheck, User } from 'lucide-react';
+import { Bell, Command, Menu, Search, User } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 interface AppNavbarProps {
@@ -8,16 +8,26 @@ interface AppNavbarProps {
   onOpenCommand: () => void;
   isAuthorized: boolean;
   onLogout: () => void;
+  onMobileMenuClick?: () => void;
 }
 
-export const AppNavbar: React.FC<AppNavbarProps> = ({ mode, setMode, onOpenCommand, isAuthorized, onLogout }) => {
+export const AppNavbar: React.FC<AppNavbarProps> = ({ mode, setMode, onOpenCommand, isAuthorized, onLogout, onMobileMenuClick }) => {
   return (
-    <header className="h-16 border-b border-white/5 bg-slate-950/50 backdrop-blur-xl flex items-center justify-between px-6 shrink-0 z-50">
+    <header className="h-16 border-b border-white/5 bg-slate-950/50 backdrop-blur-xl flex items-center justify-between px-4 md:px-6 shrink-0 z-50">
+      <div className="flex items-center gap-3">
+        {/* Hamburger — mobile only */}
+        <button
+          onClick={onMobileMenuClick}
+          className="lg:hidden p-2 rounded-xl hover:bg-white/5 text-slate-400 hover:text-white transition-all active:scale-90"
+          aria-label="Open menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+
       {/* Brand / Logo */}
-      <div 
-        className="flex items-center gap-3 cursor-pointer active:scale-95 transition-all" 
+      <div
+        className="flex items-center gap-3 cursor-pointer active:scale-95 transition-all"
         onClick={() => {
-          console.log('Logo clicked - Logging out');
           onLogout();
         }}
       >
@@ -29,6 +39,7 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({ mode, setMode, onOpenComma
           <p className="text-[9px] text-slate-500 font-bold uppercase tracking-[0.2em] -mt-1">Tactical Intelligence</p>
         </div>
       </div>
+      </div>{/* end flex gap-3 wrapper */}
 
       {/* Global Search / Command Bar */}
       <div className="flex-1 max-w-xl px-12 hidden md:block">
