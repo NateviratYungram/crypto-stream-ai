@@ -6,8 +6,8 @@ import {
   TrendingUp as BuyIcon, TrendingDown as SellIcon
 } from 'lucide-react'
 
-const API_KEY = 'institutional-secret-key'
-const HEADERS = { 'X-API-Key': API_KEY }
+const API_KEY = () => localStorage.getItem('crypto_terminal_key') || ''
+const HEADERS = () => ({ 'X-API-Key': API_KEY() })
 
 interface Alert {
   id: number
@@ -153,8 +153,8 @@ export function AlertsReviewsView() {
     setLoading(true)
     try {
       const [ar, rr] = await Promise.all([
-        fetch('/api/alerts',       { headers: HEADERS }).then(r => r.json()),
-        fetch('/api/trade-reviews',{ headers: HEADERS }).then(r => r.json()),
+        fetch('/api/alerts',       { headers: HEADERS() }).then(r => r.json()),
+        fetch('/api/trade-reviews',{ headers: HEADERS() }).then(r => r.json()),
       ])
       setAlerts(ar.alerts  || [])
       setReviews(rr.reviews || [])

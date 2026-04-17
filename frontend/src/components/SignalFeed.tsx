@@ -57,6 +57,8 @@ export const SignalFeed = () => {
         </span>
       </div>
 
+      <p className="text-[10px] text-amber-500/70 font-bold mb-2 px-1">⚠ สัญญาณ AI เพื่อการศึกษาเท่านั้น — ไม่ใช่คำแนะนำซื้อขาย</p>
+
       <div className="flex-1 space-y-3 overflow-y-auto custom-scrollbar pr-1">
         {loading ? (
           [1,2,3].map(i => (

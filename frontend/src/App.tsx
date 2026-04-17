@@ -137,7 +137,7 @@ function AppShell() {
     if (!isAuthorized) return
     const fetchStocks = async () => {
       try {
-        const res = await fetch('/api/market/stocks', { headers: { 'X-API-Key': 'institutional-secret-key' } })
+        const res = await fetch('/api/market/stocks', { headers: { 'X-API-Key': localStorage.getItem('crypto_terminal_key') || '' } })
         if (!res.ok) return
         const data = await res.json()
         setTickerPrices(prev => {

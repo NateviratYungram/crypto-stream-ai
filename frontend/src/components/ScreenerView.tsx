@@ -71,6 +71,12 @@ export const ScreenerView = () => {
         </div>
       </header>
 
+      {/* Disclaimer */}
+      <div className="flex items-center gap-2 px-4 py-2.5 bg-slate-900/40 border border-white/5 rounded-xl">
+        <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+        <p className="text-xs text-slate-500">ผลลัพธ์ Screener เป็นข้อมูลเพื่อการค้นหาเท่านั้น — <span className="text-amber-400 font-bold">ไม่ใช่คำแนะนำซื้อขาย</span></p>
+      </div>
+
       {/* Filter Panel */}
       <div className="p-6 bg-slate-900/40 border border-white/5 rounded-[2rem] space-y-5">
         {/* Universe */}
