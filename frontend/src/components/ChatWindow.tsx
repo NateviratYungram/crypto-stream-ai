@@ -636,9 +636,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
               <p className="text-sm text-slate-500 max-w-sm font-medium leading-relaxed">
                 {isRetail
                   ? 'พิมพ์คำถามเป็นภาษาไทยหรืออังกฤษก็ได้ AI ของเราวิเคราะห์ข้อมูลแบบ real-time'
-                  : 'Establish a secure uplink to the distributed execution engine. Synthesize whale behavior and strategic market flow.'}
+                  : 'วิเคราะห์ตลาดด้วย AI — Whale Flow, Signals, และข้อมูล Real-time'}
               </p>
             </div>
+            <p className="text-[10px] text-amber-500/60 font-bold uppercase tracking-widest">
+              ⚠ AI ให้ข้อมูลเพื่อการศึกษาเท่านั้น — ไม่ใช่คำแนะนำทางการเงิน
+            </p>
             <div className="flex flex-wrap items-center justify-center gap-2.5 max-w-md">
               {quickActions.map(({ label, q }) => (
                 <button

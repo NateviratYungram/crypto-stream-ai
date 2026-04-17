@@ -590,7 +590,7 @@ function useGaugePoll(endpoint: string, transform: (json: any) => number) {
 // ────────────────────────────────────────────────────────────────
 const InstitutionalTimeline = () => {
   return (
-    <div className="h-[550px] rounded-[2.5rem] border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl backdrop-blur-3xl">
+    <div className="h-[300px] md:h-[550px] rounded-[2.5rem] border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl backdrop-blur-3xl">
       <div 
         className="tradingview-widget-container w-full h-full" 
         ref={(el) => {
@@ -1173,7 +1173,7 @@ export const NewsSentimentHub = () => {
               news={dxyNews}
             />
           ) : (
-            <div className="rounded-[2.5rem] border border-white/5 p-10 bg-slate-900/40 flex items-center justify-center h-full min-h-[400px]">
+            <div className="rounded-[2.5rem] border border-white/5 p-10 bg-slate-900/40 flex items-center justify-center h-full min-h-[200px] md:min-h-[400px]">
               <p className="text-sm text-slate-500">Loading market data...</p>
             </div>
           )}
@@ -1186,7 +1186,7 @@ export const NewsSentimentHub = () => {
               onRefresh={fetchIndices} 
             />
           ) : (
-            <div className="rounded-[2.5rem] border border-white/5 p-10 bg-slate-900/40 flex items-center justify-center h-full min-h-[400px]">
+            <div className="rounded-[2.5rem] border border-white/5 p-10 bg-slate-900/40 flex items-center justify-center h-full min-h-[200px] md:min-h-[400px]">
               <p className="text-sm text-slate-500">Loading market data...</p>
             </div>
           )}

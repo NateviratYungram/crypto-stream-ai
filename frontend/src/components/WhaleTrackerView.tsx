@@ -304,7 +304,7 @@ export const WhaleTrackerView = () => {
               <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">Direction</th>
               <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right">USD Value</th>
               <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right">Price</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right">Vol×</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right" title="Volume ratio vs. average — higher = unusual activity">Vol Spike</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">

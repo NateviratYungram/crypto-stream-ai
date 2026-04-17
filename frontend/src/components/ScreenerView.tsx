@@ -146,7 +146,7 @@ export const ScreenerView = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-white/5">
-                {['Symbol','Price','RSI','Vol ×','% from 52wH','1w Return'].map(h => (
+                {['Symbol','Price','RSI (Momentum)','Volume Spike','% from High','1w Return'].map(h => (
                   <th key={h} className="px-5 py-4 text-xs font-bold text-slate-500 uppercase tracking-[0.15em]">{h}</th>
                 ))}
               </tr>
