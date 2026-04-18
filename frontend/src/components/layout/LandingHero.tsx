@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Sparkles, Activity, ShieldCheck, RefreshCw, ChevronRight, Lock, Search, Globe, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -14,6 +14,20 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onStartTrading, onTryD
   const [lang, setLang] = useState<'EN' | 'TH'>('EN');
   const [searchFocused, setSearchFocused] = useState(false);
   const [query, setQuery] = useState('');
+
+  // Generate a field of stars for the background
+  const stars = useMemo(() => {
+    return Array.from({ length: 80 }).map((_, i) => ({
+      id: i,
+      top: `${Math.random() * 100}%`,
+      left: `${Math.random() * 100}%`,
+      size: Math.random() * 2 + 0.5,
+      delay: Math.random() * 5,
+      duration: 2 + Math.random() * 3,
+      opacity: Math.random() * 0.7 + 0.3,
+      color: Math.random() > 0.8 ? 'bg-blue-400' : 'bg-white'
+    }));
+  }, []);
 
   const handleSearchSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -115,8 +129,31 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onStartTrading, onTryD
       {/* Background Effects */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div className="absolute top-[-20%] left-1/2 -translate-x-1/2 w-[80vw] h-[80vw] max-w-[1000px] max-h-[1000px] bg-blue-600/10 blur-[120px] rounded-full opacity-60" />
-        <div className="absolute top-[10%] left-[10%] w-[1px] h-[1px] bg-white shadow-[0_0_8px_2px_rgba(255,255,255,0.2)] rounded-full animate-pulse" />
-        <div className="absolute top-[40%] left-[80%] w-[2px] h-[2px] bg-blue-400 shadow-[0_0_10px_2px_rgba(96,165,250,0.3)] rounded-full animate-pulse" />
+        
+        {/* Dynamic Star Field */}
+        {stars.map((star) => (
+          <motion.div
+            key={star.id}
+            initial={{ opacity: 0 }}
+            animate={{ 
+              opacity: [star.opacity * 0.5, star.opacity, star.opacity * 0.5],
+              scale: [0.8, 1.1, 0.8]
+            }}
+            transition={{
+              duration: star.duration,
+              repeat: Infinity,
+              delay: star.delay,
+              ease: "easeInOut"
+            }}
+            className={`absolute rounded-full ${star.color} shadow-[0_0_8px_rgba(255,255,255,0.3)]`}
+            style={{
+              top: star.top,
+              left: star.left,
+              width: `${star.size}px`,
+              height: `${star.size}px`,
+            }}
+          />
+        ))}
       </div>
 
       {/* Hero Content */}

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { BookOpen, TrendingUp, TrendingDown, RefreshCcw, Trophy, Target, BarChart2 } from 'lucide-react';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface Trade {
   id:          number;
@@ -26,6 +27,7 @@ interface Stats {
 const API_KEY = () => localStorage.getItem('crypto_terminal_key') || '';
 
 export const TradingJournalView = () => {
+  const { t } = useLanguage();
   const [trades,  setTrades]  = useState<Trade[]>([]);
   const [stats,   setStats]   = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -37,7 +39,19 @@ export const TradingJournalView = () => {
       const res = await fetch('/api/journal?limit=100', { headers: { 'X-API-Key': API_KEY() } });
       const d   = await res.json();
       setTrades(d.trades || []);
-      setStats(d.stats  || null);
+      // Only accept stats if it has the required numeric fields
+      const s = d.stats;
+      if (s && typeof s.total_trades === 'number') {
+        setStats({
+          total_trades: s.total_trades ?? 0,
+          win_rate_pct: s.win_rate_pct ?? 0,
+          total_pnl:    s.total_pnl   ?? 0,
+          wins:         s.wins        ?? 0,
+          losses:       s.losses      ?? 0,
+        });
+      } else {
+        setStats(null);
+      }
     } catch { /* silent */ }
     finally { setLoading(false); }
   };
@@ -65,15 +79,15 @@ export const TradingJournalView = () => {
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-violet-400 font-bold text-xs uppercase tracking-[0.2em]">
             <BookOpen className="w-3.5 h-3.5" />
-            Trade Journal
+            {t('journal.badge')}
           </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">Trading Journal</h2>
-          <p className="text-slate-500 text-sm">ประวัติ Paper Trade ทั้งหมด + AI performance analysis</p>
+          <h2 className="text-3xl font-extrabold text-white tracking-tight">{t('journal.title')}</h2>
+          <p className="text-slate-500 text-sm">{t('journal.subtitle')}</p>
         </div>
         <button onClick={load}
           className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-violet-500/40 rounded-xl text-slate-300 text-xs font-bold transition-all">
           <RefreshCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          {t('journal.refresh')}
         </button>
       </header>
 
@@ -81,11 +95,11 @@ export const TradingJournalView = () => {
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           {[
-            { label: 'Total Trades', value: String(stats.total_trades), color: 'text-slate-300', icon: BarChart2 },
-            { label: 'Win Rate',     value: `${stats.win_rate_pct}%`,   color: gradeColor(stats.win_rate_pct), icon: Target },
-            { label: 'Total P&L',    value: `${stats.total_pnl >= 0 ? '+' : ''}$${stats.total_pnl.toFixed(2)}`, color: stats.total_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400', icon: TrendingUp },
-            { label: 'Wins',         value: String(stats.wins),         color: 'text-emerald-400', icon: TrendingUp },
-            { label: 'Losses',       value: String(stats.losses),       color: 'text-rose-400',    icon: TrendingDown },
+            { label: t('journal.total_trades'), value: String(stats.total_trades), color: 'text-slate-300', icon: BarChart2 },
+            { label: t('journal.win_rate'),     value: `${stats.win_rate_pct}%`,   color: gradeColor(stats.win_rate_pct), icon: Target },
+            { label: t('journal.total_pnl'),    value: `${(stats.total_pnl ?? 0) >= 0 ? '+' : ''}$${(stats.total_pnl ?? 0).toFixed(2)}`, color: (stats.total_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400', icon: TrendingUp },
+            { label: t('journal.wins'),         value: String(stats.wins),         color: 'text-emerald-400', icon: TrendingUp },
+            { label: t('journal.losses'),       value: String(stats.losses),       color: 'text-rose-400',    icon: TrendingDown },
           ].map((s, i) => (
             <div key={i} className="p-4 bg-slate-900/40 border border-white/5 rounded-2xl flex flex-col gap-2">
               <div className="flex items-center gap-2">
@@ -105,13 +119,13 @@ export const TradingJournalView = () => {
             {grade(stats.win_rate_pct)}
           </div>
           <div>
-            <p className="font-black text-white text-sm">Performance Grade</p>
+            <p className="font-black text-white text-sm">{t('journal.grade')}</p>
             <p className="text-slate-500 text-sm mt-0.5">
               {stats.win_rate_pct >= 60
-                ? 'ผลงานดี — ทำต่อไปตาม process เดิม'
+                ? t('journal.grade_good')
                 : stats.win_rate_pct >= 50
-                ? 'พอใช้ได้ — ทบทวน entry criteria เพิ่มเติม'
-                : 'Win rate ต่ำกว่า 50% — ควรหยุดทบทวน strategy ก่อน'
+                ? t('journal.grade_fair')
+                : t('journal.grade_poor')
               }
             </p>
           </div>

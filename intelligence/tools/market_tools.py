@@ -10,7 +10,7 @@ from intelligence.technical_engine import (
     get_kline_data, compute_indicators, get_indicator_summary,
     get_smart_money_analysis
 )
-from intelligence.constants import MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS
+from intelligence.constants import MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS, SMALL_CAP_TICKERS
 from intelligence.backtest_crypto import run_crypto_backtest
 from intelligence.mt5_connector import get_mt5_account_info, mt5_execute_trade, mt5_close_position
 import time
@@ -2418,6 +2418,7 @@ def get_trading_tactics(symbol: str) -> str:
                 "trigger": f"{'✅ Neural Sync | ' if neural_match else ''}Ensemble ({ml_acc*100:.1f}% Acc | {ml_samples} Samples)",
                 "invalidation": "Temporal Shift / Deep Neural Conflict",
                 "tp": "Dynamic (Institutional Risk Shield)",
+                "logic": f"Win Prob: {ml_score:.0f}% | Neural Match: {neural_match} | Samples: {ml_samples}",
             })
         
         # --- STRATEGIC SELECTION LOGIC ---
@@ -2568,15 +2569,15 @@ def get_economic_calendar(days_ahead: int = 7) -> Dict[str, Any]:
     Combines Finnhub earnings calendar + a static macro schedule derived from
     known release patterns. No paid API key required for basic use.
     """
-    cached = _cache_get(f"econ_cal_{days_ahead}")
+    from datetime import timedelta
+    today   = dt_datetime.utcnow().date()
+    end_dt  = today + timedelta(days=days_ahead)
+    # Include today's date in cache key so cache refreshes daily
+    cached = _cache_get(f"econ_cal_{days_ahead}_{today}")
     if cached:
         return cached
     try:
         import requests as _req
-        from datetime import timedelta
-
-        today   = dt_datetime.utcnow().date()
-        end_dt  = today + timedelta(days=days_ahead)
         events: list = []
 
         # ── Earnings calendar via Finnhub (free tier, no auth needed for basic) ──
@@ -2614,47 +2615,77 @@ def get_economic_calendar(days_ahead: int = 7) -> Dict[str, Any]:
              "desc": "ยอดขายปลีก — บ่งบอก consumer spending และ GDP"},
         ]
 
-        # ── Try TradingEconomics (public JSON, rate-limited but open) ──
+        # ── Fetch Forex Factory calendar ──────────────────────────────────────
+        # On weekends, "thisweek" = the week that just ended, so always pull
+        # nextweek too. For 14d+, also pull the month file.
+        FF_URLS = [
+            "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+            "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+        ]
+        if days_ahead >= 14:
+            FF_URLS.append("https://nfs.faireconomy.media/ff_calendar_thismonth.json")
+        # Weekend guard: also fetch nextweek explicitly (already in list, just ensure)
+        is_weekend = today.weekday() >= 5  # 5=Sat, 6=Sun
+
         macro_events: list = []
-        try:
-            r2 = _req.get(
-                "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-                timeout=6,
-                headers={"User-Agent": "CryptoStreamAI/1.0"}
-            )
-            if r2.status_code == 200:
+        seen_keys: set = set()
+        for ff_url in FF_URLS:
+            try:
+                r2 = _req.get(ff_url, timeout=6, headers={"User-Agent": "CryptoStreamAI/1.0"})
+                if r2.status_code != 200:
+                    continue
                 for ev in r2.json():
-                    if ev.get("impact","").upper() in ("HIGH","MEDIUM"):
-                        macro_events.append({
-                            "date":   ev.get("date",""),
-                            "time":   ev.get("time",""),
-                            "type":   "MACRO",
-                            "name":   ev.get("title",""),
-                            "impact": ev.get("impact","").upper(),
-                            "currency": ev.get("country",""),
-                            "actual":   ev.get("actual"),
-                            "forecast": ev.get("forecast"),
-                            "previous": ev.get("previous"),
-                        })
-        except Exception:
-            pass  # fallback to anchors
+                    impact = ev.get("impact", "").upper()
+                    ev_date = ev.get("date", "")
+                    # Filter by date range
+                    try:
+                        from datetime import date as _date
+                        ev_d = _date.fromisoformat(ev_date[:10]) if ev_date else None
+                        if ev_d and (ev_d < today or ev_d > end_dt):
+                            continue
+                    except Exception:
+                        pass
+                    # Dedup by date+name
+                    key = f"{ev_date}_{ev.get('title','')}"
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    # Include ALL impacts (HIGH, MEDIUM, LOW)
+                    macro_events.append({
+                        "date":     ev_date,
+                        "time":     ev.get("time", ""),
+                        "type":     "MACRO",
+                        "name":     ev.get("title", ""),
+                        "impact":   impact if impact in ("HIGH", "MEDIUM", "LOW") else "LOW",
+                        "currency": ev.get("country", ""),
+                        "actual":   ev.get("actual"),
+                        "forecast": ev.get("forecast"),
+                        "previous": ev.get("previous"),
+                    })
+            except Exception:
+                continue
 
         all_events = macro_events + events
-        all_events.sort(key=lambda x: x.get("date",""))
+        all_events.sort(key=lambda x: x.get("date", ""))
+
+        critical_count = sum(1 for e in all_events if e.get("impact") == "CRITICAL")
+        high_count     = sum(1 for e in all_events if e.get("impact") in ("HIGH", "CRITICAL"))
 
         result = {
-            "period": f"{today} → {end_dt}",
-            "high_impact_count": sum(1 for e in all_events if e.get("impact") in ("HIGH","CRITICAL")),
-            "events": all_events[:40],
-            "macro_watch": MACRO_ANCHORS[:3],  # always show top 3 recurring
+            "period":           f"{today} → {end_dt}",
+            "total_events":     len(all_events),
+            "critical_count":   critical_count,
+            "high_impact_count": high_count,
+            "events":           all_events,   # no artificial limit
+            "macro_watch":      MACRO_ANCHORS[:3],
             "trading_note": (
-                "มีตัวเลข CRITICAL ในสัปดาห์นี้ — ระวัง volatility spike, พิจารณาลด size ก่อนประกาศ"
-                if any(e.get("impact") == "CRITICAL" for e in all_events)
-                else "ไม่มีตัวเลข CRITICAL ในช่วงนี้ — ตลาดน่าจะเคลื่อนไหวตาม technicals"
+                "มีตัวเลข CRITICAL ในช่วงนี้ — ระวัง volatility spike, พิจารณาลด size ก่อนประกาศ"
+                if critical_count > 0
+                else "ไม่มีตัวเลข CRITICAL — ตลาดน่าจะเคลื่อนไหวตาม technicals"
             ),
             "status": "SUCCESS",
         }
-        _cache_set(f"econ_cal_{days_ahead}", result, ttl=3600)
+        _cache_set(f"econ_cal_{days_ahead}_{today}", result, ttl=1800)  # refresh every 30 min
         return result
     except Exception as e:
         logger.error(f"Economic Calendar Error: {e}")
@@ -3432,18 +3463,19 @@ def run_custom_screener(
     universe:   str = "NASDAQ100",
     rsi_max:    Optional[float] = None,
     rsi_min:    Optional[float] = None,
-    vol_spike:  Optional[float] = None,   # min vol ratio vs 20d avg
-    pct_from_52wh: Optional[float] = None, # max % below 52-week high
+    vol_spike:  Optional[float] = None,
+    pct_from_52wh: Optional[float] = None,
     min_return_1w: Optional[float] = None,
     max_return_1w: Optional[float] = None,
+    custom_tickers: Optional[str] = None,
     limit: int = 15
 ) -> Dict[str, Any]:
     """
-    Run a custom filter screener over NASDAQ 100, S&P 500, or Crypto Top 30.
+    Run a custom filter screener over NASDAQ 100, S&P 500, Crypto Top 30, Small-Cap, or custom tickers.
     Filters: RSI range, volume spike, proximity to 52w high, 1-week return range.
     Returns matching tickers sorted by volume ratio descending.
     """
-    cached_key = f"screener_{universe}_{rsi_max}_{rsi_min}_{vol_spike}_{pct_from_52wh}"
+    cached_key = f"screener_{universe}_{rsi_max}_{rsi_min}_{vol_spike}_{pct_from_52wh}_{custom_tickers}"
     cached = _cache_get(cached_key)
     if cached:
         return cached
@@ -3454,8 +3486,12 @@ def run_custom_screener(
             "CRYPTO":    ["BTC-USD","ETH-USD","SOL-USD","BNB-USD","XRP-USD",
                           "ADA-USD","DOGE-USD","AVAX-USD","LINK-USD","DOT-USD",
                           "MATIC-USD","UNI-USD","ATOM-USD","FIL-USD","NEAR-USD"],
+            "SMALL_CAP": list(SMALL_CAP_TICKERS),
         }
-        tickers = UNIVERSES.get(universe.upper(), UNIVERSES["NASDAQ100"])
+        if universe.upper() == "CUSTOM" and custom_tickers:
+            tickers = [t.strip().upper() for t in custom_tickers.split(",") if t.strip()]
+        else:
+            tickers = UNIVERSES.get(universe.upper(), UNIVERSES["NASDAQ100"])
 
         def _check(sym: str) -> Optional[Dict]:
             try:

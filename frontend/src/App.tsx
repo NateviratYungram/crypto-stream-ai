@@ -1,11 +1,12 @@
-import { useState, useEffect, Suspense, lazy } from 'react'
+import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ModeProvider, useMode } from './contexts/ModeContext'
+import { LanguageProvider } from './contexts/LanguageContext'
 import { useWebSocket } from './hooks/useWebSocket'
 import { TabSkeleton } from './components/TabSkeleton'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { CommandPalette } from './components/CommandPalette'
-import { AlertManager } from './components/AlertManager'
+
 import { OnboardingTour } from './components/OnboardingTour'
 import { ShortcutsHelp } from './components/ShortcutsHelp'
 import { AuthModal, type UserProfile } from './components/AuthModal'
@@ -40,8 +41,51 @@ const BacktesterView   = lazy(() => import('./components/BacktesterView').then(m
 
 interface Toast { id: string; message: string }
 
+// ── URL hash ↔ tab name mapping ──────────────────────────────────────────────
+const TAB_SLUGS: Record<string, string> = {
+  'Market Trends':        'market-trends',
+  'Institutional Assets': 'portfolio',
+  'Sentiment Hub':        'sentiment',
+  'Intelligence Hub':     'intelligence',
+  'Trading Tactics':      'tactics',
+  'Whale Tracker':        'whales',
+  'Risk Audits':          'risk',
+  'Alerts & Reviews':     'alerts',
+  'Funding Rates':        'funding',
+  'Watchlist':            'watchlist',
+  'Screener':             'screener',
+  'Trading Journal':      'journal',
+  'ETF Flows':            'etf',
+  'AI Persona':           'persona',
+  'Profile Settings':     'profile',
+  'Paper Trading':        'paper',
+  'Backtester':           'backtester',
+  'Economic Calendar':    'calendar',
+  'ML Model':             'ml',
+  'Strategy Chat':        'chat',
+}
+const SLUG_TO_TAB = Object.fromEntries(Object.entries(TAB_SLUGS).map(([k, v]) => [v, k]))
+
+function tabFromHash(): string {
+  const slug = window.location.hash.slice(1)
+  return SLUG_TO_TAB[slug] ?? 'Market Trends'
+}
+
 function AppShell() {
-  const [activeTab, setActiveTab] = useState('Market Trends')
+  const [activeTab, setActiveTabState] = useState<string>(tabFromHash)
+
+  const setActiveTab = useCallback((tab: string) => {
+    setActiveTabState(tab)
+    const slug = TAB_SLUGS[tab]
+    if (slug) window.location.hash = slug
+  }, [])
+
+  // Sync state when user presses back/forward
+  useEffect(() => {
+    const onHashChange = () => setActiveTabState(tabFromHash())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
   const [isAuthorized, setIsAuthorized] = useState(false)
   const [authModalOpen, setAuthModalOpen]   = useState(false)
   const [authModalTab,  setAuthModalTab]    = useState<'login' | 'register'>('login')
@@ -68,17 +112,22 @@ function AppShell() {
   const { isRetail, setMode, mode } = useMode()
   const { status, lastMessage } = useWebSocket()
 
-  // Auth check — JWT-based
+  // Auth check — JWT or persisted demo session
   useEffect(() => {
-    const token = localStorage.getItem('cs_jwt')
+    const token   = localStorage.getItem('cs_jwt')
     const userStr = localStorage.getItem('cs_user')
-    if (token && userStr) {
+    if (userStr) {                    // demo OR jwt session
       try {
         const user: UserProfile = JSON.parse(userStr)
-        setCurrentUser(user)
-        setIsAuthorized(true)
-        setMode(user.account_type === 'institutional' ? 'institutional' : 'retail')
-        localStorage.setItem('crypto_terminal_key', 'demo')
+        if (token || user.id === 'demo') {   // accept: valid jwt OR demo user
+          setCurrentUser(user)
+          setIsAuthorized(true)
+          // Only set mode from account_type on first-ever login (no saved preference)
+          if (!localStorage.getItem('cs_mode')) {
+            setMode(user.account_type === 'institutional' ? 'institutional' : 'retail')
+          }
+          localStorage.setItem('crypto_terminal_key', 'demo')
+        }
       } catch { /* corrupted — ignore, will re-login */ }
     }
   }, [setMode])
@@ -181,7 +230,9 @@ function AppShell() {
 
   const handleAuthSuccess = (_token: string, user: UserProfile) => {
     setCurrentUser(user)
-    setMode(user.account_type === 'institutional' ? 'institutional' : 'retail')
+    if (!localStorage.getItem('cs_mode')) {
+      setMode(user.account_type === 'institutional' ? 'institutional' : 'retail')
+    }
     setIsAuthorized(true)
     setAuthModalOpen(false)
   }
@@ -189,6 +240,7 @@ function AppShell() {
   const handleLogout = () => {
     localStorage.removeItem('cs_jwt')
     localStorage.removeItem('cs_user')
+    localStorage.removeItem('cs_mode')
     setCurrentUser(null)
     setIsAuthorized(false)
   }
@@ -203,7 +255,7 @@ function AppShell() {
     }
     localStorage.setItem('cs_user', JSON.stringify(demoUser))
     setCurrentUser(demoUser)
-    setMode('retail')
+    if (!localStorage.getItem('cs_mode')) setMode('retail')
     setIsAuthorized(true)
   }
 
@@ -289,7 +341,6 @@ function AppShell() {
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} onNavigate={setActiveTab} />
       <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <AuthModal open={authModalOpen} defaultTab={authModalTab} onClose={() => setAuthModalOpen(false)} onSuccess={handleAuthSuccess} />
-      <AlertManager currentPrices={currentPrices} onToast={addToast} />
       {showTour && (
         <OnboardingTour
           onComplete={() => { setShowTour(false); localStorage.setItem('cs_tour_seen', '1') }}
@@ -319,8 +370,10 @@ function AppShell() {
 
 export default function App() {
   return (
-    <ModeProvider>
-      <AppShell />
-    </ModeProvider>
+    <LanguageProvider>
+      <ModeProvider>
+        <AppShell />
+      </ModeProvider>
+    </LanguageProvider>
   )
 }

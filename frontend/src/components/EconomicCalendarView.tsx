@@ -48,11 +48,12 @@ const dayLabel = (dateStr: string) => {
 };
 
 export const EconomicCalendarView = () => {
-  const [days,      setDays]      = useState<DayGroup[]>([]);
-  const [loading,   setLoading]   = useState(true);
-  const [range,     setRange]     = useState(7);
-  const [filter,    setFilter]    = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'EARNINGS'>('ALL');
-  const [expanded,  setExpanded]  = useState<Set<string>>(new Set());
+  const [days,        setDays]        = useState<DayGroup[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [range,       setRange]       = useState(7);
+  const [filter,      setFilter]      = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'EARNINGS'>('ALL');
+  const [expanded,    setExpanded]    = useState<Set<string>>(new Set());
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,6 +83,7 @@ export const EconomicCalendarView = () => {
         }));
 
       setDays(sorted);
+      setLastUpdated(new Date());
       // Auto-expand today + tomorrow
       const autoExpand = new Set<string>();
       sorted.forEach(d => { if (isToday(d.date) || isTomorrow(d.date)) autoExpand.add(d.date); });
@@ -95,14 +97,21 @@ export const EconomicCalendarView = () => {
 
   useEffect(() => { load(); }, [load]);
 
+  // Auto-refresh every 30 minutes
+  useEffect(() => {
+    const id = setInterval(() => load(), 30 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [load]);
+
   const toggle = (date: string) =>
     setExpanded(prev => { const n = new Set(prev); n.has(date) ? n.delete(date) : n.add(date); return n; });
 
   const filteredDays = days.map(d => ({
     ...d,
     events: d.events.filter(ev => {
-      if (filter === 'ALL') return true;
+      if (filter === 'ALL')      return true;
       if (filter === 'EARNINGS') return ev.type === 'EARNINGS';
+      if (filter === 'HIGH')     return ev.impact === 'HIGH' || ev.impact === 'CRITICAL';
       return ev.impact === filter;
     })
   })).filter(d => d.events.length > 0);
@@ -137,7 +146,8 @@ export const EconomicCalendarView = () => {
               </button>
             ))}
           </div>
-          <button onClick={load} className="p-2 text-slate-500 hover:text-white bg-slate-900/50 border border-white/5 rounded-xl transition-all">
+          <button onClick={load} title={lastUpdated ? `Last updated: ${lastUpdated.toLocaleTimeString()}` : 'Refresh'}
+            className="p-2 text-slate-500 hover:text-white bg-slate-900/50 border border-white/5 rounded-xl transition-all">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
         </div>
@@ -161,18 +171,24 @@ export const EconomicCalendarView = () => {
       {/* Impact Filter */}
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">Filter:</span>
-        {(['ALL', 'CRITICAL', 'HIGH', 'EARNINGS'] as const).map(f => (
+        {(['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'EARNINGS'] as const).map(f => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${
               filter === f
                 ? 'bg-blue-600 border-blue-500 text-white'
                 : 'border-white/8 text-slate-500 hover:border-white/20 hover:text-slate-300'
             }`}>
-            {f === 'CRITICAL' && <span className="w-1.5 h-1.5 bg-red-500 rounded-full inline-block mr-1.5" />}
-            {f === 'HIGH'     && <span className="w-1.5 h-1.5 bg-amber-400 rounded-full inline-block mr-1.5" />}
+            {f === 'CRITICAL' && <span className="w-1.5 h-1.5 bg-red-500    rounded-full inline-block mr-1.5" />}
+            {f === 'HIGH'     && <span className="w-1.5 h-1.5 bg-amber-400  rounded-full inline-block mr-1.5" />}
+            {f === 'MEDIUM'   && <span className="w-1.5 h-1.5 bg-blue-400   rounded-full inline-block mr-1.5" />}
             {f}
           </button>
         ))}
+        {lastUpdated && (
+          <span className="ml-auto text-[10px] text-slate-600 font-mono">
+            อัปเดตล่าสุด {lastUpdated.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        )}
       </div>
 
       {/* Calendar Timeline */}

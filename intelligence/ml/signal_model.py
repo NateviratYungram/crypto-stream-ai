@@ -24,10 +24,10 @@ from typing import List, Dict, Tuple, Optional, Any
 import numpy as np
 import pandas as pd
 
-from .feature_extractor import extract_features, extract_sequence_features, FEATURE_COLS
+from .feature_extractor import extract_features, FEATURE_COLS
 try:
     from .neural_optimizer import get_neural_optimizer, TORCH_AVAILABLE
-except ImportError:
+except (ImportError, SyntaxError, Exception):
     TORCH_AVAILABLE = False
     def get_neural_optimizer(*a, **kw): return None
 
@@ -40,27 +40,34 @@ DATASET_PATH  = Path(os.getenv("ML_DATASET_PATH", "data/ml_dataset.parquet"))
 PAPER_DB_PATH = os.getenv("PAPER_TRADE_DB", "persistence.db")
 
 # Training assets — two tiers:
-#   15m / 1h = recent market microstructure (volatility regimes, session patterns)
-#   1d       = long history (5+ years) → many more labeled samples per symbol
+# DEFAULT_SYMBOLS = full list used by the ML scanner (signal detection)
 DEFAULT_SYMBOLS = [
-    # ── Recent microstructure (15m, ~2000 bars ≈ 20 days) ──────────────────
-    ("GOLD",   "MACRO",  "15m"),
-    ("BTC",    "CRYPTO", "15m"),
-    ("ETH",    "CRYPTO", "15m"),
-    ("OIL",    "MACRO",  "15m"),
-    ("SOL",    "CRYPTO", "15m"),
-    ("XRP",    "CRYPTO", "15m"),
-    # ── Medium timeframe (1h, 2000 bars ≈ 83 days) — more signals than 1d ──
-    ("GOLD",   "MACRO",  "1h"),
+    # ── Crypto 24/7 ──────────────────────────────────────────────────────────
     ("BTC",    "CRYPTO", "1h"),
     ("ETH",    "CRYPTO", "1h"),
+    ("SOL",    "CRYPTO", "1h"),
+    ("XRP",    "CRYPTO", "1h"),
+    ("BNB",    "CRYPTO", "1h"),
+    ("DOGE",   "CRYPTO", "1h"),
+    ("AVAX",   "CRYPTO", "1h"),
+    ("LINK",   "CRYPTO", "1h"),
+    # ── Macro ────────────────────────────────────────────────────────────────
+    ("GOLD",   "MACRO",  "1h"),
+    ("SILVER", "MACRO",  "1h"),
     ("OIL",    "MACRO",  "1h"),
+    # ── US Equities (scanner skips when market closed) ────────────────────────
     ("NASDAQ", "MACRO",  "1h"),
     ("SP500",  "MACRO",  "1h"),
-    ("SILVER", "MACRO",  "1h"),
     ("NVDA",   "STOCK",  "1h"),
     ("TSLA",   "STOCK",  "1h"),
     ("AAPL",   "STOCK",  "1h"),
+]
+
+# Smaller symbol set used only for model training — crypto only (Binance, fast)
+TRAIN_SYMBOLS = [
+    ("BTC", "CRYPTO", "1h"),
+    ("ETH", "CRYPTO", "1h"),
+    ("SOL", "CRYPTO", "1h"),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,15 +137,42 @@ def build_ml_dataset(
       1 = WIN  (price hit TP within max_bars)
       0 = LOSS (price hit SL or timed out)
     """
-    from intelligence.technical_engine import get_kline_data, compute_indicators
+    from intelligence.technical_engine import compute_indicators
+    import requests as _req
+
+    BINANCE_TF = {"1h": "1h", "15m": "15m", "4h": "4h", "1d": "1d"}
+
+    def _fetch_binance(sym: str, tf: str, n: int) -> "pd.DataFrame | None":
+        """Fetch OHLCV directly from Binance — no PostgreSQL, no yfinance."""
+        try:
+            r = _req.get(
+                "https://api.binance.com/api/v3/klines",
+                params={"symbol": sym + "USDT", "interval": BINANCE_TF.get(tf, "1h"), "limit": min(n, 1000)},
+                timeout=10,
+            )
+            if r.status_code != 200:
+                return None
+            raw = r.json()
+            if not isinstance(raw, list) or len(raw) < 50:
+                return None
+            df_b = pd.DataFrame(raw, columns=[
+                "open_time","Open","High","Low","Close","Volume",
+                "close_time","qav","trades","tbav","tqav","ignore"
+            ])
+            df_b["Datetime"] = pd.to_datetime(df_b["open_time"], unit="ms", utc=True).dt.tz_localize(None)
+            for c in ["Open","High","Low","Close","Volume"]:
+                df_b[c] = pd.to_numeric(df_b[c], errors="coerce")
+            return df_b[["Datetime","Open","High","Low","Close","Volume"]].dropna()
+        except Exception as e:
+            logger.warning(f"[ML-Dataset] Binance fetch {sym}: {e}")
+            return None
 
     symbols = symbols or DEFAULT_SYMBOLS
     rows: List[Dict] = []
 
     for sym, asset_class, tf in symbols:
+        df = _fetch_binance(sym, tf, limit) if asset_class == "CRYPTO" else None
         try:
-            logger.info(f"[ML-Dataset] Fetching {sym} {tf} x{limit} bars...")
-            df = get_kline_data(sym, timeframe=tf, limit=limit, asset_class=asset_class)
             if df is None or len(df) < 200:
                 logger.warning(f"[ML-Dataset] {sym}: insufficient data ({len(df) if df is not None else 0} bars)")
                 continue
@@ -156,6 +190,24 @@ def build_ml_dataset(
             low_arr   = df["Low"].values
             atr_arr   = df["atr_14"].values
 
+            # Fetch sentiment ONCE per symbol (not per signal)
+            sent_v = 0.0
+            try:
+                conn_pg = psycopg2.connect(
+                    host=os.getenv("DB_HOST", "localhost"),
+                    dbname=os.getenv("DB_NAME", "crypto_stream_db"),
+                    user=os.getenv("DB_USER", "user"),
+                    password=os.getenv("DB_PASS", "password"),
+                    connect_timeout=3,
+                )
+                with conn_pg.cursor() as cur_pg:
+                    cur_pg.execute("SELECT score FROM news_sentiment WHERE symbol=%s ORDER BY id DESC LIMIT 1", (sym.upper(),))
+                    row_s = cur_pg.fetchone()
+                    if row_s: sent_v = float(row_s[0])
+                conn_pg.close()
+            except Exception:
+                pass  # PostgreSQL not running — use 0.0
+
             for pos in signal_idx:
                 i = df.index.get_loc(pos)
                 entry  = float(close_arr[i])
@@ -169,7 +221,6 @@ def build_ml_dataset(
                 sl = entry - atr_v * sl_mult if side == "BUY" else entry + atr_v * sl_mult
                 tp = entry + atr_v * tp_mult if side == "BUY" else entry - atr_v * tp_mult
 
-                # Simulate outcome in subsequent bars
                 label = None
                 for j in range(i + 1, min(i + 1 + max_bars, len(close_arr))):
                     h = float(high_arr[j])
@@ -182,30 +233,9 @@ def build_ml_dataset(
                         if l <= tp:  label = 1; break
 
                 if label is None:
-                    label = 0  # timed out = treat as loss
-
-                # Fetch latest sentiment for this symbol to enrich the feature set (NOW FETCHED FROM POSTGRES)
-                sent_v = 0.0
-                try:
-                    conn_pg = psycopg2.connect(
-                        host=os.getenv("DB_HOST", "localhost"),
-                        dbname=os.getenv("DB_NAME", "crypto_stream_db"),
-                        user=os.getenv("DB_USER", "user"),
-                        password=os.getenv("DB_PASS", "password")
-                    )
-                    with conn_pg.cursor() as cur_pg:
-                        cur_pg.execute("SELECT score FROM news_sentiment WHERE symbol=%s ORDER BY id DESC LIMIT 1", (sym.upper(),))
-                        row_s = cur_pg.fetchone()
-                        if row_s: sent_v = float(row_s[0])
-                    conn_pg.close()
-                except Exception as e:
-                    logger.debug(f"[ML-Sentiment] PG Error: {e}")
+                    label = 0
 
                 feats = extract_features(df, i, side=side, symbol=sym, asset_class=asset_class, sentiment_score=sent_v)
-                
-                # V6 Neural Sequence Support (Last 10 bars) - Includes Alpha Factors
-                feats["_sequence"] = extract_sequence_features(df, i, window=10, side=side, symbol=sym, asset_class=asset_class, sentiment_score=sent_v).tolist()
-                
                 feats["label"]  = label
                 feats["symbol"] = sym
                 feats["side"]   = side
@@ -296,7 +326,7 @@ def train_model(
     # Use only rows that have all feature columns
     available = [c for c in FEATURE_COLS if c in dataset.columns]
     X_ens      = dataset[available].fillna(0).values
-    X_neu      = np.array(dataset["_sequence"].tolist(), dtype=np.float32) if "_sequence" in dataset.columns else None
+    X_neu      = None  # Neural trainer disabled
     y          = dataset["label"].values
 
     if len(X_ens) < 50:
@@ -320,12 +350,12 @@ def train_model(
         ("clf", VotingClassifier(
             estimators=[
                 ("gbm", GradientBoostingClassifier(
-                    n_estimators=300, max_depth=5, learning_rate=0.03,
+                    n_estimators=100, max_depth=3, learning_rate=0.05,
                     subsample=0.8, random_state=42
                 )),
                 ("rf", RandomForestClassifier(
-                    n_estimators=200, max_depth=10, random_state=42,
-                    class_weight="balanced"
+                    n_estimators=100, max_depth=8, random_state=42,
+                    class_weight="balanced", n_jobs=-1
                 ))
             ],
             voting="soft"
@@ -335,14 +365,8 @@ def train_model(
     logger.info(f"[ML-Train] Training Ensemble V3 on {len(X_train_ens)} samples...")
     model.fit(X_train_ens, y_train)
 
-    # ── Phase 8: Neural Trainer V8 (Hardened Attention-GRU) ───────────────
-    try:
-        from .neural_optimizer import get_neural_optimizer
-        neu_trainer = get_neural_optimizer(input_size=len(available))
-        best_val_loss = neu_trainer.train_on_sequences(X_train_neu, y_train)
-        logger.info(f"[ML-Train] Neural V8 Convergence: Best Val Loss = {best_val_loss:.4f}")
-    except Exception as e:
-        logger.error(f"[ML-Train] Neural V8 training failed: {e}")
+    # Neural Trainer disabled for speed — GBM+RF ensemble is sufficient
+    logger.info("[ML-Train] Skipping Neural V8 (disabled for faster retrain)")
 
     y_pred  = model.predict(X_test_ens)
     y_prob  = model.predict_proba(X_test_ens)[:, 1]
@@ -549,17 +573,9 @@ def predict_with_neural_consensus(
     features = extract_features(df, idx, side, symbol, asset_class, sentiment_score)
     v3_result = predict_win_probability(features)
 
-    # 2. Deep Intelligence V8 Opinion (Sequential Pattern Recognition)
+    # Neural V8 disabled — GBM ensemble only
     v8_prob = None
     v8_weights = []
-    if TORCH_AVAILABLE:
-        try:
-            seq = extract_sequence_features(df, idx, side=side, symbol=symbol, asset_class=asset_class, sentiment_score=sentiment_score)
-            trainer = get_neural_optimizer(input_size=len(FEATURE_COLS))
-            if trainer is not None:
-                v8_prob, v8_weights = trainer.predict(seq)
-        except Exception as e:
-            logger.debug(f"NeuralV8: Inference skipped: {e}")
 
     # 3. Decision Stacking
     final_prob = v3_result["win_probability"]

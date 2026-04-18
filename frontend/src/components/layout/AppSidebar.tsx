@@ -24,6 +24,7 @@ import {
   FlaskConical
 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 interface AppSidebarProps {
   activeTab: string;
@@ -35,80 +36,79 @@ interface AppSidebarProps {
 
 export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab, wsStatus, onNavClick, mode = 'retail' }) => {
   const isRetail = mode === 'retail';
+  const { t } = useLanguage();
 
-  // Retail: 8 essential tabs — no jargon, no advanced tools
   const retailGroups = [
     {
-      label: 'Markets',
+      label: t('sidebar.markets'),
       items: [
-        { id: 'Market Trends',    label: 'Market Overview',   icon: LayoutGrid        },
-        { id: 'Sentiment Hub',    label: 'News & Sentiment',  icon: Newspaper         },
-        { id: 'Screener',         label: 'Stock Screener',    icon: SlidersHorizontal },
-        { id: 'Watchlist',        label: 'My Watchlist',      icon: Star              },
-        { id: 'Economic Calendar',label: 'Economic Calendar', icon: CalendarDays      },
+        { id: 'Market Trends',    icon: LayoutGrid        },
+        { id: 'Sentiment Hub',    icon: Newspaper         },
+        { id: 'Screener',         icon: SlidersHorizontal },
+        { id: 'Watchlist',        icon: Star              },
+        { id: 'Economic Calendar',icon: CalendarDays      },
       ]
     },
     {
-      label: 'Trading Tools',
+      label: t('sidebar.trading_tools'),
       items: [
-        { id: 'Strategy Chat',    label: 'AI Assistant',      icon: MessageSquare     },
-        { id: 'Paper Trading',    label: 'Practice Trading',  icon: ClipboardList     },
-        { id: 'Trading Journal',  label: 'Trade Journal',     icon: BookOpen          },
+        { id: 'Strategy Chat',    icon: MessageSquare     },
+        { id: 'Paper Trading',    icon: ClipboardList     },
+        { id: 'Trading Journal',  icon: BookOpen          },
       ]
     },
     {
-      label: 'Account',
+      label: t('sidebar.account'),
       items: [
-        { id: 'Profile Settings', label: 'Profile & Account', icon: UserCircle        },
+        { id: 'Profile Settings', icon: UserCircle        },
       ]
     }
   ];
 
-  // Institutional: all tabs with professional labels
   const institutionalGroups = [
     {
-      label: 'Market Intelligence',
+      label: t('sidebar.market_intelligence'),
       items: [
-        { id: 'Market Trends',        label: 'Tactical Dashboard',   icon: LayoutGrid        },
-        { id: 'Sentiment Hub',        label: 'News Sentiment',        icon: Newspaper         },
-        { id: 'Intelligence Hub',     label: 'Market Signals',        icon: Brain             },
-        { id: 'Trading Tactics',      label: 'Trading Tactics',       icon: Target            },
-        { id: 'Screener',             label: 'Market Screener',       icon: SlidersHorizontal },
+        { id: 'Market Trends',        icon: LayoutGrid        },
+        { id: 'Sentiment Hub',        icon: Newspaper         },
+        { id: 'Intelligence Hub',     icon: Brain             },
+        { id: 'Trading Tactics',      icon: Target            },
+        { id: 'Screener',             icon: SlidersHorizontal },
       ]
     },
     {
-      label: 'Tracking & Signals',
+      label: t('sidebar.tracking_signals'),
       items: [
-        { id: 'Whale Tracker',        label: 'Whale Tracker',         icon: Zap               },
-        { id: 'Funding Rates',        label: 'Funding Rates',         icon: DollarSign        },
-        { id: 'ETF Flows',            label: 'ETF Flows',             icon: BarChart2         },
-        { id: 'Watchlist',            label: 'Watchlist',             icon: Star              },
+        { id: 'Whale Tracker',        icon: Zap               },
+        { id: 'Funding Rates',        icon: DollarSign        },
+        { id: 'ETF Flows',            icon: BarChart2         },
+        { id: 'Watchlist',            icon: Star              },
       ]
     },
     {
-      label: 'AI & Chat',
+      label: t('sidebar.ai_chat'),
       items: [
-        { id: 'Strategy Chat',        label: 'AI Strategy Chat',      icon: MessageSquare     },
-        { id: 'AI Persona',           label: 'AI Persona',            icon: Bot               },
+        { id: 'Strategy Chat',        icon: MessageSquare     },
+        { id: 'AI Persona',           icon: Bot               },
       ]
     },
     {
-      label: 'Risk & Portfolio',
+      label: t('sidebar.risk_portfolio'),
       items: [
-        { id: 'Institutional Assets', label: 'Portfolio Analytics',   icon: PieChart          },
-        { id: 'Risk Audits',          label: 'Risk Monitor',          icon: ShieldAlert       },
-        { id: 'Trading Journal',      label: 'Trading Journal',       icon: BookOpen          },
-        { id: 'Paper Trading',        label: 'Paper Trading',         icon: ClipboardList     },
-        { id: 'Backtester',           label: 'Strategy Backtester',   icon: FlaskConical      },
-        { id: 'Alerts & Reviews',     label: 'Alerts & Reviews',      icon: Bell              },
+        { id: 'Institutional Assets', icon: PieChart          },
+        { id: 'Risk Audits',          icon: ShieldAlert       },
+        { id: 'Trading Journal',      icon: BookOpen          },
+        { id: 'Paper Trading',        icon: ClipboardList     },
+        { id: 'Backtester',           icon: FlaskConical      },
+        { id: 'Alerts & Reviews',     icon: Bell              },
       ]
     },
     {
-      label: 'Tools & Settings',
+      label: t('sidebar.tools_settings'),
       items: [
-        { id: 'Economic Calendar',    label: 'Economic Calendar',     icon: CalendarDays      },
-        { id: 'ML Model',             label: 'ML Model Stats',         icon: Activity          },
-        { id: 'Profile Settings',     label: 'Profile & Account',     icon: UserCircle        },
+        { id: 'Economic Calendar',    icon: CalendarDays      },
+        { id: 'ML Model',             icon: Activity          },
+        { id: 'Profile Settings',     icon: UserCircle        },
       ]
     }
   ];
@@ -125,7 +125,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
             : 'bg-blue-500/5 border-blue-500/15 text-blue-400'
         }`}>
           <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${isRetail ? 'bg-emerald-400' : 'bg-blue-400'}`} />
-          {isRetail ? '👤 Retail Mode' : '🏛 Institutional Mode'}
+          {isRetail ? t('sidebar.retail_mode') : t('sidebar.institutional_mode')}
         </div>
       </div>
 
@@ -135,7 +135,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-hover:text-blue-400 transition-colors" />
           <input
             type="text"
-            placeholder="Search panels..."
+            placeholder={t('sidebar.search')}
             className="w-full bg-slate-900/50 border border-white/5 rounded-xl py-2 pl-9 pr-4 text-xs font-bold text-slate-300 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/30 transition-all"
           />
         </div>
@@ -158,7 +158,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
                 <div className="flex items-center gap-3">
                   <item.icon className={`w-4 h-4 transition-colors ${activeTab === item.id ? 'text-blue-400' : 'group-hover:text-slate-400'}`} />
                   <span className={`text-[11px] font-black uppercase tracking-widest ${activeTab === item.id ? 'text-blue-400' : ''}`}>
-                    {item.label}
+                    {t(`tab.${item.id}` as Parameters<typeof t>[0])}
                   </span>
                 </div>
                 {activeTab === item.id && (
@@ -173,7 +173,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
       {/* Footer / System Status */}
       <div className="p-4 border-t border-white/5 bg-slate-950/80 backdrop-blur-md">
         <div className="flex items-center justify-between mb-3 px-1">
-          <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Connectivity</span>
+          <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{t('sidebar.connectivity')}</span>
           <div className="flex items-center gap-2">
              <div className={`w-2 h-2 rounded-full ${wsStatus === 'open' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'} shadow-[0_0_8px_currentColor]`} />
              <span className={`text-[10px] font-black uppercase tracking-widest ${wsStatus === 'open' ? 'text-emerald-500' : 'text-rose-500'}`}>
@@ -183,7 +183,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
         </div>
 
         <button className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-[10px] font-black text-slate-400 hover:text-slate-200 transition-all uppercase tracking-widest">
-          <Settings className="w-3.5 h-3.5" /> Support Console
+          <Settings className="w-3.5 h-3.5" /> {t('sidebar.support_console')}
         </button>
       </div>
     </aside>

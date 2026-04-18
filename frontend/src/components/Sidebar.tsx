@@ -56,7 +56,7 @@ export const Sidebar = ({ activeTab, setActiveTab, wsStatus }: SidebarProps) => 
     { id: 'Whale Tracker',        label: isRetail ? '🐋 Whale Tracker' : 'Whale Tracker',         sublabel: '', icon: Zap           },
     { id: 'Funding Rates',        label: isRetail ? '💸 Funding Rate'  : 'Funding Rates',         sublabel: '', icon: DollarSign    },
     { id: 'ETF Flows',            label: isRetail ? '📊 ETF Flows'     : 'ETF Flows',             sublabel: '', icon: BarChart2     },
-    { id: 'Risk Audits',          label: isRetail ? '🛡️ ความเสี่ยง'  : 'Risk Intel',            sublabel: '', icon: ShieldAlert   },
+    { id: 'Risk Audits',          label: isRetail ? '📊 P&L Activity' : 'P&L Activity',          sublabel: '', icon: ShieldAlert   },
     { id: 'Trading Journal',      label: isRetail ? '📒 Journal'       : 'Trading Journal',       sublabel: '', icon: BookOpen      },
     { id: 'Alerts & Reviews',     label: isRetail ? '🔔 แจ้งเตือน'    : 'Alerts & Reviews',      sublabel: '', icon: Bell          },
     { id: 'AI Persona',           label: isRetail ? '🤖 AI Persona'    : 'AI Persona',            sublabel: '', icon: Bot           },

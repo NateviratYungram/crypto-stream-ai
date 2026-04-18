@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Shield, TrendingUp, Zap, Target, Info, ChevronRight } from 'lucide-react';
+import { Shield, TrendingUp, Zap, Target, ChevronRight } from 'lucide-react';
 import { HoverGlowCard } from './HoverGlowCard';
-import { FinancialTerm } from './Tooltip';
 
 interface AuditLog {
   id: number;
@@ -71,17 +70,24 @@ export const TacticsHub = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const apiKey = () => localStorage.getItem('crypto_terminal_key') || 'demo';
+
   const fetchTactics = async (targetSym: string) => {
     setLoading(true);
     setError(null);
+    const headers = { 'X-API-Key': apiKey() };
     try {
-      const res = await fetch(`/api/tactics/${targetSym}`);
+      const res = await fetch(`/api/tactics/${targetSym}`, { headers });
       const json = await res.json();
       if (json.error) throw new Error(json.error);
+      if (json.detail) throw new Error(String(json.detail));
+      if (!json.tactics || !Array.isArray(json.tactics)) {
+        throw new Error(`Server returned: ${JSON.stringify(json).slice(0, 200)}`);
+      }
       setData(json);
-      
+
       // Fetch Audit Logs too
-      const auditRes = await fetch('/api/tactics/audit/logs');
+      const auditRes = await fetch('/api/tactics/audit/logs', { headers });
       const auditJson = await auditRes.json();
       if (auditJson.logs) setAuditLogs(auditJson.logs);
       
@@ -96,7 +102,7 @@ export const TacticsHub = () => {
     fetchTactics(symbol);
   }, []);
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = (e: React.SyntheticEvent) => {
     e.preventDefault();
     fetchTactics(symbol.toUpperCase());
   };
@@ -273,7 +279,7 @@ export const TacticsHub = () => {
 
             {/* Tactics Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {data.tactics.map((tactic, i) => (
+              {(data.tactics || []).map((tactic, i) => (
                 <HoverGlowCard key={i} className={`p-8 rounded-[2.5rem] border ${tactic.name === data.best_persona ? 'border-indigo-500/30 bg-indigo-500/5' : 'border-white/5 bg-slate-900/40'} flex flex-col h-full group transition-all duration-500 hover:-translate-y-2`}>
                   <div className="flex justify-between items-start mb-8">
                     <div className="p-3 bg-white/5 rounded-2xl border border-white/10 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(99,102,241,0.2)] transition-all duration-500">

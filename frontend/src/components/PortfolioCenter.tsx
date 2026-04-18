@@ -1,253 +1,587 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Wallet, Landmark, TrendingUp, ArrowUpRight, ArrowDownRight, Search, PlusCircle, RefreshCcw, DollarSign, PieChart as PieIcon } from 'lucide-react';
-import { HoverGlowCard } from './HoverGlowCard';
-import { AnimatedCounter } from './AnimatedCounter';
+import {
+  AlertCircle,
+  ArrowUpRight,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  Landmark,
+  RefreshCcw,
+  Search,
+  Wallet,
+  X,
+} from 'lucide-react';
 
-const DEMO_ASSETS = [
-  { symbol: 'BTC', balance: 0.45, price: 71850.22, allocation: 45, type: 'CRYPTO' },
-  { symbol: 'ETH', balance: 5.2, price: 3452.12, allocation: 25, type: 'CRYPTO' },
-  { symbol: 'SOL', balance: 42.5, price: 142.34, allocation: 15, type: 'CRYPTO' },
-  { symbol: 'USDT', balance: 12500, price: 1.0, allocation: 15, type: 'STABLE' },
-];
+type Chain = 'ETH' | 'SOL';
+
+interface Asset {
+  symbol: string;
+  name?: string;
+  balance: number;
+  price: number;
+  usd_value: number;
+  change_24h: number;
+  allocation: number;
+  kind?: 'native' | 'token';
+  token_address?: string | null;
+  logo?: string;
+  priced?: boolean;
+}
+
+interface WalletIdentity {
+  display_name: string;
+  resolved_name: string;
+  avatar: string;
+  description: string;
+  twitter: string;
+  website: string;
+  explorer_url: string;
+}
+
+interface WalletData {
+  address: string;
+  chain: Chain;
+  total_usd: number;
+  assets: Asset[];
+  source: string;
+  identity?: WalletIdentity | null;
+  explorer_url?: string;
+}
+
+interface FamousWallet {
+  name: string;
+  title: string;
+  address: string;
+  chain: Chain;
+  explorerUrl: string;
+}
 
 interface PortfolioCenterProps {
   tickerPrices?: Record<string, { price: number; delta: number }>;
 }
 
-export const PortfolioCenter = ({ tickerPrices = {} }: PortfolioCenterProps) => {
-  const [address, setAddress] = useState('');
-  const [loading, setLoading] = useState(false);
-  
-  // Real-time macro state derived from props
-  const goldPrice = tickerPrices['GOLD']?.price || 2350.45;
-  const goldDelta = tickerPrices['GOLD']?.delta || 1.25;
-  const nasdaqPrice = tickerPrices['NASDAQ']?.price || 18230.12;
-  const nasdaqDelta = tickerPrices['NASDAQ']?.delta || 0.45;
-  const sp500Price = tickerPrices['SP500']?.price || 5120.40;
-  const sp500Delta = tickerPrices['SP500']?.delta || -0.15;
+const FAMOUS_WALLETS: FamousWallet[] = [
+  {
+    name: 'Vitalik Buterin',
+    title: 'ETH co-founder',
+    address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+  },
+  {
+    name: 'Justin Sun',
+    title: 'TRON founder',
+    address: '0x3DdfA8eC3052539b6C9549F12cEA2C295cfF5296',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0x3DdfA8eC3052539b6C9549F12cEA2C295cfF5296',
+  },
+  {
+    name: 'Ethereum Foundation',
+    title: 'Treasury wallet',
+    address: '0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe',
+  },
+  {
+    name: 'Binance Hot Wallet',
+    title: 'Exchange cold storage',
+    address: '0xBE0eB53F46cd790Cd13851d5EFf43D12404d33E8',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0xBE0eB53F46cd790Cd13851d5EFf43D12404d33E8',
+  },
+  {
+    name: 'Coinbase',
+    title: 'Exchange wallet',
+    address: '0x71660c4005BA85c37ccec55d0C4493E66Fe775d3',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0x71660c4005BA85c37ccec55d0C4493E66Fe775d3',
+  },
+  {
+    name: 'a16z Crypto',
+    title: 'VC fund wallet',
+    address: '0x05E793cE0C6027323Ac150F6d45C2344d28B6019',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0x05E793cE0C6027323Ac150F6d45C2344d28B6019',
+  },
+  {
+    name: 'Mark Cuban',
+    title: 'Billionaire investor',
+    address: '0xF76e3b4ca5f1B1851Dd7E29C3e97a10F23BC1D00',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0xF76e3b4ca5f1B1851Dd7E29C3e97a10F23BC1D00',
+  },
+  {
+    name: 'MicroStrategy',
+    title: 'BTC Treasury Corp',
+    address: '0x4DA82a8AC033fdD9Ba0d3F0Cc0feAeEDf2Ee5158',
+    chain: 'ETH',
+    explorerUrl: 'https://etherscan.io/address/0x4DA82a8AC033fdD9Ba0d3F0Cc0feAeEDf2Ee5158',
+  },
+];
 
-  const MACRO_BENCHMARKS = [
-    { symbol: 'GOLD', price: goldPrice, change24h: goldDelta, name: 'Gold Spot' },
-    { symbol: 'NASDAQ', price: nasdaqPrice, change24h: nasdaqDelta, name: 'Nasdaq 100' },
-    { symbol: 'SP500', price: sp500Price, change24h: sp500Delta, name: 'S&P 500 Index' },
-  ];
+function isEthAddress(v: string) { return /^0x[0-9a-fA-F]{40}$/.test(v.trim()); }
 
-  const [portfolio, setPortfolio] = useState(DEMO_ASSETS);
-  const [isWatching, setIsWatching] = useState(false);
+function shortenHash(v: string, head = 6, tail = 4) {
+  if (!v || v.length <= head + tail + 3) return v;
+  return `${v.slice(0, head)}...${v.slice(-tail)}`;
+}
 
-  const totalValue = portfolio.reduce((sum, asset) => sum + (asset.balance * asset.price), 0);
-  const pnl24h = 1240.50; // Mock data
-  const pnlPct = (pnl24h / totalValue) * 100;
+function fmt(v: number) {
+  if (v === 0) return '$0';
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  if (v >= 1) return `$${v.toFixed(2)}`;
+  return `$${v.toFixed(6)}`;
+}
 
-  const handleWatchAddress = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!address) return;
-    setLoading(true);
-    // Simulate API fetch delay
-    setTimeout(() => {
-      setIsWatching(true);
-      setLoading(false);
-    }, 1500);
+function fmtPrice(v: number) {
+  if (v <= 0) return '—';
+  if (v >= 1_000) return `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (v >= 1) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(8)}`;
+}
+
+function fmtBal(v: number) {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (v >= 1) return v.toFixed(4);
+  return v.toFixed(8);
+}
+
+function fmtTotal(v: number) {
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return `$${v.toFixed(2)}`;
+}
+
+type SortKey = 'usd_value' | 'balance' | 'change_24h' | 'symbol';
+
+export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioCenterProps) => {
+  const [address, setAddress]       = useState('');
+  const [loading, setLoading]       = useState(false);
+  const [error, setError]           = useState('');
+  const [walletData, setWalletData] = useState<WalletData | null>(null);
+  const [attribution, setAttribution] = useState<FamousWallet | null>(null);
+  const [sortKey, setSortKey]       = useState<SortKey>('usd_value');
+  const [sortAsc, setSortAsc]       = useState(false);
+  const [filterPriced, setFilterPriced] = useState(false);
+  const [page, setPage]             = useState(0);
+  const PAGE_SIZE = 50;
+
+  const liveMode = Boolean(walletData);
+  const assets   = walletData?.assets ?? [];
+
+  const displayAssets = useMemo(() => {
+    let list = filterPriced ? assets.filter(a => a.priced) : assets;
+    list = [...list].sort((a, b) => {
+      const av = a[sortKey] as number | string;
+      const bv = b[sortKey] as number | string;
+      const diff = typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number);
+      return sortAsc ? diff : -diff;
+    });
+    return list;
+  }, [assets, sortKey, sortAsc, filterPriced]);
+
+  const paginated   = displayAssets.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages  = Math.ceil(displayAssets.length / PAGE_SIZE);
+  const pricedCount = assets.filter(a => a.priced).length;
+
+  const walletName = (() => {
+    const id = walletData?.identity;
+    if (id?.resolved_name) return id.resolved_name;
+    if (id?.display_name)  return id.display_name;
+    if (attribution?.name) return attribution.name;
+    if (walletData?.address) return shortenHash(walletData.address, 8, 6);
+    return '';
+  })();
+
+  const handleReset = () => {
+    setAddress(''); setError(''); setWalletData(null);
+    setAttribution(null); setPage(0);
   };
 
+  const loadAddress = async (addr: string, famous?: FamousWallet) => {
+    setLoading(true); setError(''); setAttribution(famous ?? null); setPage(0);
+    try {
+      const res = await fetch(`/api/portfolio/wallet?address=${encodeURIComponent(addr)}`, {
+        headers: { 'X-API-Key': localStorage.getItem('crypto_terminal_key') || 'demo' },
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.detail || 'Wallet lookup failed.');
+      setWalletData(payload);
+    } catch (e: unknown) {
+      setWalletData(null);
+      setError(e instanceof Error ? e.message : 'Unknown error.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const a = address.trim();
+    if (!a) return;
+    loadAddress(a);
+  };
+
+  const handleQuickLoad = (w: FamousWallet) => {
+    setAddress(w.address);
+    loadAddress(w.address, w);
+  };
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) setSortAsc(p => !p);
+    else { setSortKey(key); setSortAsc(false); }
+    setPage(0);
+  };
+
+  const SortIcon = ({ k }: { k: SortKey }) =>
+    sortKey === k
+      ? sortAsc ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+      : <ChevronDown className="h-3 w-3 opacity-30" />;
+
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-950/20 custom-scrollbar overflow-y-auto pb-20">
-      <header className="h-20 border-b border-white/5 flex items-center justify-between pl-8 pr-10 bg-slate-950/40 backdrop-blur-3xl z-30 sticky top-0 shrink-0 shadow-2xl">
-        <div className="flex items-center gap-5">
-          <div className="w-12 h-12 bg-indigo-600/10 rounded-2xl flex items-center justify-center border border-indigo-500/20 shadow-inner">
-            <Landmark className="w-6 h-6 text-indigo-400" />
+    <div className="flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar">
+      {/* Header — same pattern as WhaleTrackerView */}
+      <header className="flex justify-between items-center border-b border-white/5 pb-8">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-[0.2em]">
+            <Landmark className="w-3.5 h-3.5" />
+            Wallet Explorer
           </div>
-          <div className="space-y-0.5">
-            <h1 className="text-2xl font-black text-white tracking-tighter uppercase italic">Institutional Assets</h1>
-            <div className="flex items-center gap-3">
-              <div className="px-2 py-0.5 rounded text-[11px] font-black uppercase tracking-widest text-amber-500 bg-amber-500/10 border border-amber-500/20">
-                Demo Mode
-              </div>
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-wide">
-                Using Synthetic Analytics Data
-              </span>
-            </div>
-          </div>
+          <h2 className="text-3xl font-extrabold text-white tracking-tight">On-Chain Holdings</h2>
+          <p className="text-slate-500 text-sm font-medium">
+            Paste any public ETH or SOL address · see every token, balance, and USD value
+          </p>
         </div>
-        <div className="flex items-center gap-4">
-          <form onSubmit={handleWatchAddress} className="relative group hidden md:block">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-indigo-400 transition-colors" />
-            <input
-              type="text"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              placeholder="Watch public address (ETH/SOL)..."
-              className="bg-slate-900/50 border border-white/10 rounded-2xl px-12 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 transition-all w-80 font-mono"
-            />
-            <button type="submit" disabled={loading} className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 hover:bg-white/5 rounded-xl transition-colors">
-              {loading ? <RefreshCcw className="w-3.5 h-3.5 text-indigo-400 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5 text-slate-500" />}
+        <div className="flex items-center gap-3">
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold tracking-widest uppercase transition-all ${
+            liveMode
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+              : 'bg-slate-800/40 border-slate-700/30 text-slate-500'
+          }`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
+            {liveMode ? 'Live Wallet' : 'Ready'}
+          </div>
+          {liveMode && (
+            <button onClick={handleReset}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-rose-500/40 rounded-xl text-slate-300 transition-all font-bold text-xs">
+              <X className="w-3.5 h-3.5" />
+              Clear
             </button>
-          </form>
+          )}
         </div>
       </header>
 
-      <div className="p-10 space-y-10 max-w-[1400px] mx-auto w-full">
-        {/* Main Stats Banner */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <HoverGlowCard className="lg:col-span-2 p-10 rounded-[2.5rem] bg-indigo-600/5 border-indigo-500/20 relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-10 opacity-10 group-hover:opacity-20 transition-opacity">
-              <Wallet className="w-32 h-32 text-indigo-500" />
-            </div>
-            <div className="relative z-10 space-y-6">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-black text-indigo-400 uppercase tracking-[0.3em]">Total Portfolio Value</span>
-              </div>
-              <div className="flex items-baseline gap-4">
-                <span className="text-6xl font-black text-white tracking-tighter tabular-nums font-mono">
-                  $<AnimatedCounter value={totalValue} decimals={2} />
-                </span>
-                <div className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-1.5 text-emerald-400 font-bold text-xs uppercase tracking-widest">
-                  <TrendingUp className="w-3.5 h-3.5" />
-                  Live Feed
-                </div>
-              </div>
-              <div className="flex items-center gap-10">
-                <div className="space-y-1">
-                  <p className="text-[11px] font-black text-slate-500 uppercase tracking-widest">24h Net PnL</p>
-                  <p className="text-xl font-bold text-emerald-400 font-mono">
-                    +${pnl24h.toLocaleString()} <span className="text-xs">({pnlPct.toFixed(2)}%)</span>
-                  </p>
-                </div>
-                <div className="w-px h-10 bg-white/5" />
-                <div className="space-y-1">
-                  <p className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Asset Diversity</p>
-                  <div className="flex gap-1.5">
-                    {[1,2,3,4].map(i => <div key={i} className={`h-1.5 w-6 rounded-full ${i <= 3 ? 'bg-indigo-500' : 'bg-slate-700'}`} />)}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </HoverGlowCard>
+      <div className="flex flex-col gap-5">
+        {/* Search Panel */}
+        <div className="rounded-[1.75rem] border border-white/8 bg-slate-900/60 p-5">
+          <form onSubmit={handleSubmit} className="flex gap-3">
+            <label className="relative flex-1">
+              <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={address}
+                onChange={e => setAddress(e.target.value)}
+                placeholder="Paste ETH (0x...) or SOL address..."
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 py-3 pl-11 pr-4 text-sm font-semibold text-white outline-none placeholder:text-slate-600 focus:border-indigo-400/50 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+              />
+            </label>
+            <button type="submit" disabled={!address.trim() || loading}
+              className="inline-flex min-w-[110px] items-center justify-center gap-2 rounded-2xl bg-indigo-500 px-5 py-3 text-sm font-black uppercase tracking-[0.16em] text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40 transition-colors">
+              {loading ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
+              {loading ? 'Loading' : 'Inspect'}
+            </button>
+            {liveMode && (
+              <button type="button" onClick={handleReset}
+                className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-black uppercase tracking-[0.16em] text-slate-300 hover:border-white/20 hover:text-white transition-colors">
+                Clear
+              </button>
+            )}
+          </form>
 
-          <HoverGlowCard className="p-8 rounded-[2.5rem] bg-slate-900/40 border-white/5 flex flex-col justify-between">
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <PieIcon className="w-4 h-4 text-indigo-400" />
-                  <span className="text-xs font-black text-slate-400 uppercase tracking-widest leading-none">Allocation</span>
-                </div>
-              </div>
-              <div className="space-y-4">
-                {portfolio.map(asset => (
-                  <div key={asset.symbol} className="space-y-1.5">
-                    <div className="flex justify-between text-xs font-black uppercase tracking-widest">
-                      <span className="text-slate-200">{asset.symbol}</span>
-                      <span className="text-slate-500">{asset.allocation}%</span>
+          {/* Famous wallets */}
+          <div className="mt-4 space-y-2">
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-600">Quick load — notable public wallets</p>
+            <div className="flex flex-wrap gap-2">
+              {FAMOUS_WALLETS.map(w => (
+                <button key={w.address} type="button" onClick={() => handleQuickLoad(w)} disabled={loading}
+                  className={`rounded-xl border px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.12em] transition-all disabled:opacity-50 ${
+                    walletData?.address === w.address
+                      ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200'
+                      : 'border-white/10 bg-white/[0.03] text-slate-300 hover:border-indigo-400/30 hover:text-white'
+                  }`}>
+                  {w.name}
+                  <span className="ml-1.5 font-semibold normal-case text-slate-600">· {w.title}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="flex items-start gap-3 rounded-[1.5rem] border border-rose-500/20 bg-rose-500/10 p-4">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-300" />
+            <div>
+              <p className="text-sm font-black uppercase tracking-[0.18em] text-rose-100">Lookup error</p>
+              <p className="mt-1 text-sm font-semibold text-rose-200/90">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Identity Banner */}
+        <AnimatePresence>
+          {liveMode && walletData && (
+            <motion.div key="identity"
+              initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="rounded-[1.75rem] border border-white/8 bg-slate-900/60 p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-4">
+                  {walletData.identity?.avatar ? (
+                    <img src={walletData.identity.avatar} alt={walletName}
+                      className="h-14 w-14 rounded-2xl border border-white/10 object-cover shrink-0" />
+                  ) : (
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-indigo-500/10 text-xl font-black text-indigo-100">
+                      {(walletName || 'W').slice(0, 1).toUpperCase()}
                     </div>
-                    <div className="h-1.5 w-full bg-black/40 rounded-full overflow-hidden">
-                      <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${asset.allocation}%` }}
-                        className="h-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.4)]"
-                      />
+                  )}
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-lg font-black uppercase tracking-tight text-white">{walletName || shortenHash(walletData.address, 8, 6)}</p>
+                      {walletData.identity?.resolved_name && (
+                        <span className="rounded-full border border-indigo-400/20 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-indigo-200">
+                          {walletData.identity.resolved_name}
+                        </span>
+                      )}
+                      <span className="rounded-full border border-white/8 bg-white/5 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                        {walletData.chain}
+                      </span>
+                    </div>
+                    <p className="font-mono text-xs text-slate-500">{walletData.address}</p>
+                    {walletData.identity?.description && (
+                      <p className="text-sm text-slate-400 leading-6 max-w-2xl">{walletData.identity.description}</p>
+                    )}
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {walletData.identity?.twitter && (
+                        <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-sky-300">
+                          @{walletData.identity.twitter}
+                        </span>
+                      )}
+                      {walletData.identity?.website && (
+                        <span className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                          {walletData.identity.website.replace(/^https?:\/\//i, '')}
+                        </span>
+                      )}
                     </div>
                   </div>
-                ))}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {walletData.explorer_url && (
+                    <a href={walletData.explorer_url} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-400/20 bg-indigo-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-indigo-200 hover:bg-indigo-500/20 transition-colors">
+                      Etherscan <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
               </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Stats Row */}
+        <AnimatePresence>
+          {liveMode && walletData && (
+            <motion.div key="stats"
+              initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                { label: 'Total Value', value: fmtTotal(walletData.total_usd), sub: 'USD at current prices' },
+                { label: 'Total Assets', value: String(assets.length), sub: `${pricedCount} have market price` },
+                { label: 'Largest Position', value: assets[0]?.symbol || '—', sub: assets[0] ? fmt(assets[0].usd_value) : '—' },
+                { label: 'Price Coverage', value: `${assets.length ? Math.round(pricedCount / assets.length * 100) : 0}%`, sub: `${pricedCount}/${assets.length} priced` },
+              ].map(s => (
+                <div key={s.label} className="rounded-[1.5rem] border border-white/8 bg-slate-900/60 p-5">
+                  <p className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">{s.label}</p>
+                  <p className="mt-2 text-3xl font-black text-white">{s.value}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">{s.sub}</p>
+                </div>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Token Table */}
+        <AnimatePresence>
+          {liveMode && walletData && (
+            <motion.div key="table"
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="rounded-[1.75rem] border border-white/8 bg-slate-900/60 overflow-hidden">
+
+              {/* Table toolbar */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
+                <div className="flex items-center gap-3">
+                  <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">
+                    {displayAssets.length} assets
+                  </p>
+                  <span className="text-slate-700">·</span>
+                  <p className="text-[11px] font-semibold text-slate-500">{walletData.source}</p>
+                </div>
+                <button onClick={() => { setFilterPriced(p => !p); setPage(0); }}
+                  title={filterPriced ? 'Show all assets' : `Filter to ${pricedCount} assets that have a USD price`}
+                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${
+                    filterPriced
+                      ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-200'
+                      : 'border-white/10 bg-white/[0.02] text-slate-500 hover:border-white/20 hover:text-slate-300'
+                  }`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${filterPriced ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                  {filterPriced ? `Priced only · ${pricedCount}` : `All · ${assets.length}`}
+                </button>
+              </div>
+
+              {/* Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-white/5 text-left">
+                      {[
+                        { key: 'symbol' as SortKey, label: 'Asset', cls: 'pl-5 w-[220px]' },
+                        { key: 'balance' as SortKey, label: 'Balance', cls: 'text-right' },
+                        { key: 'usd_value' as SortKey, label: 'USD Value', cls: 'text-right' },
+                        { key: 'change_24h' as SortKey, label: '24h', cls: 'text-right' },
+                        { key: null, label: 'Allocation', cls: 'text-right' },
+                        { key: null, label: '', cls: 'pr-5 w-12' },
+                      ].map((col, i) => (
+                        <th key={i}
+                          className={`py-3 pr-4 text-[10px] font-black uppercase tracking-[0.22em] text-slate-600 ${col.cls} ${col.key ? 'cursor-pointer hover:text-slate-400 select-none' : ''}`}
+                          onClick={col.key ? () => toggleSort(col.key!) : undefined}>
+                          <span className="inline-flex items-center gap-1">
+                            {col.label}
+                            {col.key && <SortIcon k={col.key} />}
+                          </span>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginated.map((asset, i) => {
+                      const pos = asset.change_24h >= 0;
+                      const explorerHref = asset.token_address
+                        ? `https://etherscan.io/token/${asset.token_address}?a=${walletData.address}`
+                        : walletData.explorer_url;
+                      return (
+                        <motion.tr key={`${asset.symbol}-${asset.token_address ?? i}`}
+                          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                          transition={{ delay: i * 0.015 }}
+                          className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
+                          {/* Asset */}
+                          <td className="py-3 pl-5 pr-4">
+                            <div className="flex items-center gap-3">
+                              {asset.logo ? (
+                                <img src={asset.logo} alt={asset.symbol}
+                                  className="h-8 w-8 rounded-xl border border-white/10 object-cover shrink-0"
+                                  onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                              ) : (
+                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-[10px] font-black text-white">
+                                  {asset.symbol.slice(0, 3)}
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <p className="truncate font-black uppercase tracking-[0.1em] text-white">
+                                  {asset.symbol}
+                                </p>
+                                <p className="truncate text-xs text-slate-500">{asset.name || '—'}</p>
+                              </div>
+                            </div>
+                          </td>
+                          {/* Balance */}
+                          <td className="py-3 pr-4 text-right font-semibold text-slate-300">
+                            {fmtBal(asset.balance)}
+                          </td>
+                          {/* USD Value */}
+                          <td className="py-3 pr-4 text-right font-black text-white">
+                            {asset.usd_value > 0 ? fmt(asset.usd_value) : <span className="text-slate-600">—</span>}
+                          </td>
+                          {/* 24h */}
+                          <td className={`py-3 pr-4 text-right font-black ${
+                            asset.price > 0 ? (pos ? 'text-emerald-300' : 'text-rose-300') : 'text-slate-700'
+                          }`}>
+                            {asset.price > 0
+                              ? `${pos ? '+' : ''}${asset.change_24h.toFixed(2)}%`
+                              : '—'}
+                          </td>
+                          {/* Allocation bar */}
+                          <td className="py-3 pr-4">
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="text-xs font-bold text-slate-500 w-10 text-right">
+                                {asset.allocation > 0 ? `${asset.allocation.toFixed(1)}%` : '—'}
+                              </span>
+                              <div className="h-1.5 w-16 overflow-hidden rounded-full bg-white/5">
+                                <div className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-cyan-300"
+                                  style={{ width: `${Math.min(asset.allocation, 100)}%` }} />
+                              </div>
+                            </div>
+                          </td>
+                          {/* Explorer link */}
+                          <td className="py-3 pr-5">
+                            {explorerHref && (
+                              <a href={explorerHref} target="_blank" rel="noopener noreferrer"
+                                className="inline-flex items-center justify-center rounded-lg border border-white/10 p-1.5 text-slate-500 hover:border-white/20 hover:text-slate-200 transition-colors">
+                                <ArrowUpRight className="h-3.5 w-3.5" />
+                              </a>
+                            )}
+                          </td>
+                        </motion.tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between border-t border-white/5 px-5 py-3">
+                  <p className="text-[11px] font-semibold text-slate-500">
+                    Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, displayAssets.length)} of {displayAssets.length}
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={() => setPage(p => p - 1)} disabled={page === 0}
+                      className="rounded-xl border border-white/10 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.18em] text-slate-300 hover:border-white/20 hover:text-white disabled:opacity-30 transition-colors">
+                      Prev
+                    </button>
+                    <span className="self-center text-[11px] font-bold text-slate-600">
+                      {page + 1} / {totalPages}
+                    </span>
+                    <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1}
+                      className="rounded-xl border border-white/10 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.18em] text-slate-300 hover:border-white/20 hover:text-white disabled:opacity-30 transition-colors">
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Empty state */}
+        {!liveMode && !loading && !error && (
+          <div className="flex flex-col items-center justify-center gap-4 rounded-[1.75rem] border border-dashed border-white/8 py-20 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-indigo-500/20 bg-indigo-500/10">
+              <Wallet className="h-7 w-7 text-indigo-300" />
             </div>
-          </HoverGlowCard>
-        </div>
-
-        {/* Macro Benchmarks */}
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-black text-white uppercase tracking-[0.2em] flex items-center gap-3">
-              <TrendingUp className="w-4 h-4 text-amber-500" />
-              Global Macro Benchmarks
-            </h2>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {MACRO_BENCHMARKS.map((bench) => (
-              <HoverGlowCard key={bench.symbol} className="p-6 rounded-3xl bg-slate-900/40 border-white/5 group">
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">{bench.name}</p>
-                    <h3 className="text-xl font-black text-white tracking-tighter">{bench.symbol}</h3>
-                  </div>
-                  <div className={`px-2 py-1 rounded-lg text-[10px] font-bold ${bench.change24h > 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                    {bench.change24h > 0 ? '+' : ''}{bench.change24h}%
-                  </div>
-                </div>
-                <div className="text-2xl font-mono font-bold text-slate-100 mb-4">
-                  ${bench.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </div>
-                <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: '100%' }}
-                    transition={{ duration: 1 }}
-                    className={`h-full ${bench.change24h > 0 ? 'bg-emerald-500' : 'bg-rose-500'} opacity-30`} 
-                  />
-                </div>
-              </HoverGlowCard>
-            ))}
-          </div>
-        </div>
-
-        {/* Assets Table */}
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-black text-white uppercase tracking-[0.2em] flex items-center gap-3">
-              <Landmark className="w-4 h-4 text-slate-500" />
-              Holding Distribution
-            </h2>
-            <div className="flex items-center gap-3">
-              <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest italic">Updated every 60s</span>
+            <div className="space-y-1">
+              <p className="text-lg font-black uppercase tracking-[0.12em] text-white">No wallet loaded</p>
+              <p className="text-sm font-semibold text-slate-500">
+                Paste any ETH or SOL address above, or pick a quick-load example.
+              </p>
             </div>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-700">
+              Public on-chain data only · no private keys required
+            </p>
           </div>
-
-          <div className="grid grid-cols-1 gap-4">
-            {portfolio.map((asset) => (
-              <motion.div
-                key={asset.symbol}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="group flex items-center justify-between p-6 bg-slate-900/40 border border-white/5 rounded-3xl hover:border-indigo-500/30 transition-all hover:bg-slate-900/60"
-              >
-                <div className="flex items-center gap-6">
-                  <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center border border-white/10 group-hover:scale-110 transition-transform">
-                    <span className="text-sm font-black text-slate-100">{asset.symbol[0]}</span>
-                  </div>
-                  <div className="space-y-1">
-                    <h3 className="text-lg font-black text-white tracking-tighter uppercase">{asset.symbol}</h3>
-                    <p className="text-xs font-mono text-slate-500 font-bold uppercase tracking-widest">SPOT · QUANT ACCOUNT</p>
-                  </div>
-                </div>
-
-                <div className="hidden md:block space-y-1 text-right">
-                  <p className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Holding</p>
-                  <p className="text-base font-mono font-bold text-slate-100">
-                    {asset.balance.toLocaleString()} {asset.symbol}
-                  </p>
-                </div>
-
-                <div className="hidden md:block space-y-1 text-right">
-                  <p className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Market Price</p>
-                  <p className="text-base font-mono font-bold text-slate-100">
-                    ${asset.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </p>
-                </div>
-
-                <div className="space-y-1 text-right bg-indigo-500/5 px-6 py-2 rounded-2xl border border-indigo-500/10 min-w-[180px]">
-                  <p className="text-[11px] font-black text-indigo-400 uppercase tracking-widest">Equiv. Value</p>
-                  <p className="text-lg font-mono font-black text-white">
-                    ${(asset.balance * asset.price).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  </p>
-                </div>
-
-                <div className="pl-4 group-hover:translate-x-1 transition-transform">
-                  <ArrowUpRight className="w-5 h-5 text-slate-700 group-hover:text-indigo-400 transition-colors" />
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

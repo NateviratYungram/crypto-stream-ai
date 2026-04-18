@@ -152,6 +152,8 @@ export function AlertsReviewsView() {
   const fetchAll = useCallback(async () => {
     setLoading(true)
     try {
+      // Purge stale/low-confidence ML alerts before fetching
+      await fetch('/api/alerts/ml/stale', { method: 'DELETE', headers: HEADERS() }).catch(() => {})
       const [ar, rr] = await Promise.all([
         fetch('/api/alerts',       { headers: HEADERS() }).then(r => r.json()),
         fetch('/api/trade-reviews',{ headers: HEADERS() }).then(r => r.json()),
@@ -172,12 +174,19 @@ export function AlertsReviewsView() {
   }, [fetchAll])
 
   const dismissAlert = async (id: number) => {
-    await fetch(`/api/alerts/${id}`, { method: 'DELETE', headers: HEADERS })
+    await fetch(`/api/alerts/${id}`, { method: 'DELETE', headers: HEADERS() })
     setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'DISMISSED' } : a))
   }
 
   const userAlerts = alerts.filter(a => a.user_id !== 'ml_scanner')
-  const mlAlerts   = alerts.filter(a => a.user_id === 'ml_scanner')
+  // Only show ACTIVE ML alerts with win probability ≥ 70%
+  const mlAlerts   = alerts.filter(a => {
+    if (a.user_id !== 'ml_scanner') return false
+    if (a.status === 'DISMISSED') return false
+    const winMatch = a.message.match(/Win probability (\d+)%/)
+    const winPct   = winMatch ? parseInt(winMatch[1]) : 0
+    return winPct >= 70
+  })
   const activeML   = mlAlerts.filter(a => a.status === 'ACTIVE').length
   const activeUser = userAlerts.filter(a => a.status === 'ACTIVE').length
   const firedCount = alerts.filter(a => a.status === 'FIRED').length

@@ -1,144 +1,324 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldCheck, AlertCircle, Terminal, Clock, RefreshCcw, Activity, ShieldQuestion, Zap } from 'lucide-react';
-import { HoverGlowCard } from './HoverGlowCard';
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  LogIn,
+  RefreshCcw,
+  ShieldCheck,
+  TrendingDown,
+  TrendingUp,
+  Zap,
+} from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
 
+// ── Types ──────────────────────────────────────────────────────────────────────
+interface PaperTrade {
+  id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  entry_price: number;
+  exit_price?: number;
+  pnl?: number;
+  status: 'OPEN' | 'CLOSED';
+  opened_at: string;
+  closed_at?: string;
+}
+
+interface PaperStats {
+  open_trades: PaperTrade[];
+  closed_trades: PaperTrade[];
+  total_simulated_pnl: number;
+}
+
+interface LogEntry {
+  type: string;
+  detail: string;
+  time: string;
+}
+
+type FilterType = 'ALL' | 'PAPER_TRADE' | 'USER_LOGIN' | 'DQ_ERROR' | 'SNIPER_SIGNAL';
+
+const TYPE_CONFIG: Record<string, { label: string; color: string; bg: string; border: string; icon: React.ReactNode }> = {
+  PAPER_TRADE:    { label: 'Trade',    color: 'text-blue-300',   bg: 'bg-blue-500/10',   border: 'border-blue-500/20',   icon: <Activity className="w-4 h-4" /> },
+  USER_LOGIN:     { label: 'Login',    color: 'text-slate-300',  bg: 'bg-slate-500/10',  border: 'border-slate-500/20',  icon: <LogIn className="w-4 h-4" /> },
+  USER_REGISTER:  { label: 'New user', color: 'text-indigo-300', bg: 'bg-indigo-500/10', border: 'border-indigo-500/20', icon: <LogIn className="w-4 h-4" /> },
+  DQ_ERROR:       { label: 'Alert',    color: 'text-rose-300',   bg: 'bg-rose-500/10',   border: 'border-rose-500/20',   icon: <AlertTriangle className="w-4 h-4" /> },
+  SNIPER_SIGNAL:  { label: 'Signal',   color: 'text-amber-300',  bg: 'bg-amber-500/10',  border: 'border-amber-500/20',  icon: <Zap className="w-4 h-4" /> },
+};
+
+function getTypeCfg(type: string) {
+  return TYPE_CONFIG[type] ?? { label: 'System', color: 'text-slate-400', bg: 'bg-slate-500/10', border: 'border-slate-500/20', icon: <ShieldCheck className="w-4 h-4" /> };
+}
+
+function fmt(n: number) {
+  const abs = Math.abs(n);
+  const s = abs >= 1000 ? `$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : `$${abs.toFixed(2)}`;
+  return (n >= 0 ? '+' : '−') + s;
+}
+
+function fmtTime(iso: string) {
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+const FILTER_PILLS: { key: FilterType; label: string }[] = [
+  { key: 'ALL',           label: 'All' },
+  { key: 'PAPER_TRADE',   label: 'Trade' },
+  { key: 'USER_LOGIN',    label: 'Login' },
+  { key: 'DQ_ERROR',      label: 'Alert' },
+  { key: 'SNIPER_SIGNAL', label: 'Signal' },
+];
+
+// ── Component ──────────────────────────────────────────────────────────────────
 export const RiskAuditsView = () => {
-  const [logs, setLogs] = useState<any[]>([]);
+  const [stats,   setStats]   = useState<PaperStats | null>(null);
+  const [logs,    setLogs]    = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filter,  setFilter]  = useState<FilterType>('ALL');
+  const [showAll, setShowAll] = useState(false);
   const { wsStatus, lastMessage } = useWebSocket();
 
-  const fetchLogs = async () => {
+  const fetchAll = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/data/audits');
-      const json = await res.json();
-      setLogs(json.data || []);
-    } catch (error) {
-      console.error('Fetch error:', error);
-    } finally {
+      const [ptRes, logRes] = await Promise.all([
+        fetch('/api/paper-trades', { headers: { 'X-API-Key': localStorage.getItem('crypto_terminal_key') || 'demo' } }),
+        fetch('/api/data/audits'),
+      ]);
+      if (ptRes.ok)  setStats(await ptRes.json());
+      if (logRes.ok) setLogs((await logRes.json()).data || []);
+    } catch {/* silent */} finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchLogs();
-  }, []);
+  useEffect(() => { fetchAll(); }, []);
 
-  // Real-time DQ Alert Handling
   useEffect(() => {
     if (lastMessage?.type === 'DQ_ALERT') {
-      const newLog = {
+      setLogs(prev => [{
         type: 'DQ_ERROR',
         detail: `DQ Violation: ${lastMessage.data.error_reason} | ${lastMessage.data.symbol}`,
-        time: new Date().toISOString()
-      };
-      setLogs(prev => [newLog, ...prev.slice(0, 19)]); // Keep latest 20
+        time: new Date().toISOString(),
+      }, ...prev.slice(0, 49)]);
     }
   }, [lastMessage]);
 
+  // ── Derived P&L stats ────────────────────────────────────────────────────────
+  const closed  = stats?.closed_trades ?? [];
+  const open    = stats?.open_trades ?? [];
+  const winners = closed.filter(t => (t.pnl ?? 0) > 0);
+  const losers  = closed.filter(t => (t.pnl ?? 0) < 0);
+  const totalPnl = stats?.total_simulated_pnl ?? 0;
+  const winRate  = closed.length ? Math.round((winners.length / closed.length) * 100) : 0;
+  const bestTrade  = closed.reduce<PaperTrade | null>((mx, t) => (!mx || (t.pnl ?? 0) > (mx.pnl ?? 0)) ? t : mx, null);
+  const worstTrade = closed.reduce<PaperTrade | null>((mn, t) => (!mn || (t.pnl ?? 0) < (mn.pnl ?? 0)) ? t : mn, null);
+
+  // ── Filtered logs ────────────────────────────────────────────────────────────
+  const filteredLogs = useMemo(() => {
+    if (filter === 'ALL') return logs;
+    if (filter === 'USER_LOGIN') return logs.filter(l => l.type === 'USER_LOGIN' || l.type === 'USER_REGISTER');
+    return logs.filter(l => l.type === filter);
+  }, [logs, filter]);
+
+  const visibleLogs = showAll ? filteredLogs : filteredLogs.slice(0, 12);
+
   return (
-    <div className="flex-1 p-8 overflow-y-auto space-y-10 custom-scrollbar">
+    <div className="flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar">
+      {/* Header */}
       <header className="flex justify-between items-center border-b border-white/5 pb-8">
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-indigo-500 font-bold text-xs uppercase tracking-[0.2em]">
-             <div className={`w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)] ${
-                wsStatus === 'connected' ? 'bg-indigo-500 status-breath' : 'bg-slate-700'
-             }`} />
-             System Monitor {wsStatus === 'connected' && '• LIVE'}
+          <div className="flex items-center gap-2 text-blue-400 font-bold text-xs uppercase tracking-[0.2em]">
+            <div className={`w-1.5 h-1.5 rounded-full ${wsStatus === 'connected' ? 'bg-blue-400 animate-pulse' : 'bg-slate-600'}`} />
+            P&L + Activity
           </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
-             Risk Monitor
-          </h2>
-          <p className="text-slate-500 text-sm font-medium">บันทึกกิจกรรมระบบ — การ login, การเทรด, และการแจ้งเตือนข้อมูลผิดปกติ</p>
+          <h2 className="text-3xl font-extrabold text-white tracking-tight">Performance & Log</h2>
+          <p className="text-slate-500 text-sm font-medium">
+            Paper trading P&L summary · system activity · real-time alerts
+          </p>
         </div>
-        <div className="flex items-center gap-4">
-          {wsStatus === 'connected' && (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
-              <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-              <span className="text-xs text-emerald-400 font-black uppercase tracking-tighter">Live Monitor Active</span>
-            </div>
-          )}
-          <button 
-            onClick={fetchLogs} 
-            className="group flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-indigo-500/50 rounded-xl text-slate-300 transition-all font-bold text-xs"
-          >
-            <RefreshCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
-            Refresh Trail
-          </button>
-        </div>
+        <button onClick={fetchAll}
+          className="group flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-blue-500/40 rounded-xl text-slate-300 transition-all font-bold text-xs">
+          <RefreshCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
+          Refresh
+        </button>
       </header>
 
-      <div className="grid grid-cols-1 gap-4">
-        {loading ? (
-            [1,2,3,4].map(i => <div key={i} className="h-28 bg-slate-900/40 animate-pulse rounded-3xl border border-white/5" />)
-        ) : (
-          <AnimatePresence initial={false}>
-            {logs.map((log, i) => (
-              <motion.div
-                key={log.time + i}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.4 }}
-              >
-                <HoverGlowCard className="p-6 flex items-start gap-6 rounded-[1.5rem]">
-                  <div className={`mt-1 p-3 rounded-2xl shrink-0 border ${
-                    log.type === 'DQ_ERROR' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.1)]' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-                  }`}>
-                    {log.type === 'DQ_ERROR' ? <ShieldQuestion className="w-5 h-5" /> : <Terminal className="w-5 h-5" />}
-                  </div>
-                  
-                  <div className="flex-1 space-y-3">
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-3">
-                         <span className={`text-xs font-black uppercase tracking-[0.15em] px-2 py-0.5 rounded ${
-                            log.type === 'DQ_ERROR' ? 'bg-rose-500/10 text-rose-400' : 'bg-blue-500/10 text-blue-400'
-                         }`}>
-                            {log.type === 'DQ_ERROR' ? 'Data Alert' : log.type === 'USER_LOGIN' ? 'Login' : log.type === 'USER_REGISTER' ? 'New User' : log.type === 'PAPER_TRADE' ? 'Trade' : log.type === 'PROFILE_UPDATE' ? 'Profile' : 'System'}
-                         </span>
-                         <div className="h-1 w-1 rounded-full bg-slate-700" />
-                         <span className="text-xs text-slate-500 font-bold uppercase tracking-widest">Node: Delta-01</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-500 font-mono font-bold">
-                        <Clock className="w-3.5 h-3.5 opacity-50" />
-                        {new Date(log.time).toLocaleString()}
-                      </div>
-                    </div>
-                    
-                    <div className="bg-black/20 p-4 rounded-xl border border-white/[0.03] font-mono">
-                       <p className="text-sm font-bold text-slate-300 leading-relaxed">
-                          <span className="text-slate-600 mr-2">$</span>
-                          {log.detail}
-                       </p>
-                    </div>
-
-                    <div className="flex items-center gap-6 text-xs font-bold">
-                      <span className="flex items-center gap-1.5 text-emerald-500/80">
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        VERIFIED ENCLAVE
-                      </span>
-                      <span className="text-slate-600 uppercase">ACTION: {log.type === 'DQ_ERROR' ? 'FLAGGED' : 'LOGGED'}</span>
-                    </div>
-                  </div>
-                </HoverGlowCard>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        )}
-
-        {!loading && logs.length === 0 && (
-          <div className="bg-emerald-500/[0.02] border border-emerald-500/10 p-20 rounded-[3rem] text-center space-y-4">
-            <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
-               <ShieldCheck className="w-10 h-10 text-emerald-400" />
+      {/* P&L Summary Cards */}
+      <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {[
+          {
+            label: 'Total P&L',
+            value: totalPnl !== 0 ? fmt(totalPnl) : '$0.00',
+            sub: `${closed.length} closed trades`,
+            color: totalPnl >= 0 ? 'text-emerald-300' : 'text-rose-300',
+            icon: totalPnl >= 0 ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />,
+            border: totalPnl >= 0 ? 'border-emerald-500/15' : 'border-rose-500/15',
+            bg: totalPnl >= 0 ? 'bg-emerald-500/5' : 'bg-rose-500/5',
+          },
+          {
+            label: 'Win Rate',
+            value: `${winRate}%`,
+            sub: `${winners.length}W / ${losers.length}L`,
+            color: winRate >= 50 ? 'text-emerald-300' : 'text-rose-300',
+            icon: <CheckCircle2 className="w-5 h-5" />,
+            border: 'border-white/8',
+            bg: 'bg-slate-900/60',
+          },
+          {
+            label: 'Open Positions',
+            value: String(open.length),
+            sub: open.length ? open.map(t => t.symbol).slice(0, 3).join(', ') + (open.length > 3 ? '…' : '') : 'No open trades',
+            color: 'text-blue-300',
+            icon: <Activity className="w-5 h-5" />,
+            border: 'border-blue-500/15',
+            bg: 'bg-blue-500/5',
+          },
+          {
+            label: 'Best Trade',
+            value: bestTrade ? fmt(bestTrade.pnl ?? 0) : '—',
+            sub: bestTrade ? bestTrade.symbol : 'No closed trades yet',
+            color: 'text-amber-300',
+            icon: <Zap className="w-5 h-5" />,
+            border: 'border-amber-500/15',
+            bg: 'bg-amber-500/5',
+          },
+        ].map(card => (
+          <div key={card.label} className={`rounded-[1.5rem] border ${card.border} ${card.bg} p-5`}>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">{card.label}</p>
+              <span className={card.color}>{card.icon}</span>
             </div>
-            <div className="space-y-1">
-               <h3 className="text-emerald-400 font-black text-xl tracking-tight">Perimeter Secure</h3>
-               <p className="text-slate-500 text-sm font-medium">No recent risk anomalies or data quality violations detected across the pipeline.</p>
-            </div>
+            <p className={`text-2xl font-black ${card.color}`}>{card.value}</p>
+            <p className="mt-1 text-xs font-semibold text-slate-600 truncate">{card.sub}</p>
           </div>
+        ))}
+      </section>
+
+      {/* Open Positions mini-table */}
+      {open.length > 0 && (
+        <section className="rounded-[1.75rem] border border-white/8 bg-slate-900/60 overflow-hidden">
+          <div className="border-b border-white/5 px-5 py-3">
+            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Open Positions</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-white/5 text-left text-[10px] font-black uppercase tracking-[0.22em] text-slate-600">
+                  <th className="py-2 pl-5 pr-4">Symbol</th>
+                  <th className="py-2 pr-4">Side</th>
+                  <th className="py-2 pr-4 text-right">Qty</th>
+                  <th className="py-2 pr-4 text-right">Entry</th>
+                  <th className="py-2 pr-5 text-right">Unrealised P&L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {open.map(t => (
+                  <tr key={t.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                    <td className="py-2.5 pl-5 pr-4 font-black text-white">{t.symbol}</td>
+                    <td className={`py-2.5 pr-4 font-black text-xs uppercase ${t.side === 'BUY' ? 'text-emerald-300' : 'text-rose-300'}`}>{t.side}</td>
+                    <td className="py-2.5 pr-4 text-right font-semibold text-slate-300">{t.quantity}</td>
+                    <td className="py-2.5 pr-4 text-right font-semibold text-slate-300">${t.entry_price.toLocaleString()}</td>
+                    <td className="py-2.5 pr-5 text-right font-black text-slate-500">—</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* Best / Worst closed trades */}
+      {closed.length > 0 && (
+        <section className="grid gap-4 sm:grid-cols-2">
+          {[
+            { label: 'Best trade', trade: bestTrade, color: 'emerald', border: 'border-emerald-500/15' },
+            { label: 'Worst trade', trade: worstTrade, color: 'rose', border: 'border-rose-500/15' },
+          ].map(({ label, trade, color, border }) => trade && (
+            <div key={label} className={`rounded-[1.5rem] border ${border} bg-slate-900/60 p-5 flex items-center gap-4`}>
+              <div className={`flex h-11 w-11 items-center justify-center rounded-2xl border border-${color}-500/20 bg-${color}-500/10 shrink-0`}>
+                {color === 'emerald' ? <TrendingUp className={`w-5 h-5 text-${color}-300`} /> : <TrendingDown className={`w-5 h-5 text-${color}-300`} />}
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">{label}</p>
+                <p className="font-black text-white">{trade.symbol} <span className="text-slate-500 text-xs">{trade.side}</span></p>
+                <p className={`text-sm font-black text-${color}-300`}>{fmt(trade.pnl ?? 0)}</p>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {/* Activity Log */}
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Activity Log</p>
+          {/* Filter pills */}
+          <div className="flex flex-wrap gap-1.5">
+            {FILTER_PILLS.map(pill => (
+              <button key={pill.key} onClick={() => { setFilter(pill.key); setShowAll(false); }}
+                className={`rounded-xl border px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${
+                  filter === pill.key
+                    ? 'border-blue-400/30 bg-blue-500/15 text-blue-200'
+                    : 'border-white/10 text-slate-500 hover:border-white/20 hover:text-slate-300'
+                }`}>
+                {pill.key === 'ALL'
+                  ? `${pill.label} · ${logs.length}`
+                  : `${pill.label} · ${logs.filter(l => pill.key === 'USER_LOGIN' ? (l.type === 'USER_LOGIN' || l.type === 'USER_REGISTER') : l.type === pill.key).length}`}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="space-y-3">
+            {[1, 2, 3, 4].map(i => (
+              <div key={i} className="h-16 rounded-2xl border border-white/5 bg-slate-900/40 animate-pulse" />
+            ))}
+          </div>
+        ) : filteredLogs.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 rounded-[2rem] border border-dashed border-white/8 py-16 text-center">
+            <ShieldCheck className="w-10 h-10 text-slate-600" />
+            <p className="text-sm font-bold text-slate-500">No activity in this category</p>
+          </div>
+        ) : (
+          <>
+            <AnimatePresence initial={false}>
+              <div className="space-y-2">
+                {visibleLogs.map((log, i) => {
+                  const cfg = getTypeCfg(log.type);
+                  return (
+                    <motion.div key={log.time + i}
+                      initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.02 }}
+                      className={`flex items-start gap-4 rounded-2xl border ${cfg.border} ${cfg.bg} px-5 py-4`}>
+                      <div className={`mt-0.5 shrink-0 ${cfg.color}`}>{cfg.icon}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className={`text-[10px] font-black uppercase tracking-[0.18em] ${cfg.color}`}>{cfg.label}</span>
+                          <span className="text-[10px] font-semibold text-slate-600">{fmtTime(log.time)}</span>
+                        </div>
+                        <p className="text-sm font-semibold text-slate-200 leading-6 truncate">{log.detail}</p>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </AnimatePresence>
+
+            {filteredLogs.length > 12 && (
+              <button onClick={() => setShowAll(p => !p)}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-white/8 py-3 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500 hover:border-white/16 hover:text-slate-300 transition-colors">
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAll ? 'rotate-180' : ''}`} />
+                {showAll ? 'Show less' : `Show all ${filteredLogs.length} entries`}
+              </button>
+            )}
+          </>
         )}
-      </div>
+      </section>
     </div>
   );
 };

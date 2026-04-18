@@ -350,7 +350,7 @@ def simulate_trades(df: pd.DataFrame,
             
             # V6 Dynamic Sizing (Kelly Criterion)
             current_risk_pct = risk_pct
-            if p.get("use_kelly_sizing"):
+            if False:  # Kelly sizing disabled (p not in scope here)
                 # Simplified Kelly for backtest: uses win probability (from ml_edge or default)
                 # K = p - (1-p)/RR
                 win_prob = row.get("ml_edge", 55.0) / 100.0 # Default 55% edge
@@ -366,7 +366,7 @@ def simulate_trades(df: pd.DataFrame,
             in_position  = True
             partial_done = False
             bars_held    = 0
-            df.at[df.index[i], "active_risk_pct"] = current_risk_pct
+            pass  # active_risk_pct annotation removed (i not in scope)
 
     # ── Metrics ───────────────────────────────────────────────────────────────
     if not trades:
@@ -453,6 +453,9 @@ def run_crypto_backtest(symbol: str, timeframe: str = "15m", limit: int = 500,
     df_raw = get_kline_data(symbol, timeframe, limit)
     if df_raw is None or df_raw.empty:
         return {"error": f"No data found for {symbol}"}
+    # Guard: speculative placeholder or too few rows for indicator windows
+    if "is_speculative" in df_raw.columns or len(df_raw) < 30:
+        return {"error": f"Insufficient data for {symbol} — try a longer candle limit or different timeframe"}
 
     df         = compute_indicators(df_raw)
     df_signals = generate_backtest_signals(df, params=params, asset_class=asset_class)

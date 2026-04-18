@@ -54,6 +54,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         isAuthorized={true}
         onLogout={onLogout}
         onMobileMenuClick={() => setMobileNavOpen(true)}
+        onNavigate={setActiveTab}
       />
 
       <div className="flex-1 flex overflow-hidden relative z-10">

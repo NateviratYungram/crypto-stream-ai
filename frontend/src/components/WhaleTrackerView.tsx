@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Clock, ArrowUpRight, ArrowDownRight, RefreshCcw, Zap, Filter, Download, TrendingUp } from 'lucide-react';
+import { Clock, ArrowUpRight, ArrowDownRight, RefreshCcw, Zap, Filter, Download, TrendingUp, ArrowDownUp } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useMode } from '../contexts/ModeContext';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface WhaleEntry {
   symbol:        string;
@@ -56,11 +57,13 @@ const fmtUSD = (v: number) => {
 };
 
 export const WhaleTrackerView = () => {
+  const { t } = useLanguage();
   const [whales, setWhales]             = useState<WhaleEntry[]>([]);
   const [loading, setLoading]           = useState(true);
   const [filterTier, setFilterTier]     = useState<WhaleTier | 'all'>('all');
   const [filterDir,  setFilterDir]      = useState<'all' | 'buy' | 'sell'>('all');
   const [filterAsset, setFilterAsset]   = useState<AssetClass>('ALL');
+  const [sortOrder,  setSortOrder]      = useState<'desc' | 'asc'>('desc');
   const { isConnected, lastMessage, latency } = useWebSocket();
   const { isRetail } = useMode();
 
@@ -104,17 +107,22 @@ export const WhaleTrackerView = () => {
     }
   }, [lastMessage]);
 
-  // ── Filtering ──
-  const filtered = whales.filter(w => {
-    const usd   = getUSDValue(w);
-    const tier  = getTier(usd);
-    const tierOk  = filterTier === 'all' || tier === filterTier;
-    const dirOk   = filterDir  === 'all'
-      || (filterDir === 'buy'  && !w.is_buyer_maker)
-      || (filterDir === 'sell' &&  w.is_buyer_maker);
-    const assetOk = filterAsset === 'ALL' || w.asset_class === filterAsset;
-    return tierOk && dirOk && assetOk;
-  });
+  // ── Filtering + Sorting ──
+  const filtered = whales
+    .filter(w => {
+      const usd   = getUSDValue(w);
+      const tier  = getTier(usd);
+      const tierOk  = filterTier === 'all' || tier === filterTier;
+      const dirOk   = filterDir  === 'all'
+        || (filterDir === 'buy'  && !w.is_buyer_maker)
+        || (filterDir === 'sell' &&  w.is_buyer_maker);
+      const assetOk = filterAsset === 'ALL' || w.asset_class === filterAsset;
+      return tierOk && dirOk && assetOk;
+    })
+    .sort((a, b) => {
+      const diff = getUSDValue(b) - getUSDValue(a);
+      return sortOrder === 'desc' ? diff : -diff;
+    });
 
   // ── Aggregate stats ──
   const buyWhales  = whales.filter(w => !w.is_buyer_maker);
@@ -166,11 +174,11 @@ export const WhaleTrackerView = () => {
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-emerald-500 font-bold text-xs uppercase tracking-[0.2em]">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] status-breath" />
-            Whale Watch — All Markets
+            {t('whale.badge')}
           </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">Institutional Flow</h2>
+          <h2 className="text-3xl font-extrabold text-white tracking-tight">{t('whale.title')}</h2>
           <p className="text-slate-500 text-sm font-medium">
-            Monitoring classified transaction clusters across Crypto · Stocks · Gold · Oil · FX · Indices
+            {t('whale.subtitle')}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -180,19 +188,19 @@ export const WhaleTrackerView = () => {
               : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
           }`}>
             <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-            {isConnected ? `Live · ${latency ?? '--'}ms` : 'Syncing'}
+            {isConnected ? `${t('whale.live')} · ${latency ?? '--'}ms` : t('whale.syncing')}
           </div>
           {!isRetail && (
             <button onClick={exportCSV}
               className="group flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-blue-500/50 rounded-xl text-slate-300 transition-all font-bold text-xs">
               <Download className="w-3.5 h-3.5 group-hover:-translate-y-0.5 transition-transform" />
-              CSV
+              {t('whale.csv')}
             </button>
           )}
           <button onClick={fetchWhales}
             className="group flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-emerald-500/50 rounded-xl text-slate-300 transition-all font-bold text-xs">
             <RefreshCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
-            Sync
+            {t('whale.sync')}
           </button>
         </div>
       </header>
@@ -201,23 +209,18 @@ export const WhaleTrackerView = () => {
       <div className="flex items-start gap-3 p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
         <TrendingUp className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
         <div className="space-y-1">
-          <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">วิธีอ่านข้อมูล Whale</p>
-          <p className="text-sm text-slate-400">
-            <span className="text-white font-bold">Whale</span> = นักลงทุนสถาบันหรือกองทุนขนาดใหญ่ที่ซื้อ/ขายเป็นจำนวนมาก •{' '}
-            <span className="text-emerald-300 font-bold">สีเขียว</span> = ซื้อ (Bullish) •{' '}
-            <span className="text-rose-300 font-bold">สีแดง</span> = ขาย (Bearish) •{' '}
-            ธุรกรรมขนาดใหญ่บ่งบอกถึงความเคลื่อนไหวของ "เงินสมาร์ท" — ใช้เป็นสัญญาณประกอบการตัดสินใจ ไม่ใช่สัญญาณซื้อขายโดยตรง
-          </p>
+          <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">{t('whale.how_to_read')}</p>
+          <p className="text-sm text-slate-400">{t('whale.explanation')}</p>
         </div>
       </div>
 
       {/* Aggregate Stats */}
       <div className="grid grid-cols-4 gap-4">
         {[
-          { label: 'Buy Pressure',   value: fmtUSD(totalBuyUSD),                                          color: 'text-emerald-400' },
-          { label: 'Sell Pressure',  value: fmtUSD(totalSellUSD),                                         color: 'text-rose-400'    },
-          { label: 'Flow Imbalance', value: `${flowImbalance > 0 ? '+' : ''}${flowImbalance.toFixed(1)}%`,color: flowImbalance > 0 ? 'text-emerald-400' : 'text-rose-400' },
-          { label: 'Largest Trade',  value: largest ? fmtUSD(getUSDValue(largest)) : '—',                 color: 'text-yellow-400'  },
+          { label: t('whale.buy_pressure'),   value: fmtUSD(totalBuyUSD),                                          color: 'text-emerald-400' },
+          { label: t('whale.sell_pressure'),  value: fmtUSD(totalSellUSD),                                         color: 'text-rose-400'    },
+          { label: t('whale.flow_imbalance'), value: `${flowImbalance > 0 ? '+' : ''}${flowImbalance.toFixed(1)}%`,color: flowImbalance > 0 ? 'text-emerald-400' : 'text-rose-400' },
+          { label: t('whale.largest_trade'),  value: largest ? fmtUSD(getUSDValue(largest)) : '—',                 color: 'text-yellow-400'  },
         ].map((s, i) => (
           <div key={i} className="p-4 bg-slate-900/40 border border-white/5 rounded-2xl">
             <p className="text-[11px] font-black text-slate-600 uppercase tracking-widest mb-1">{s.label}</p>
@@ -229,7 +232,7 @@ export const WhaleTrackerView = () => {
       {/* Asset class breakdown pill row */}
       <div className="flex items-center gap-2 flex-wrap">
         <TrendingUp className="w-3.5 h-3.5 text-slate-500" />
-        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mr-1">Markets:</span>
+        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mr-1">{t('whale.markets')}</span>
         {Object.entries(byClass).map(([cls, count]) => {
           const cfg = assetClassConfig[cls] || assetClassConfig['CRYPTO'];
           return (
@@ -246,17 +249,20 @@ export const WhaleTrackerView = () => {
         {/* Asset Class filter */}
         <div className="flex items-center gap-2 flex-wrap">
           <Filter className="w-3.5 h-3.5 text-slate-500" />
-          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Asset:</span>
+          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">{t('whale.asset')}</span>
           {ASSET_CLASSES.map(cls => {
-            const cfg = assetClassConfig[cls] || { color: 'text-slate-400', bg: '', border: 'border-white/10' };
+            const cfg = assetClassConfig[cls];
+            const activeClass = cls === 'ALL'
+              ? 'bg-blue-600/20 border-blue-500/40 text-blue-400'
+              : cfg ? `${cfg.bg} ${cfg.border} ${cfg.color}` : 'bg-blue-600/20 border-blue-500/40 text-blue-400';
             return (
               <button key={cls} onClick={() => setFilterAsset(cls)}
                 className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
                   filterAsset === cls
-                    ? `${cfg.bg} ${cfg.border} ${cfg.color}`
+                    ? activeClass
                     : 'bg-transparent border-white/10 text-slate-500 hover:text-white'
                 }`}>
-                {cls === 'ALL' ? 'ALL' : `${assetClassConfig[cls]?.emoji ?? ''} ${cls}`}
+                {cls === 'ALL' ? t('whale.all') : `${cfg?.emoji ?? ''} ${cls}`}
               </button>
             );
           })}
@@ -264,18 +270,18 @@ export const WhaleTrackerView = () => {
 
         {/* Tier + Direction filter */}
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Tier:</span>
-          {(['all', 'krill', 'dolphin', 'whale', 'mega'] as const).map(t => (
-            <button key={t} onClick={() => setFilterTier(t)}
+          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">{t('whale.tier')}</span>
+          {(['all', 'krill', 'dolphin', 'whale', 'mega'] as const).map(tier => (
+            <button key={tier} onClick={() => setFilterTier(tier)}
               className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
-                filterTier === t
+                filterTier === tier
                   ? 'bg-blue-600/20 border-blue-500/40 text-blue-400'
                   : 'bg-transparent border-white/10 text-slate-500 hover:text-white'
               }`}>
-              {t === 'all' ? 'ALL' : tierConfig[t].label}
+              {tier === 'all' ? t('whale.all') : tierConfig[tier].label}
             </button>
           ))}
-          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-4">Side:</span>
+          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-4">{t('whale.side')}</span>
           {(['all', 'buy', 'sell'] as const).map(d => (
             <button key={d} onClick={() => setFilterDir(d)}
               className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
@@ -289,6 +295,22 @@ export const WhaleTrackerView = () => {
             </button>
           ))}
         </div>
+
+        {/* Sort order */}
+        <div className="flex items-center gap-2">
+          <ArrowDownUp className="w-3.5 h-3.5 text-slate-500" />
+          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">{t('whale.sort')}</span>
+          {([['desc', t('whale.sort_high')], ['asc', t('whale.sort_low')]] as const).map(([val, label]) => (
+            <button key={val} onClick={() => setSortOrder(val)}
+              className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
+                sortOrder === val
+                  ? 'bg-amber-600/20 border-amber-500/40 text-amber-400'
+                  : 'bg-transparent border-white/10 text-slate-500 hover:text-white'
+              }`}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Table */}
@@ -297,14 +319,14 @@ export const WhaleTrackerView = () => {
         <table className="w-full text-left border-collapse relative z-10">
           <thead>
             <tr className="bg-slate-900/80 border-b border-white/5">
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">Time</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">Tier</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">Asset</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">Class</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">Direction</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right">USD Value</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right">Price</th>
-              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right" title="Volume ratio vs. average — higher = unusual activity">Vol Spike</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.time')}</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.tier_col')}</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.asset_col')}</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.class_col')}</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.direction')}</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right">{t('whale.usd')}</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right">{t('whale.price')}</th>
+              <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right" title="Volume ratio vs. average — higher = unusual activity">{t('whale.vol_spike')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
@@ -384,7 +406,7 @@ export const WhaleTrackerView = () => {
 
                         {/* USD Value */}
                         <td className="px-5 py-4 text-right">
-                          <span className={`text-base font-black font-mono ${tierCfg.color} ${tierCfg.glow}`}>
+                          <span className={`text-base font-black font-mono ${tierCfg.color}`}>
                             {fmtUSD(usdVal)}
                           </span>
                         </td>
@@ -423,9 +445,9 @@ export const WhaleTrackerView = () => {
             <div className="w-16 h-16 bg-slate-800/40 rounded-full flex items-center justify-center mx-auto border border-white/5">
               <Zap className="w-8 h-8 text-slate-600" />
             </div>
-            <p className="text-slate-400 font-bold text-base">No whales match current filters</p>
+            <p className="text-slate-400 font-bold text-base">{t('whale.no_results')}</p>
             <p className="text-slate-600 text-sm">
-              Poller runs every 2 min — try refreshing or broadening filters
+              {t('whale.no_results_hint')}
             </p>
           </div>
         )}
