@@ -2933,14 +2933,17 @@ def get_social_sentiment(keyword: str) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.warning(f"CryptoPanic RSS fallback failed for '{keyword}': {e}")
-        import random
-        score = random.randint(30, 80)
         return {
-            "keyword": keyword,
-            "hype_score": score,
-            "trending_mentions": random.randint(0, 1000),
-            "sentiment": "BULLISH" if score > 60 else ("BEARISH" if score < 40 else "NEUTRAL"),
-            "note": "Simulated data — set CRYPTOPANIC_API_KEY in .env for real data"
+            "keyword": keyword.upper(),
+            "hype_score": 50,
+            "trending_mentions": 0,
+            "bullish_signals": 0,
+            "bearish_signals": 0,
+            "sentiment": "NEUTRAL",
+            "headlines": [],
+            "data_source": "Fallback (live source unavailable)",
+            "fallback": True,
+            "note": "Live sentiment sources unavailable; returning deterministic neutral fallback.",
         }
 
 def _get_trading_tactics_legacy(symbol: str) -> str:
