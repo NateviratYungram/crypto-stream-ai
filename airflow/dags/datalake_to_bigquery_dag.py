@@ -33,7 +33,6 @@ from airflow.operators.dummy import DummyOperator
 from airflow.utils.task_group import TaskGroup
 
 try:
-    from airflow.providers.google.cloud.transfers.local_to_gcs import LocalFilesystemToGCSOperator
     from airflow.providers.google.cloud.transfers.gcs_to_bigquery import GCSToBigQueryOperator
     from airflow.providers.google.cloud.operators.bigquery import BigQueryCreateEmptyDatasetOperator
     GCP_PROVIDERS_AVAILABLE = True

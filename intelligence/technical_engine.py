@@ -478,7 +478,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     c = df["Close"]
     h = df["High"]
-    l = df["Low"]
+    low_series = df["Low"]
 
     # RSI
     df["rsi_14"] = ta.momentum.RSIIndicator(close=c, window=14).rsi()
@@ -505,7 +505,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["adx_14"] = adx.adx()
 
     # ATR
-    df["atr_14"] = ta.volatility.AverageTrueRange(high=h, low=l, close=c, window=14).average_true_range()
+    df["atr_14"] = ta.volatility.AverageTrueRange(high=h, low=low_series, close=c, window=14).average_true_range()
 
     # Bollinger Bands
     bb = ta.volatility.BollingerBands(close=c, window=20, window_dev=2)

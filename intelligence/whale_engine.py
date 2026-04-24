@@ -44,7 +44,7 @@ class WhalePulseEngine:
             def filter_walls(levels, side):
                 if not levels:
                     return []
-                volumes = [float(l[1]) for l in levels]
+                volumes = [float(level[1]) for level in levels]
                 avg_vol = sum(volumes) / len(volumes)
 
                 whale_levels = []

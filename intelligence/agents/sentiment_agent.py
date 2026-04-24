@@ -21,11 +21,10 @@ import time
 from datetime import datetime, timezone
 
 import psycopg2
+from intelligence.event_logger import log_security_threat
+from intelligence.persona import get_current_persona
 
 logger = logging.getLogger(__name__)
-
-from intelligence.persona import get_current_persona
-from intelligence.event_logger import log_security_threat
 
 # ---------------------------------------------------------------------------
 # DB persistence helper

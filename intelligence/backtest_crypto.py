@@ -172,7 +172,7 @@ def generate_backtest_signals(df: pd.DataFrame, params: dict = None, asset_class
                     feats = extract_features(df, i, side=side, asset_class=asset_class)
                     res   = predict_win_probability(feats)
                     df.at[df.index[i], "ml_edge"] = res.get("win_pct", 0)
-                except:
+                except Exception:
                     df.at[df.index[i], "ml_edge"] = 0
 
     df["signal"] = signals

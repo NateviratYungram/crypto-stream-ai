@@ -300,9 +300,9 @@ def build_ml_dataset(
                 label = None
                 for j in range(i + 1, min(i + 1 + max_bars, len(close_arr))):
                     h = float(high_arr[j])
-                    l = float(low_arr[j])
+                    low_price = float(low_arr[j])
                     if side == "BUY":
-                        if l <= sl:
+                        if low_price <= sl:
                             label = 0
                             break
                         if h >= tp:
@@ -312,7 +312,7 @@ def build_ml_dataset(
                         if h >= sl:
                             label = 0
                             break
-                        if l <= tp:
+                        if low_price <= tp:
                             label = 1
                             break
 

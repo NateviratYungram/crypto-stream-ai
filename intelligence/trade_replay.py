@@ -145,9 +145,9 @@ Keep lessons actionable and specific (e.g. "raise min_confidence from 60% to 70%
             lines.append(f"  Trade #{m.get('trade')}: {m.get('mistake')}")
 
         lines += ["", "Lessons Learned:"]
-        for i, l in enumerate(data.get("lessons", []), 1):
-            lines.append(f"  {i}. [{l.get('rule')}] {l.get('reason')}")
-            lines.append(f"     Action: {l.get('action')}")
+        for i, lesson in enumerate(data.get("lessons", []), 1):
+            lines.append(f"  {i}. [{lesson.get('rule')}] {lesson.get('reason')}")
+            lines.append(f"     Action: {lesson.get('action')}")
 
         lines += ["", f"Suggested Improvements: {data.get('suggested_improvements', '')}"]
         lines += [f"Overall Assessment: {data.get('overall_assessment', '')}"]

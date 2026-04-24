@@ -4,9 +4,9 @@ import json
 import os
 from typing import Dict, List, Any, Tuple
 
-logger = logging.getLogger(__name__)
+from .institutional_guard import InstitutionalGuard as InstitutionalGuard
 
-from .institutional_guard import InstitutionalGuard
+logger = logging.getLogger(__name__)
 
 class GuardResult:
     def __init__(self, passed: bool, message: str, severity: str = "INFO"):

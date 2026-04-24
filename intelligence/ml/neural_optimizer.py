@@ -19,9 +19,15 @@ import pandas as pd
 from typing import List, Optional, Tuple
 
 if not TORCH_AVAILABLE:
-    class AttentionLayer: pass      # type: ignore
-    class NeuralV8Model: pass       # type: ignore
-    class SequentialTrainer: pass   # type: ignore
+    class AttentionLayer:
+        pass      # type: ignore
+
+    class NeuralV8Model:
+        pass       # type: ignore
+
+    class SequentialTrainer:
+        pass   # type: ignore
+
     _TRAINER_CACHE = None
 
 else:

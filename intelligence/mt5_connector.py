@@ -2,6 +2,8 @@ import logging
 import os
 from typing import Dict, Any, Optional, List
 
+from intelligence.event_logger import log_guard_failure, log_trade_attempt
+
 logger = logging.getLogger(__name__)
 
 # Optional MT5 import — graceful fallback if not installed
@@ -12,8 +14,6 @@ except ImportError:
     mt5 = None
     _MT5_AVAILABLE = False
     logger.warning("MetaTrader5 not installed — MT5 execution disabled. Analysis tools will still work.")
-
-from intelligence.event_logger import log_trade_attempt, log_guard_failure
 
 def _get_guard_pipeline():
     from intelligence.guards import GuardPipeline, MaxPositionSizeGuard, CooldownGuard

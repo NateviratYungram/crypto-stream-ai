@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import threading
+from urllib.parse import quote
 import pandas as pd
 import yfinance as yf
 from typing import Dict, Any, Optional, List
@@ -13,7 +14,19 @@ from intelligence.technical_engine import (
 )
 from intelligence.constants import MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS, SMALL_CAP_TICKERS
 from intelligence.backtest_crypto import run_crypto_backtest
-from intelligence.mt5_connector import get_mt5_account_info, mt5_execute_trade, mt5_close_position
+from intelligence.mt5_connector import (
+    _MT5_AVAILABLE,
+    get_mt5_account_info,
+    initialize_mt5,
+    mt5_close_position,
+    mt5_execute_trade,
+    normalize_broker_symbol,
+)
+from intelligence.persistence_utils import (
+    delete_trade_draft,
+    get_trade_draft,
+    save_trade_draft,
+)
 import time
 import psycopg2
 from intelligence.agents.sentiment_agent import _fetch_rss_news
@@ -37,7 +50,6 @@ from intelligence.risk_calculator_crypto import (
     calculate_crypto_risk, get_risk_advice_thai, calculate_position_scenarios
 )
 from intelligence.ml.outcome_tracker import get_ml_stats
-from intelligence.whale_engine import whale_pulse
 
 load_dotenv()
 
@@ -727,7 +739,8 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
                 result['rsi_sq'] = sq_row[1]
                 result['pct_52wh_sq'] = sq_row[2]
                 result['return_1w_sq'] = sq_row[3]
-    except: pass
+    except Exception:
+        pass
 
     # ── Choice 1: Yahoo Finance with Strict Timeout ─────────────────────────
     def fetch_yf():
@@ -736,7 +749,8 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
             # info is a lazy-loading dict, accessing it triggers the network call
             data = stock.info
             result['info'] = data
-        except: pass
+        except Exception:
+            pass
 
     t = threading.Thread(target=fetch_yf)
     t.start()
@@ -753,16 +767,19 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
         pe   = info.get("trailingPE")
         fpe  = info.get("forwardPE")
         pb   = info.get("priceToBook")
+        ps   = info.get("priceToSalesTrailing12Months")
         eps  = info.get("trailingEps")
         eg   = info.get("earningsGrowth")
         rg   = info.get("revenueGrowth")
         pm   = info.get("profitMargins")
         roe  = info.get("returnOnEquity")
+        de   = info.get("debtToEquity")
         w52h = info.get("fiftyTwoWeekHigh")
         w52l = info.get("fiftyTwoWeekLow")
         mktcap = info.get("marketCap")
         target = info.get("targetMeanPrice")
         analyst_cnt = info.get("numberOfAnalystOpinions", 0)
+        upside_pct = round(((target - price) / price) * 100, 1) if target and price else None
 
         # ── Valuation signals ──────────────────────────────────────────────────
         pe_signal = (
@@ -1106,10 +1123,11 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                             "title": n.get("title"),
                             "publisher": n.get("publisher"),
                             "link": n.get("link"),
-                            "time": datetime.fromtimestamp(n.get("providerPublishTime")).strftime('%Y-%m-%d %H:%M') if n.get("providerPublishTime") else "N/A"
+                            "time": dt_datetime.fromtimestamp(n.get("providerPublishTime")).strftime('%Y-%m-%d %H:%M') if n.get("providerPublishTime") else "N/A"
                         } for n in yf.Ticker(symbol).news[:3]
                     ]
-                except: pass
+                except Exception:
+                    pass
 
             nt = threading.Thread(target=fetch_news)
             nt.start()
@@ -1131,7 +1149,8 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                         if pd.isna(val):
                             return None
                         return round(val, 4)
-                    except: return None
+                    except Exception:
+                        return None
 
                 rsi_val   = _f(last.get("rsi_14"))
                 macd_hist = _f(last.get("macd_hist"))
@@ -1239,7 +1258,8 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                             if pd.isna(val):
                                 return 0.0
                             return round(val, 4)
-                        except: return 0.0
+                        except Exception:
+                            return 0.0
 
                     htf_close = _s(last_htf.get("Close"))
                     htf_ema20 = _s(last_htf.get("ema_20"))
@@ -1399,10 +1419,6 @@ def run_ai_trade_analysis(
         return {"error": str(e), "symbol": symbol}
 
 
-import uuid
-
-from intelligence.mt5_connector import get_mt5_account_info, _MT5_AVAILABLE, initialize_mt5, normalize_broker_symbol
-from intelligence.persistence_utils import save_trade_draft, get_trade_draft, delete_trade_draft
 try:
     import MetaTrader5 as _mt5
 except ImportError:
@@ -1710,7 +1726,6 @@ def execute_approved_mt5_trade(draft_id: str) -> Dict[str, Any]:
         logger.info(f"Tool: Executing approved trade {draft_id}: {trade}")
 
         # Check if MT5 is available
-        from intelligence.mt5_connector import _MT5_AVAILABLE
         if not _MT5_AVAILABLE:
             # ── Paper Trade fallback ─────────────────────────────────────────
             import time as _time
@@ -1776,7 +1791,6 @@ def execute_approved_mt5_trade(draft_id: str) -> Dict[str, Any]:
                 # Capture ML features at the exact moment of execution
                 _ml_feats = {}
                 try:
-                    from intelligence.technical_engine import get_kline_data, compute_indicators
                     from intelligence.backtest_crypto import generate_backtest_signals
                     from intelligence.ml.feature_extractor import extract_features
                     _sym_clean = trade["symbol"].replace("USD","").replace("Cash","").replace("#","")
@@ -2019,15 +2033,17 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
                     return float(v_clean.replace("M", "")) * 1_000_000
                 if "K" in v_clean:
                     return float(v_clean.replace("K", "")) * 1_000
-                try: return float(v_clean)
-                except: return 0
+                try:
+                    return float(v_clean)
+                except Exception:
+                    return 0
             return 0
         return [s for s in stocks if _parse_vol(s.get("volume", 0)) >= MIN_VOLUME]
 
     def _abs_change(x):
         try:
             return abs(float(str(x.get("change_percent") or x.get("percent_change") or 0).replace("%", "")))
-        except:
+        except Exception:
             return 0.0
 
     def _enrich(stock, group_name, fetch_news: bool = False):
@@ -2046,16 +2062,16 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
     def _build_group(name, gainers, losers, fetch_news: bool = False):
         """Build a self-contained group result with its own hero."""
         g = gainers[0] if gainers else None
-        l = losers[0]  if losers  else None
+        loser = losers[0] if losers else None
         g = _enrich(g, name, fetch_news=fetch_news)
-        l = _enrich(l, name, fetch_news=fetch_news)
+        loser = _enrich(loser, name, fetch_news=fetch_news)
         return {
             "group_name": name,
             "top_gainer": g,
-            "top_loser":  l,
+            "top_loser":  loser,
             # Hero for chart = top gainer of this group
-            "hero_symbol":   g["symbol"]   if g else (l["symbol"]   if l else None),
-            "hero_exchange": g["exchange"]  if g else (l["exchange"] if l else None),
+            "hero_symbol":   g["symbol"]   if g else (loser["symbol"]   if loser else None),
+            "hero_exchange": g["exchange"]  if g else (loser["exchange"] if loser else None),
         }
 
     try:
@@ -2904,7 +2920,7 @@ def get_social_sentiment(keyword: str) -> Dict[str, Any]:
             "note": "Simulated data — set CRYPTOPANIC_API_KEY in .env for real data"
         }
 
-def get_trading_tactics(symbol: str) -> str:
+def _get_trading_tactics_legacy(symbol: str) -> str:
     """
     AGGREGATED INSTITUTIONAL TRADING TACTICS (V2)
     Implements 6 core personas with Trigger, Invalidation, and TP parameters.
@@ -3766,11 +3782,14 @@ def scan_multi_timeframe(symbol: str, asset_class: str = "CRYPTO") -> Dict[str, 
                     summary = ana.upper()
 
                 if any(k in summary for k in ["BUY","BULL","LONG","BULLISH","UPTREND","UP"]):
-                    bias = "BULLISH"; bull_count += 1
+                    bias = "BULLISH"
+                    bull_count += 1
                 elif any(k in summary for k in ["SELL","BEAR","SHORT","BEARISH","DOWNTREND","DOWN"]):
-                    bias = "BEARISH"; bear_count += 1
+                    bias = "BEARISH"
+                    bear_count += 1
                 else:
-                    bias = "NEUTRAL"; neutral_count += 1
+                    bias = "NEUTRAL"
+                    neutral_count += 1
 
                 # Grab key numbers if present
                 tf_entry = {"bias": bias}
@@ -4031,7 +4050,8 @@ def paper_trade(action: str, symbol: str = "", side: str = "BUY",
                 VALUES (?,?,?,?,?,?,?,?,?)
             """, (tid, symbol.upper(), side.upper(), volume, price, price, 0.0, "OPEN",
                   dt_datetime.utcnow().isoformat()))
-            con.commit(); con.close()
+            con.commit()
+            con.close()
             return {
                 "action": "OPENED",
                 "trade_id": tid,
@@ -4071,7 +4091,8 @@ def paper_trade(action: str, symbol: str = "", side: str = "BUY",
                 SET status='CLOSED', current_price=?, pnl_usd=?, closed_at=?
                 WHERE id=?
             """, (price, round(pnl,2), dt_datetime.utcnow().isoformat(), trade_id))
-            con.commit(); con.close()
+            con.commit()
+            con.close()
             return {
                 "action":     "CLOSED",
                 "trade_id":   trade_id,
@@ -4097,7 +4118,8 @@ def paper_trade(action: str, symbol: str = "", side: str = "BUY",
 
         elif action.upper() == "RESET":
             cur.execute("DELETE FROM paper_trades")
-            con.commit(); con.close()
+            con.commit()
+            con.close()
             return {"action":"RESET", "message":"Paper trading history cleared.", "status":"SUCCESS"}
 
         con.close()

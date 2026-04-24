@@ -16,13 +16,13 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
 
-from intelligence.ml.signal_model import TRADE_TRAIN_SYMBOLS, predict_with_neural_consensus, predict_win_probability
-from intelligence.ml.feature_extractor import extract_features
 from intelligence.guards import InstitutionalGuard  # V8 Guard Integration
+from intelligence.ml.feature_extractor import extract_features
+from intelligence.ml.signal_model import TRADE_TRAIN_SYMBOLS, predict_with_neural_consensus, predict_win_probability
+from intelligence.technical_engine import get_kline_data, compute_indicators
 from intelligence.utils.market_hours import get_market_status_data # Added for Market Alerts
 
 load_dotenv()
-from intelligence.technical_engine import get_kline_data, compute_indicators
 
 logger = logging.getLogger(__name__)
 

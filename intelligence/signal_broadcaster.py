@@ -160,6 +160,7 @@ class SignalBroadcaster:
         reasoning  = state.get("master_reasoning", "")
         sentiment  = state.get("sentiment_label", "")
         fg_index   = state.get("fear_greed_index", None)
+        asset_class = state.get("asset_class", "")
 
         entry_zone = state.get("entry_zone", {})
         sl_data    = state.get("stop_loss", {})
