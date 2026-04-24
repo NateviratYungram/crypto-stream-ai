@@ -45,6 +45,7 @@ jobs:
         run: |
           pip install \
             "apache-airflow==2.8.1" \
+            "flask-session<0.6" \
             psycopg2-binary \
             pandas \
             pyarrow \
@@ -58,7 +59,7 @@ jobs:
           AIRFLOW__CORE__LOAD_EXAMPLES: "false"
           AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////tmp/airflow_test.db
         run: |
-          airflow db init
+          airflow db migrate
           python -c "
           import os, sys
           from airflow.models import DagBag
