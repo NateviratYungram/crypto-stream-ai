@@ -490,18 +490,29 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["macd_hist"]   = macd.macd_diff()
 
     # Stochastic
-    stoch = ta.momentum.StochasticOscillator(high=h, low=l, close=c, window=14, smooth_window=3)
+    stoch = ta.momentum.StochasticOscillator(
+        high=h,
+        low=low_series,
+        close=c,
+        window=14,
+        smooth_window=3,
+    )
     df["stoch_k"] = stoch.stoch()
     df["stoch_d"] = stoch.stoch_signal()
 
     # Williams %R
-    df["willr_14"] = ta.momentum.WilliamsRIndicator(high=h, low=l, close=c, lbp=14).williams_r()
+    df["willr_14"] = ta.momentum.WilliamsRIndicator(
+        high=h,
+        low=low_series,
+        close=c,
+        lbp=14,
+    ).williams_r()
 
     # Rate of Change
     df["roc_10"] = ta.momentum.ROCIndicator(close=c, window=10).roc()
 
     # ADX (Average Directional Index)
-    adx = ta.trend.ADXIndicator(high=h, low=l, close=c, window=14)
+    adx = ta.trend.ADXIndicator(high=h, low=low_series, close=c, window=14)
     df["adx_14"] = adx.adx()
 
     # ATR
@@ -523,7 +534,13 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         v = df["Volume"]
         df["volume_sma_20"] = v.rolling(window=20).mean()
         # Chaikin Money Flow (CMF) — measure of accumulation/distribution
-        df["cmf_20"] = ta.volume.ChaikinMoneyFlowIndicator(high=h, low=l, close=c, volume=v, window=20).chaikin_money_flow()
+        df["cmf_20"] = ta.volume.ChaikinMoneyFlowIndicator(
+            high=h,
+            low=low_series,
+            close=c,
+            volume=v,
+            window=20,
+        ).chaikin_money_flow()
 
     # ── Intelligence V6: Advanced Alpha Core ────────────────────────────────
     # 1. Relative Volatility Index (RVI)
