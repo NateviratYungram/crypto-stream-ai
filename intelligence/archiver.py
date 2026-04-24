@@ -1,12 +1,10 @@
-import sqlite3
-import pandas as pd
 import logging
-import os
+import sqlite3
 import time
+from typing import Optional
+
+import pandas as pd
 import requests
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +109,6 @@ class IntelligenceArchiver:
         Maximizes historical depth. Uses pagination for Crypto (Binance)
         and max-period fetches for Macro (yfinance).
         """
-        from intelligence.technical_engine import get_kline_data
 
         logger.info(f"Archiver: Deep-Crawl started for {symbol} ({timeframe}) Target: {years}y")
 
@@ -135,7 +132,7 @@ class IntelligenceArchiver:
         try:
             conn = sqlite3.connect(self.db_path)
             while current_end > start_target:
-                url = f"https://api.binance.com/api/v3/klines"
+                url = "https://api.binance.com/api/v3/klines"
                 # For Binance, we usually crawl forwards or backwards.
                 # Let's crawl forwards from the target for simplicity in bulk insert.
                 params = {

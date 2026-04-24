@@ -1,8 +1,9 @@
-import pandas as pd
-import numpy as np
-import ta
 import logging
-from typing import Any, Dict, Optional, Union
+from typing import Any, Union
+
+import numpy as np
+import pandas as pd
+import ta
 
 logger = logging.getLogger(__name__)
 

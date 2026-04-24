@@ -64,7 +64,7 @@ def create_guard_agent(config: dict = None):
 
         # ── Rule 1: CHAOS regime — always block ──────────────────────────────
         if cfg["chaos_regime_block"] and regime == "CHAOS" and decision in ("LONG", "SHORT"):
-            reasons.append(f"CHAOS regime — no trades allowed")
+            reasons.append("CHAOS regime — no trades allowed")
 
         # ── Rule 2: Confidence floor ──────────────────────────────────────────
         min_conf = float(cfg["min_confidence"])

@@ -1,8 +1,8 @@
-import logging
-import time
 import json
+import logging
 import os
-from typing import Dict, List, Any, Tuple
+import time
+from typing import Any, Dict, List, Tuple
 
 from .institutional_guard import InstitutionalGuard as InstitutionalGuard
 
@@ -23,7 +23,7 @@ class MaxPositionSizeGuard(BaseGuard):
         self.max_equity_pct = max_equity_pct
 
     def validate(self, order_params: Dict[str, Any], account_info: Dict[str, Any]) -> GuardResult:
-        equity = account_info.get("equity", account_info.get("balance", 0))
+        account_info.get("equity", account_info.get("balance", 0))
         lot_size = order_params.get("volume", 0)
         if lot_size > 10.0:
             return GuardResult(False, f"Lot size {lot_size} exceeds safety cap (10.0).", "CRITICAL")

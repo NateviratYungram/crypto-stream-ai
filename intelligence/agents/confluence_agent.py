@@ -25,6 +25,7 @@ Usage (standalone):
 """
 
 import logging
+
 import numpy as np
 import pandas as pd
 
@@ -224,7 +225,7 @@ def create_confluence_agent():
     """
 
     def confluence_agent_node(state: dict) -> dict:
-        from intelligence.technical_engine import get_kline_data, compute_indicators
+        from intelligence.technical_engine import compute_indicators, get_kline_data
 
         symbol     = state.get("symbol", "BTC")
         timeframe  = state.get("timeframe", "15m")

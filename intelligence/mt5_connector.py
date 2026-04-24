@@ -1,6 +1,5 @@
 import logging
-import os
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
 from intelligence.event_logger import log_guard_failure, log_trade_attempt
 
@@ -16,7 +15,7 @@ except ImportError:
     logger.warning("MetaTrader5 not installed — MT5 execution disabled. Analysis tools will still work.")
 
 def _get_guard_pipeline():
-    from intelligence.guards import GuardPipeline, MaxPositionSizeGuard, CooldownGuard
+    from intelligence.guards import CooldownGuard, GuardPipeline, MaxPositionSizeGuard
     return GuardPipeline([
         MaxPositionSizeGuard(max_equity_pct=2.0),
         CooldownGuard(cooldown_seconds=300)
@@ -127,7 +126,7 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
             }
 
         # Log the attempt to the institutional audit audit trail
-        log_trade_attempt(symbol=symbol, action=action, volume=volume, reason=f"Manual execution via agent. Guards: OK")
+        log_trade_attempt(symbol=symbol, action=action, volume=volume, reason="Manual execution via agent. Guards: OK")
     except Exception as guard_err:
         logger.error(f"MT5: Guard check failed, proceeding with caution: {guard_err}")
 

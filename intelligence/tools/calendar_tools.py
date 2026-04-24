@@ -1,7 +1,8 @@
-import requests
-import xml.etree.ElementTree as ET
 import logging
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+
+import requests
 
 logger = logging.getLogger(__name__)
 

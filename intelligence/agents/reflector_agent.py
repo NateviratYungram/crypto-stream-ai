@@ -4,12 +4,11 @@ Institutional reflexive memory engine for Intelligence V5.
 Analyzes past outcomes to improve future decision confidence.
 """
 
-import json
-import sqlite3
-import os
 import logging
+import os
+import sqlite3
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 PAPER_DB = os.getenv("PAPER_TRADE_DB", "persistence.db")

@@ -16,11 +16,10 @@ Persistence:
 import json
 import logging
 import os
-import re
 import time
-from datetime import datetime, timezone
 
 import psycopg2
+
 from intelligence.event_logger import log_security_threat
 from intelligence.persona import get_current_persona
 
@@ -196,7 +195,7 @@ def _fetch_macro_context(is_crypto: bool) -> tuple[dict, dict]:
     if _macro_cache.get("ts", 0) + _MACRO_AGENT_TTL > now:
         return _macro_cache.get("regime", {}), _macro_cache.get("etf", {})
     try:
-        from intelligence.macro_signals import get_macro_regime, get_btc_etf_flows
+        from intelligence.macro_signals import get_btc_etf_flows, get_macro_regime
         regime = get_macro_regime()
         etf    = get_btc_etf_flows() if is_crypto else {}
         _macro_cache = {"ts": now, "regime": regime, "etf": etf}
@@ -218,7 +217,8 @@ def _fetch_fear_greed() -> dict:
     if cached and (now - cached["timestamp"] < 3600):
         return cached["data"]
     try:
-        import urllib.request, json as _json
+        import json as _json
+        import urllib.request
         with urllib.request.urlopen(
             "https://api.alternative.me/fng/?limit=1&format=json", timeout=5
         ) as resp:
@@ -242,7 +242,6 @@ def create_sentiment_agent(client):
     Fetches crypto RSS news + Fear & Greed Index → Gemini analysis → score -100 to +100.
     Falls back to NEUTRAL (0) if sources unavailable.
     """
-    from google import genai
 
     def sentiment_agent_node(state: dict) -> dict:
         symbol = state.get("symbol", "BTC")

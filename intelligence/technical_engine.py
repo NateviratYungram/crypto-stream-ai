@@ -1,15 +1,19 @@
 import logging
-import pandas as pd
-import numpy as np
-import yfinance as yf
 import os
-import psycopg2
-from typing import Optional
 from datetime import datetime, timedelta
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
 from sqlalchemy import create_engine, text
-from intelligence.constants import NASDAQ_100_TICKERS, SP500_TICKERS, MACRO_MAPPING
-from intelligence.mt5_connector import _MT5_AVAILABLE, mt5_get_rates, normalize_broker_symbol
+
 from intelligence.archiver import archiver
+from intelligence.constants import MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS
+from intelligence.mt5_connector import (
+    _MT5_AVAILABLE,
+    mt5_get_rates,
+)
 
 # Configure yfinance cache to avoid disk I/O errors in restricted environments
 try:
@@ -849,7 +853,7 @@ def detect_market_regime(df: pd.DataFrame) -> str:
 
         atr_now = atr.iloc[-1] if not atr.empty else 0
         atr_avg = atr.tail(20).mean() if not atr.empty else 1
-        bb_width = (bb_up - bb_lo) / close if close else 0
+        (bb_up - bb_lo) / close if close else 0
 
         if atr_avg > 0 and atr_now > atr_avg * 3:
             return "CHAOS"

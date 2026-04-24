@@ -1,7 +1,8 @@
 import logging
-from typing import Dict, Any, List
-from intelligence.mt5_connector import get_mt5_account_info, initialize_mt5
+from typing import Any, Dict
+
 from intelligence.brain import get_brain_state
+from intelligence.mt5_connector import get_mt5_account_info, initialize_mt5
 from intelligence.tools.market_tools import get_portfolio_analytics
 
 logger = logging.getLogger(__name__)

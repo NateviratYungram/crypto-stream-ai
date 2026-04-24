@@ -32,9 +32,9 @@ from datetime import datetime, timedelta
 
 import psycopg2
 import psycopg2.extras
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 # ---------------------------------------------------------------------------
 # DAG Default Arguments

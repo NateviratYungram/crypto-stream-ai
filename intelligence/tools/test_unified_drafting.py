@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 sys.path.append(os.getcwd())
 
 from intelligence.execution_bridge import execute_signal
-from intelligence.persistence_utils import get_trade_draft, delete_trade_draft
+from intelligence.persistence_utils import delete_trade_draft, get_trade_draft
+
 
 class TestUnifiedDrafting(unittest.TestCase):
     def setUp(self):

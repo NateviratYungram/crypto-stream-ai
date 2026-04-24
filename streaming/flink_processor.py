@@ -22,9 +22,9 @@ Architecture (Phase 3):
 """
 
 import logging
+
 from pyflink.datastream import StreamExecutionEnvironment, TimeCharacteristic
-from pyflink.table import StreamTableEnvironment, DataTypes, EnvironmentSettings
-from pyflink.table.expressions import col, lit
+from pyflink.table import EnvironmentSettings, StreamTableEnvironment
 
 # ---------------------------------------------------------------------------
 # Logging Setup — always use structured logging in production

@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+from airflow import DAG
 
 DEFAULT_ARGS = {
     "owner":            "cryptostream",
@@ -57,7 +57,7 @@ def _build_dataset(**ctx):
 
 # ── Task 3: Train model ───────────────────────────────────────────────────────
 def _train_model(**ctx):
-    from intelligence.ml.signal_model import train_model, invalidate_model_cache
+    from intelligence.ml.signal_model import invalidate_model_cache, train_model
     result = train_model(limit=2000)
     print(f"Training result: {result}")
     invalidate_model_cache()

@@ -7,6 +7,7 @@ Ported from QuantAgent pattern_agent.py, adapted for Gemini Vision API.
 import json
 import logging
 import os
+
 from google import genai
 from google.genai import types
 

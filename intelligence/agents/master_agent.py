@@ -11,12 +11,12 @@ Weights:
 
 import json
 import logging
-import re
 import os
-from intelligence.ml.drift_monitor import drift_shield
+
 from intelligence.agents.reflector_agent import get_reflexive_context
-from intelligence.risk_manager import risk_manager
+from intelligence.ml.drift_monitor import drift_shield
 from intelligence.persistence_utils import log_sniper_rejection
+from intelligence.risk_manager import risk_manager
 
 logger = logging.getLogger(__name__)
 MODEL_ID = os.environ.get("MODEL_ID", "gemini-2.5-flash")
@@ -76,8 +76,8 @@ def create_master_agent(client, config: dict = None):
         trade_decision   = state.get("trade_decision", "HOLD")
         decision_conf    = state.get("decision_confidence", 50)
         indicator_report = state.get("indicator_report", "")
-        pattern_report   = state.get("pattern_report", "")
-        trend_report     = state.get("trend_report", "")
+        state.get("pattern_report", "")
+        state.get("trend_report", "")
         sentiment_score  = float(state.get("sentiment_score", 0))
         sentiment_label  = state.get("sentiment_label", "NEUTRAL")
         sentiment_report = state.get("sentiment_report", "NEUTRAL")

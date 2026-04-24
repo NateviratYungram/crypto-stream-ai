@@ -1,55 +1,64 @@
-import logging
 import json
+import logging
 import os
+import random
+import sqlite3
 import threading
+import time
+import uuid
+from datetime import datetime as dt_datetime
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
+
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 import yfinance as yf
-from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from google import genai as _genai
-from intelligence.technical_engine import (
-    get_kline_data, compute_indicators, get_indicator_summary,
-    get_smart_money_analysis
-)
-from intelligence.constants import MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS, SMALL_CAP_TICKERS
+
+from intelligence.agents.sentiment_agent import _fetch_rss_news
 from intelligence.backtest_crypto import run_crypto_backtest
+from intelligence.brain import get_brain_state
+from intelligence.constants import (
+    NASDAQ_100_TICKERS,
+    SMALL_CAP_TICKERS,
+    SP500_TICKERS,
+)
 from intelligence.mt5_connector import (
     _MT5_AVAILABLE,
     get_mt5_account_info,
     initialize_mt5,
-    mt5_close_position,
     mt5_execute_trade,
     normalize_broker_symbol,
 )
 from intelligence.persistence_utils import (
-    delete_trade_draft,
-    get_trade_draft,
     save_trade_draft,
 )
-import time
-import psycopg2
-from intelligence.agents.sentiment_agent import _fetch_rss_news
-import psycopg2.extras
-import random
-import sqlite3
-import uuid
-from datetime import datetime as dt_datetime
-from intelligence.brain import update_brain_state, get_brain_state
-from intelligence.symbol_index import search_market_symbols
-from intelligence.visual_analysis import analyze_chart_visually
+from intelligence.technical_engine import (
+    compute_indicators,
+    get_indicator_summary,
+    get_kline_data,
+    get_smart_money_analysis,
+)
 from intelligence.tools.onchain_tools import onchain_engine
 from intelligence.whale_engine import whale_pulse
+
 try:
-    from intelligence.ml.signal_model import predict_win_probability, predict_with_neural_consensus
+    from intelligence.ml.signal_model import (
+        predict_win_probability,
+        predict_with_neural_consensus,
+    )
 except Exception:
     def predict_win_probability(*a, **kw): return {"win_probability": 0.5, "direction": "HOLD", "confidence": 0}
     def predict_with_neural_consensus(*a, **kw): return {"win_probability": 0.5, "direction": "HOLD", "confidence": 0}
-from intelligence.risk_manager import risk_manager
-from intelligence.risk_calculator_crypto import (
-    calculate_crypto_risk, get_risk_advice_thai, calculate_position_scenarios
-)
 from intelligence.ml.outcome_tracker import get_ml_stats
+from intelligence.risk_calculator_crypto import (
+    calculate_crypto_risk,
+    calculate_position_scenarios,
+    get_risk_advice_thai,
+)
+from intelligence.risk_manager import risk_manager
 
 load_dotenv()
 
@@ -722,9 +731,10 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
     Fetch fundamental data for value investing analysis with aggressive timeouts.
     Returns P/E, P/B, growth rates, 52w range, analyst targets, etc.
     """
-    import yfinance as yf
-    import threading
     import sqlite3
+    import threading
+
+    import yfinance as yf
 
     result = {}
 
@@ -821,7 +831,7 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
             if upside_t1 > 0:
                 sell_logic.append(f"TP1: ${sell_t1} คือราคาเป้าหมายเฉลี่ยจากนักวิเคราะห์ {analyst_cnt} คน (Upside +{upside_t1}%)")
             else:
-                sell_logic.append(f"⚠️ ราคาปัจจุบันเกินเป้าหมายนักวิเคราะห์แล้ว ระวังแรงขายทำกำไร!")
+                sell_logic.append("⚠️ ราคาปัจจุบันเกินเป้าหมายนักวิเคราะห์แล้ว ระวังแรงขายทำกำไร!")
             sell_logic.append(f"TP2: ${sell_t2} คือระดับ Premium เผื่อ Momentum Overshoot (+10% เหนือ Target เฉลี่ย)")
 
         if w52h and price:
@@ -832,7 +842,7 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
             if price < w52h:
                 sell_logic.append(f"TP3: ${w52h:.2f} คือแนวต้านเดิมสูงสุดรอบ 52 สัปดาห์ (มักเกิดแรงขายที่บริเวณนี้)")
             else:
-                sell_logic.append(f"⚠️ ราคาปัจจุบันทำ New 52w High แล้ว อยู่ในโซน Price Discovery ยังไม่มีแนวต้านอ้างอิง")
+                sell_logic.append("⚠️ ราคาปัจจุบันทำ New 52w High แล้ว อยู่ในโซน Price Discovery ยังไม่มีแนวต้านอ้างอิง")
 
         return {
             "company":          info.get("longName", ticker),
@@ -1304,8 +1314,8 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
 
             # 2. ML Probability (Math Logic)
             # Import inside function to avoid circular dependencies
-            from intelligence.ml.signal_model import predict_win_probability
             from intelligence.ml.feature_extractor import extract_features
+            from intelligence.ml.signal_model import predict_win_probability
 
             features = extract_features(df_with_indicators, -1, symbol=symbol, asset_class=asset_class)
             ml_res = predict_win_probability(features)
@@ -1430,11 +1440,11 @@ def get_institutional_ml_stats(symbol: str) -> Dict[str, Any]:
     Fetch comprehensive ML statistics and neural consensus for a symbol.
     Provides the 'Statistical Edge' required for institutional reports.
     """
-    from intelligence.ml.signal_model import predict_win_probability
-    from intelligence.ml.outcome_tracker import get_ml_stats
-    from intelligence.technical_engine import get_kline_data, compute_indicators
     from intelligence.ml.feature_extractor import extract_features
+    from intelligence.ml.outcome_tracker import get_ml_stats
     from intelligence.ml.regime_analysis import estimate_hurst_exponent
+    from intelligence.ml.signal_model import predict_win_probability
+    from intelligence.technical_engine import compute_indicators, get_kline_data
 
     try:
         sym = symbol.upper().replace("USDT", "").strip()
@@ -1513,7 +1523,7 @@ def sync_deep_history(symbol: str, years: int = 10) -> Dict[str, Any]:
     Covers: 15m, 1h, 4h, 1d for institutional analysis.
     """
     try:
-        from intelligence.archiver import archiver, ARCHIVE_DB
+        from intelligence.archiver import archiver
         sym = symbol.upper().replace("USDT", "").strip()
 
         results = {}
@@ -1559,7 +1569,11 @@ def sync_deep_history(symbol: str, years: int = 10) -> Dict[str, Any]:
 
         # 3. Get Neural Alpha (Adjusted risk)
         # Using Hurst Exponent from technical summary
-        from intelligence.technical_engine import get_kline_data, compute_indicators, get_indicator_summary
+        from intelligence.technical_engine import (
+            compute_indicators,
+            get_indicator_summary,
+            get_kline_data,
+        )
         df_raw = get_kline_data(sym, timeframe="1h", limit=100)
         hurst_val = 0.5
         if df_raw is not None and not df_raw.empty:
@@ -1645,7 +1659,7 @@ def prepare_mt5_trade_draft(symbol: str, side: str, volume: float, sl: Optional[
                 _sl_val, _tp_val = _tp_val, _sl_val
 
         # Details for storage
-        trade_details = {
+        {
             "symbol": normalized_symbol,
             "action": _side_upper,
             "volume": float(volume),
@@ -1752,7 +1766,10 @@ def execute_approved_mt5_trade(draft_id: str) -> Dict[str, Any]:
             # ── Persist to paper_trades table with SL/TP for outcome tracking ──
             _paper_trade_id = None
             try:
-                from intelligence.ml.outcome_tracker import migrate_schema, attach_sl_tp_features
+                from intelligence.ml.outcome_tracker import (
+                    attach_sl_tp_features,
+                    migrate_schema,
+                )
                 migrate_schema()
                 _paper_con = sqlite3.connect(_PAPER_DB)
                 _paper_cur = _paper_con.cursor()
@@ -1889,8 +1906,9 @@ def _scan_basket(tickers: list) -> list:
     Each ticker is fetched concurrently (max 8 threads) with a 6s timeout.
     Returns a list of dicts sorted by change_percent descending.
     """
-    import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import yfinance as yf
 
     basket = [t for t in tickers if t]
     if not basket:
@@ -1941,8 +1959,9 @@ def _fetch_yf_screener(screen_id: str = "day_gainers", count: int = 10, exchange
     if cached is not None:
         return cached
 
-    import requests
     from datetime import datetime, timezone
+
+    import requests
     headers = {"User-Agent": "Mozilla/5.0"}
     url = f"https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds={screen_id}&count={count}&region=US&lang=en-US"
     fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -2018,6 +2037,7 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
     Groups are NEVER mixed together. Each is independent.
     """
     from datetime import datetime, timezone
+
     from intelligence.agents.sentiment_agent import _fetch_rss_news
 
     fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -2112,7 +2132,8 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
             nasdaq_composite = index_data["exchanges"].get("NASDAQ", [])
 
             # Fetch gainers and losers IN PARALLEL to halve wait time
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+            from concurrent.futures import ThreadPoolExecutor
+            from concurrent.futures import TimeoutError as FuturesTimeoutError
             with ThreadPoolExecutor(max_workers=2) as _ex:
                 _g_future = _ex.submit(_fetch_yf_screener, "day_gainers", 50)
                 _l_future = _ex.submit(_fetch_yf_screener, "day_losers", 50)
@@ -2704,6 +2725,7 @@ def get_options_flow(symbol: str) -> Dict[str, Any]:
     Get your key at: https://unusualwhales.com/api
     """
     import os
+
     import requests
     api_key = os.environ.get("UNUSUAL_WHALES_API_KEY", "")
 
@@ -2779,7 +2801,7 @@ def analyze_trade_performance() -> Dict[str, Any]:
             pass
 
         win_rate = stats.get("win_rate", 0.0)
-        total_trades = stats.get("total_trades", 0)
+        stats.get("total_trades", 0)
         total_pnl = stats.get("total_pnl", 0.0)
         max_consec_loss = stats.get("max_consecutive_losses", 0)
 
@@ -2837,8 +2859,9 @@ def get_social_sentiment(keyword: str) -> Dict[str, Any]:
     Get your free key: https://cryptopanic.com/developers/api/
     """
     import os
-    import requests
     import xml.etree.ElementTree as ET
+
+    import requests
 
     api_key = os.environ.get("CRYPTOPANIC_API_KEY", "")
 
@@ -3075,7 +3098,7 @@ def _get_trading_tactics_legacy(symbol: str) -> str:
 
         if ml_result.get("available"):
             ml_score = ml_result.get("win_pct", 50)
-            ml_reasons = ml_result.get("rationale", [])
+            ml_result.get("rationale", [])
             ml_acc = ml_result.get("accuracy", 0)
             ml_samples = ml_result.get("n_samples", 0)
             neural_match = ml_result.get("neural_alignment", False)
@@ -4231,7 +4254,6 @@ def suggest_portfolio_rebalance(
             "BTC":"BTC-USD","ETH":"ETH-USD","SOL":"SOL-USD","BNB":"BNB-USD",
             "GOLD":"GC=F","SILVER":"SI=F","SP500":"^GSPC","NASDAQ":"^IXIC",
         }
-        import requests as _req
         current_prices: Dict[str, float] = {}
         for sym in target:
             yf_sym = YF_MAP.get(sym, sym)
@@ -4581,7 +4603,7 @@ def get_trading_tactics(symbol: str) -> dict:
         prices_1h = analysis.get("price_action", {}).get("history", []) or [current_price]
         chart = analysis.get("chart_analysis", {})
         smc = analysis.get("smart_money", analysis.get("price_structure", {}))
-        structure = smc.get("structure", {}) if isinstance(smc.get("structure"), dict) else {}
+        smc.get("structure", {}) if isinstance(smc.get("structure"), dict) else {}
         nearest_ob = smc.get("nearest_ob") or {}
         nearest_fvg = smc.get("nearest_fvg") or {}
 
@@ -4833,7 +4855,7 @@ def execute_mt5_trade(
     Includes an institutional-grade symbol normalization layer to handle
     broker-specific naming conventions (e.g., BTC -> BTCUSD).
     """
-    from intelligence.mt5_connector import mt5_execute_trade, initialize_mt5
+    from intelligence.mt5_connector import initialize_mt5, mt5_execute_trade
     try:
         import MetaTrader5 as mt5
     except ImportError:

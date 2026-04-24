@@ -4,9 +4,10 @@ ML Feature Extractor
 Converts a DataFrame row (with indicators) into a flat feature dict
 suitable for training / inference with the signal model.
 """
+from typing import Dict
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional
 
 REGIME_MAP = {"TRENDING": 2, "TRANSITIONING": 1, "RANGING": 0}
 SIDE_MAP   = {"BUY": 1, "LONG": 1, "SELL": 0, "SHORT": 0}

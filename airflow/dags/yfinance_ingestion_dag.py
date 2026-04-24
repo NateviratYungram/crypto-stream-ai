@@ -22,16 +22,15 @@ Task flow (stocks run, daily):
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timedelta
 from typing import List
 
 import psycopg2
 import psycopg2.extras
 import yfinance as yf
+from airflow.operators.python import PythonOperator
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 
 log = logging.getLogger(__name__)
 

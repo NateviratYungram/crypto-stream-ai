@@ -7,6 +7,7 @@ Ported from QuantAgent indicator_agent.py pattern, adapted for Gemini API.
 import json
 import logging
 import os
+
 from google import genai
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ def create_indicator_agent(client: genai.Client):
         symbol = state.get("symbol", "BTC")
         timeframe = state.get("timeframe", "15m")
         indicator_summary = state.get("indicator_summary", {})
-        kline_data = state.get("kline_data")  # DataFrame (optional)
+        state.get("kline_data")  # DataFrame (optional)
 
         if not indicator_summary:
             return {

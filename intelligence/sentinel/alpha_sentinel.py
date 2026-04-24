@@ -1,13 +1,8 @@
 import asyncio
 import logging
-import json
-from datetime import datetime, timezone
-from typing import List, Dict, Any
 
-from intelligence.tools.market_tools import get_market_analysis, get_mt5_account_info
-from intelligence.mt5_connector import mt5_modify_position
+from intelligence.tools.market_tools import get_market_analysis
 from services.notification_service import NotificationService
-from intelligence.constants import NASDAQ_100_TICKERS, SP500_TICKERS
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +56,7 @@ class AlphaSentinel:
                 # Conditions: ML Prob > 80% AND Whale Injection Detected OR Major SMC Breakout
                 whale = analysis.get("whale_pulse", {})
                 ml = analysis.get("win_probability", 0)
-                smc = analysis.get("indicator_summary", {}).get("smart_money", {})
+                analysis.get("indicator_summary", {}).get("smart_money", {})
 
                 high_conf = (ml >= 0.80) or (whale.get("injections", False) and ml >= 0.70)
 
@@ -103,7 +98,7 @@ class AlphaSentinel:
 
                 # Logic: If position is in profit and a Large Whale Wall forms at/near Entry
                 # PROACTIVE BE (Break Even) Trigger
-                profit_pips = abs(current_price - entry_price)
+                abs(current_price - entry_price)
 
                 # Simple example: if in profit and Whale Wall detected opposite to trade
                 threat_detected = False

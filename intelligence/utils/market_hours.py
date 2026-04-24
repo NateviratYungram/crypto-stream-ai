@@ -1,6 +1,8 @@
 import datetime
+from typing import Any, Dict
+
 import pytz
-from typing import Dict, Any, Optional
+
 
 def is_us_market_holiday(date_obj: datetime.date) -> bool:
     """
@@ -115,7 +117,6 @@ def get_market_status_data() -> Dict[str, Any]:
         stocks_target = now_utc.replace(hour=20, minute=0, second=0, microsecond=0)
     else:
         # Find next open: Iterate days until we find a non-holiday weekday
-        check_date = now_utc
         if weekday < 5 and time_val < 1330 and not is_holiday:
             # Reopens today later
             stocks_target = now_utc.replace(hour=13, minute=30, second=0, microsecond=0)

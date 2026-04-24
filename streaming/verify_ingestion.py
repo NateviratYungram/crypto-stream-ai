@@ -1,8 +1,8 @@
 import json
 import logging
-from kafka import KafkaConsumer
 import sys
-import time
+
+from kafka import KafkaConsumer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')

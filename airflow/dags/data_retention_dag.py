@@ -35,9 +35,9 @@ from datetime import datetime, timedelta
 
 import psycopg2
 import psycopg2.extras
+from airflow.operators.python import PythonOperator
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 
 log = logging.getLogger(__name__)
 

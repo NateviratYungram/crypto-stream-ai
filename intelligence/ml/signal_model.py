@@ -11,22 +11,22 @@ The model learns: "given these technical conditions, what is the probability
 that this signal will hit TP before SL?"
 Integrated V6: Adaptive Retraining & Neural Attention.
 """
-import os
 import json
 import logging
-import sqlite3
-import psycopg2
-from dotenv import load_dotenv
+import os
 import pickle
+import sqlite3
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 
-from .feature_extractor import extract_features, FEATURE_COLS
+from .feature_extractor import FEATURE_COLS, extract_features
+
 try:
-    from .neural_optimizer import get_neural_optimizer, TORCH_AVAILABLE
+    from .neural_optimizer import TORCH_AVAILABLE, get_neural_optimizer
 except (ImportError, SyntaxError, Exception):
     TORCH_AVAILABLE = False
     def get_neural_optimizer(*a, **kw): return None
@@ -243,8 +243,8 @@ def build_ml_dataset(
       1 = WIN  (price hit TP within max_bars)
       0 = LOSS (price hit SL or timed out)
     """
+
     from intelligence.technical_engine import compute_indicators, get_kline_data
-    import requests as _req
 
     symbols = symbols or TRAIN_SYMBOLS
     rows: List[Dict] = []
@@ -692,8 +692,8 @@ def train_model(
     try:
         from sklearn.ensemble import GradientBoostingClassifier
         from sklearn.metrics import accuracy_score, roc_auc_score
-        from sklearn.preprocessing import StandardScaler
         from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
     except ImportError:
         return {"error": "scikit-learn not installed. Run: pip install scikit-learn"}
 
@@ -750,12 +750,11 @@ def train_model(
     )
 
     # Split for Neural
-    X_train_neu = X_test_neu = None
     if X_neu is not None:
-        X_train_neu = X_neu[:len(X_train_ens)]
-        X_test_neu  = X_neu[len(X_train_ens):]
+        X_neu[:len(X_train_ens)]
+        X_neu[len(X_train_ens):]
 
-    from sklearn.ensemble import VotingClassifier, RandomForestClassifier
+    from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 
     model = Pipeline([
         ("scaler", StandardScaler()),

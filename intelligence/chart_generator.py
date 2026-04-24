@@ -5,9 +5,10 @@ Output: base64-encoded PNG for use with Gemini Vision.
 Port of QuantAgent's graph_util.py trendline math (no TA-Lib dependency).
 """
 
-import io
 import base64
+import io
 import logging
+
 import numpy as np
 import pandas as pd
 
@@ -119,7 +120,6 @@ def generate_kline_chart(df: pd.DataFrame, symbol: str = "") -> str:
     """
     try:
         import mplfinance as mpf
-        import matplotlib.pyplot as plt
         matplotlib_use_agg()
 
         mpf_df = _df_to_mpf(df.tail(40))
@@ -164,7 +164,6 @@ def generate_trend_chart(df: pd.DataFrame, symbol: str = "") -> str:
     """
     try:
         import mplfinance as mpf
-        import matplotlib.pyplot as plt
         matplotlib_use_agg()
 
         candles = df.tail(50).copy().reset_index(drop=True)
@@ -240,7 +239,6 @@ def generate_indicator_chart(df: pd.DataFrame, symbol: str = "") -> str:
     """
     try:
         import mplfinance as mpf
-        import matplotlib.pyplot as plt
         matplotlib_use_agg()
 
         candles = df.tail(40).copy().reset_index(drop=True)

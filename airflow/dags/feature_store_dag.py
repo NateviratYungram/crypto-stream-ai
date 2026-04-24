@@ -34,16 +34,16 @@ from __future__ import annotations
 import json
 import logging
 import math
-from datetime import datetime, timedelta, date
-from typing import Dict, List, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import psycopg2
 import psycopg2.extras
+from airflow.operators.python import PythonOperator
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 
 log = logging.getLogger(__name__)
 

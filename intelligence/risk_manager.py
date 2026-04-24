@@ -1,8 +1,8 @@
 import logging
-import pandas as pd
-import numpy as np
+from typing import Any, Dict
+
 import yfinance as yf
-from typing import List, Dict, Any, Optional
+
 from intelligence.mt5_connector import get_mt5_account_info
 from intelligence.persistence_utils import get_active_trades
 

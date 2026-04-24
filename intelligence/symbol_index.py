@@ -1,6 +1,6 @@
 import logging
-from typing import List, Dict, Any
 import re
+from typing import Any, Dict, List
 
 try:
     import MetaTrader5 as mt5

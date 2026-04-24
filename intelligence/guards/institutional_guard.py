@@ -1,7 +1,7 @@
 import logging
-import time
-from datetime import datetime, time as dt_time
-from typing import Dict, Any, Optional
+from datetime import datetime
+from datetime import time as dt_time
+
 try:
     import MetaTrader5 as mt5
 except ImportError:

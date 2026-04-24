@@ -1,8 +1,8 @@
 import logging
-import requests
+from typing import Any, Dict, List
+
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Any, Optional
+import requests
 
 logger = logging.getLogger(__name__)
 

@@ -19,11 +19,14 @@ Safety:
 
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
 import uuid
+from datetime import datetime, timezone
 
-from intelligence.mt5_connector import get_mt5_account_info, _MT5_AVAILABLE, initialize_mt5, normalize_broker_symbol
+from intelligence.mt5_connector import (
+    _MT5_AVAILABLE,
+    initialize_mt5,
+    normalize_broker_symbol,
+)
 from intelligence.persistence_utils import save_trade_draft
 
 logger = logging.getLogger(__name__)
@@ -213,8 +216,8 @@ def execute_signal(
 
     # ── Step 1.5: Institutional Guards (Macro & Correlation) ──────────────────
     try:
-        from intelligence.guards.macro_shield import is_in_danger_zone
         from intelligence.guards.correlation_guardian import check_correlation_safety
+        from intelligence.guards.macro_shield import is_in_danger_zone
 
         # Macro News check
         news_status = is_in_danger_zone()

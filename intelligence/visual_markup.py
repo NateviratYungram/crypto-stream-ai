@@ -1,7 +1,8 @@
-from PIL import Image, ImageDraw, ImageFont
-import os
 import logging
-from typing import List, Dict, Any
+import os
+from typing import Any, Dict, List
+
+from PIL import Image, ImageDraw
 
 logger = logging.getLogger(__name__)
 

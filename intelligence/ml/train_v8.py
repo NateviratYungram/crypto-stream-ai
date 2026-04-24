@@ -1,16 +1,15 @@
 
-import sys
-import os
-import pandas as pd
-import numpy as np
 import logging
+import sys
 from pathlib import Path
+
+import numpy as np
 
 # Add project root to path
 sys.path.append(str(Path.cwd()))
 
-from intelligence.ml.signal_model import train_model, build_ml_dataset
 from intelligence.ml.neural_optimizer import get_neural_trainer
+from intelligence.ml.signal_model import build_ml_dataset, train_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("V8Trainer")

@@ -7,6 +7,7 @@ Ported from QuantAgent trend_agent.py pattern.
 import json
 import logging
 import os
+
 from google import genai
 from google.genai import types
 

@@ -28,10 +28,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import psycopg2
 import psycopg2.extras
+
 try:
     from kafka import KafkaConsumer
     from kafka.errors import NoBrokersAvailable
@@ -44,8 +45,9 @@ except ImportError:
 
     KAFKA_AVAILABLE = False
 
-from airflow import DAG
 from airflow.operators.python import PythonOperator
+
+from airflow import DAG
 
 # ---------------------------------------------------------------------------
 # DAG Default Arguments

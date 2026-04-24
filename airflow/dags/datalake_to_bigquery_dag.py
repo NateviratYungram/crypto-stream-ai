@@ -20,21 +20,24 @@ Note on DRY RUN:
 
 from __future__ import annotations
 
+import glob
 import logging
 import os
-import glob
 from datetime import datetime, timedelta
 
 from airflow.models import Variable
+from airflow.operators.dummy import DummyOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.operators.dummy import DummyOperator
-from airflow.utils.task_group import TaskGroup
 
 try:
-    from airflow.providers.google.cloud.transfers.gcs_to_bigquery import GCSToBigQueryOperator
-    from airflow.providers.google.cloud.operators.bigquery import BigQueryCreateEmptyDatasetOperator
+    from airflow.providers.google.cloud.operators.bigquery import (
+        BigQueryCreateEmptyDatasetOperator,
+    )
+    from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
+        GCSToBigQueryOperator,
+    )
     GCP_PROVIDERS_AVAILABLE = True
 except ImportError:
     GCP_PROVIDERS_AVAILABLE = False
@@ -195,7 +198,7 @@ with DAG(
         t_load = GCSToBigQueryOperator(
             task_id='gcs_to_bigquery',
             bucket="{{ var.value.get('gcs_bucket_name', 'crypto-stream-lake-01') }}",
-            source_objects=[f"raw_trades/{{{{ data_interval_start.strftime('%Y-%m-%d') }}}}/*.parquet"],
+            source_objects=["raw_trades/{{ data_interval_start.strftime('%Y-%m-%d') }}/*.parquet"],
             destination_project_dataset_table=f"{BQ_DATASET}.{BQ_TABLE}",
             source_format='PARQUET',
             write_disposition='WRITE_APPEND',

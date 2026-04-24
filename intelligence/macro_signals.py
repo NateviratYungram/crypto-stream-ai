@@ -200,10 +200,10 @@ def get_macro_regime(lookback_days: int = 20, btc_lookback: int = 7) -> dict:
             explanation = f"Safe-haven bid (GLD {gld_ret:+.1f}%, UUP {uup_ret:+.1f}%)."
         elif sh_strength <= 0:
             status = "bullish"
-            explanation = f"Safe-haven demand subdued — risk appetite intact."
+            explanation = "Safe-haven demand subdued — risk appetite intact."
         else:
             status = "neutral"
-            explanation = f"Safe-haven demand present but not dominant."
+            explanation = "Safe-haven demand present but not dominant."
         signals.append({
             "id": "safe_haven", "label": "Safe-Haven Pressure",
             "status": status, "value": round(sh_strength, 2), "unit": "%",

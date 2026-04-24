@@ -1,11 +1,15 @@
-import sys
 import os
 import sqlite3
+import sys
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from intelligence.tools.market_tools import prepare_mt5_trade_draft, execute_approved_mt5_trade
+from intelligence.tools.market_tools import (
+    execute_approved_mt5_trade,
+    prepare_mt5_trade_draft,
+)
+
 
 def test_persistence():
     print("--- Testing Trade Draft Persistence ---")

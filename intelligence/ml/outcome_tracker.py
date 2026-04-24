@@ -8,10 +8,10 @@ Paper Trade Outcome Tracker
 """
 import json
 import logging
-import sqlite3
 import os
+import sqlite3
 from datetime import datetime, timezone
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def scan_and_update() -> Dict:
         side   = trade["side"]
         sl     = trade.get("sl")
         tp     = trade.get("tp")
-        entry  = trade.get("entry_price", 0)
+        trade.get("entry_price", 0)
 
         if sl is None and tp is None:
             continue  # no SL/TP stored — can't evaluate

@@ -23,18 +23,22 @@ Usage:
 
 import logging
 import time
-from typing import Optional
+
 from google import genai
 
-from intelligence.technical_engine import get_kline_data, compute_indicators, get_indicator_summary
-from intelligence.chart_generator import generate_kline_chart, generate_trend_chart
 from intelligence.agents.confluence_agent import create_confluence_agent
-from intelligence.agents.indicator_agent import create_indicator_agent
-from intelligence.agents.pattern_agent import create_pattern_agent
-from intelligence.agents.trend_agent import create_trend_agent
-from intelligence.agents.sentiment_agent import create_sentiment_agent
 from intelligence.agents.decision_agent import create_decision_agent
+from intelligence.agents.indicator_agent import create_indicator_agent
 from intelligence.agents.master_agent import create_master_agent
+from intelligence.agents.pattern_agent import create_pattern_agent
+from intelligence.agents.sentiment_agent import create_sentiment_agent
+from intelligence.agents.trend_agent import create_trend_agent
+from intelligence.chart_generator import generate_kline_chart, generate_trend_chart
+from intelligence.technical_engine import (
+    compute_indicators,
+    get_indicator_summary,
+    get_kline_data,
+)
 
 logger = logging.getLogger(__name__)
 

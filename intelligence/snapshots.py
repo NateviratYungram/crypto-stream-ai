@@ -1,9 +1,9 @@
-import os
-import logging
 import json
+import logging
+import os
+from typing import Any, Dict
+
 import psycopg2
-from datetime import datetime
-from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 

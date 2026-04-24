@@ -1,6 +1,6 @@
-import re
 import logging
-from typing import List, Tuple
+import re
+from typing import List
 
 logger = logging.getLogger(__name__)
 

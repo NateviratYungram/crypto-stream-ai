@@ -9,18 +9,23 @@ Alerts & Reviews dashboard shows it immediately.
 Logic: For each symbol, evaluate BOTH BUY and SELL, then emit ONLY the
 direction with higher probability (prevents contradictory LONG+SHORT signals).
 """
+import logging
 import os
 import sqlite3
-import psycopg2
-from dotenv import load_dotenv
-import logging
 from datetime import datetime, timedelta
 
+import psycopg2
+from dotenv import load_dotenv
+
 from intelligence.guards import InstitutionalGuard  # V8 Guard Integration
-from intelligence.ml.feature_extractor import extract_features
-from intelligence.ml.signal_model import TRADE_TRAIN_SYMBOLS, predict_with_neural_consensus, predict_win_probability
-from intelligence.technical_engine import get_kline_data, compute_indicators
-from intelligence.utils.market_hours import get_market_status_data # Added for Market Alerts
+from intelligence.ml.signal_model import (
+    TRADE_TRAIN_SYMBOLS,
+    predict_with_neural_consensus,
+)
+from intelligence.technical_engine import compute_indicators, get_kline_data
+from intelligence.utils.market_hours import (
+    get_market_status_data,  # Added for Market Alerts
+)
 
 load_dotenv()
 
@@ -52,8 +57,8 @@ def _send_telegram(text: str) -> bool:
 
 def _us_market_open() -> bool:
     """Return True if US equity market is currently open (Mon-Fri 09:30–16:00 ET)."""
-    from datetime import timezone
     import zoneinfo
+    from datetime import timezone
     try:
         et = datetime.now(zoneinfo.ZoneInfo("America/New_York"))
     except Exception:
@@ -221,11 +226,11 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
 
             # Diverse phrases for institutional feel
             phrases = [
-                f"🎯 *SNIPER TARGET ACQUIRED*",
-                f"🚀 *INSTITUTIONAL MOMENTUM DETECTED*",
-                f"💎 *HIGH-CONVICTION SIGNAL*",
-                f"⚡ *NEURAL V8 ANALYSIS COMPLETE*",
-                f"🏦 *SMART MONEY FOOTPRINT FOUND*"
+                "🎯 *SNIPER TARGET ACQUIRED*",
+                "🚀 *INSTITUTIONAL MOMENTUM DETECTED*",
+                "💎 *HIGH-CONVICTION SIGNAL*",
+                "⚡ *NEURAL V8 ANALYSIS COMPLETE*",
+                "🏦 *SMART MONEY FOOTPRINT FOUND*"
             ]
             header = random.choice(phrases)
 
@@ -261,7 +266,6 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
     return {"scanned": len(scanned_syms), "found": found, "skipped_duplicates": skipped_dup, "errors": errors}
 
 if __name__ == "__main__":
-    import time
     import sys
     # Force UTF-8 for Windows Terminal
     if sys.platform == "win32":
@@ -274,7 +278,7 @@ if __name__ == "__main__":
 
     res = scan_for_high_probability_signals()
 
-    print(f"\n✅ Scan Complete:")
+    print("\n✅ Scan Complete:")
     print(f"   Scanned    : {res.get('scanned')} assets/timeframes")
     print(f"   Found      : {res.get('found')} signals above threshold")
     print(f"   Duplicates : {res.get('skipped_duplicates')} skipped")

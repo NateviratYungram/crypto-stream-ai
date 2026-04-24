@@ -1,6 +1,7 @@
 import logging
-from typing import Dict, Any, List
-from intelligence.mt5_connector import get_mt5_account_info, _MT5_AVAILABLE
+from typing import Any, Dict
+
+from intelligence.mt5_connector import _MT5_AVAILABLE
 
 logger = logging.getLogger(__name__)
 

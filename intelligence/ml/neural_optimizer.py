@@ -5,6 +5,7 @@ PyTorch implementation of an Attention-augmented sequential market analysis engi
 Supports Temporal Memory (GRU) + Self-Attention for superior pattern recognition.
 """
 import os
+
 try:
     import torch
     import torch.nn as nn
@@ -14,9 +15,9 @@ except ImportError:
     TORCH_AVAILABLE = False
     torch = None  # type: ignore
     nn = None     # type: ignore
+from typing import List, Tuple
+
 import numpy as np
-import pandas as pd
-from typing import List, Optional, Tuple
 
 if not TORCH_AVAILABLE:
     class AttentionLayer:
