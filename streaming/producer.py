@@ -21,12 +21,12 @@ import json
 import logging
 import os
 import time
-import websocket
 
+import websocket
 from confluent_kafka import Producer
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
-from confluent_kafka.serialization import SerializationContext, MessageField
+from confluent_kafka.serialization import MessageField, SerializationContext
 
 logging.basicConfig(
     level=logging.INFO,

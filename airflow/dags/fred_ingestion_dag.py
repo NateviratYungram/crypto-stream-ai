@@ -30,7 +30,6 @@ Upsert on (series_id, date) — safe to re-run without duplication.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta
 from typing import List
@@ -38,9 +37,9 @@ from typing import List
 import psycopg2
 import psycopg2.extras
 import requests
+from airflow.operators.python import PythonOperator
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +106,6 @@ def _fetch_series(series_id: str, lookback_days: int = 365) -> List[dict]:
     FRED public CSV endpoint requires no API key.
     """
     observation_start = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-    url = f"{FRED_BASE_URL}?id={series_id}&vintage_date=9999-12-31"
     params = {"id": series_id, "observation_start": observation_start}
 
     resp = requests.get(FRED_BASE_URL, params=params, timeout=30)
@@ -179,7 +177,7 @@ def ingest_fred_series(**context):
     conn.close()
 
     if errors:
-        raise RuntimeError(f"FRED ingestion partial failure:\n" + "\n".join(errors))
+        raise RuntimeError("FRED ingestion partial failure:\n" + "\n".join(errors))
 
     log.info("FRED ingestion complete — total rows upserted: %d", total_rows)
     context["ti"].xcom_push(key="total_rows", value=total_rows)

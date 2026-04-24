@@ -42,9 +42,9 @@ from typing import Any, Dict, List
 
 import psycopg2
 import psycopg2.extras
+from airflow.operators.python import PythonOperator
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 
 log = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ def run_assertions(**context):
 
     if critical_failures:
         raise ValueError(
-            f"Data quality CRITICAL failures detected:\n" +
+            "Data quality CRITICAL failures detected:\n" +
             "\n".join(f"  • {f}" for f in critical_failures)
         )
 
