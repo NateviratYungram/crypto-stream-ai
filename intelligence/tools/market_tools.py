@@ -3192,7 +3192,8 @@ def get_fear_greed_index() -> Dict[str, Any]:
                 stock_label = "Neutral"
             elif stock_score >= 25:
                 stock_label = "Fear"
-            else: stock_label = "Extreme Fear"
+            else:
+                stock_label = "Extreme Fear"
         except Exception:
             stock_score, stock_label = None, "N/A"
 
@@ -4048,7 +4049,8 @@ def paper_trade(action: str, symbol: str = "", side: str = "BUY",
             cur.execute("SELECT * FROM paper_trades WHERE id=? AND status='OPEN'", (trade_id,))
             row = cur.fetchone()
             if not row:
-                con.close(); return {"error": f"ไม่พบ paper trade ID {trade_id} หรือ status ไม่ใช่ OPEN"}
+                con.close()
+                return {"error": f"ไม่พบ paper trade ID {trade_id} หรือ status ไม่ใช่ OPEN"}
 
             cols = [c[0] for c in cur.description]
             t    = dict(zip(cols, row))
