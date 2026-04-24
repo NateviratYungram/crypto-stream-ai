@@ -71,7 +71,7 @@ flowchart LR
     B --> G["Streaming + batch data ingestion"]
     C --> H["Technical, sentiment, ML, macro signals"]
     D --> I["Institutional guards, correlation, macro shield"]
-    E --> J["Draft trade plans / broker-aware execution"]
+    E --> J["Draft trade plans / broker-aware execution support"]
     F --> K["Frontend, Grafana, Airflow, Kafka UI"]
 ```
 
@@ -109,7 +109,7 @@ flowchart LR
 
     subgraph Analytics
         E1["dbt models"]
-        E2["BigQuery export (OLAP)"]
+        E2["Optional BigQuery export (OLAP)"]
         E3["Signal and portfolio analytics"]
     end
 
@@ -163,10 +163,10 @@ flowchart LR
     C --> F["Parquet data lake (OLAP)"]
     D --> E
     E --> G["dbt transformations"]
-    F --> H["BigQuery export (OLAP)"]
+    F --> H["Optional BigQuery export (OLAP)"]
     G --> I["Analytics, signals, guard checks"]
     H --> I
-    I --> J["Frontend, dashboards, alerts, execution workflows"]
+    I --> J["Frontend, dashboards, alerts, execution support"]
 ```
 
 ---
@@ -195,12 +195,12 @@ flowchart TD
 
 - **Real-time ingestion** from Binance and other market sources
 - **Batch macro ingestion** for equities, indices, commodities, and economic indicators
-- **Airflow-managed orchestration** for ingestion, aggregation, quality checks, retention, and warehouse export
+- **Airflow-managed orchestration** for ingestion, aggregation, quality checks, retention, and optional warehouse export
 - **Streaming analytics** with Kafka and Flink
 - **Hybrid storage** using PostgreSQL, Parquet, SQLite, and Redis
 - **Analytical transformation** with dbt staging and marts
-- **AI-assisted intelligence layer** for technical, sentiment, macro, and ML-driven analysis
-- **Risk-aware execution workflow** with trade drafting, guard rails, and broker normalization
+- **AI-assisted intelligence layer** for technical, sentiment, macro, and ML-driven analysis with live-data fallbacks where upstream sources are unavailable
+- **Risk-aware execution workflow** with trade drafting, advisory guard rails, and broker normalization
 - **Operational visibility** through Prometheus, Grafana, Marquez, and CI checks
 
 ---
@@ -209,7 +209,7 @@ flowchart TD
 
 This repository highlights experience across:
 
-- **Data engineering**: Kafka, Flink, Airflow, dbt, warehouse export
+- **Data engineering**: Kafka, Flink, Airflow, dbt, and warehouse-ready export paths
 - **Backend engineering**: Python services, orchestration logic, persistence layers
 - **AI application engineering**: multi-signal analysis, agent-style workflows, ML feature pipelines
 - **Reliability engineering**: CI, DAG parsing checks, quality gates, dependency hardening
