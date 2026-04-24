@@ -20,7 +20,7 @@ It is designed to answer a simple question:
 CryptoStream AI is a portfolio project that demonstrates how modern data, AI, and platform engineering fit together in one system:
 
 - Ingests market data from streaming and batch sources
-- Processes and stores data in both hot and cold layers
+- Processes and stores data across OLTP and OLAP layers
 - Orchestrates pipelines with Airflow
 - Transforms analytical data with dbt
 - Generates AI-assisted market analysis and trading context
@@ -207,7 +207,7 @@ This repository highlights experience across:
 | Streaming | Kafka, Schema Registry, Flink | Real-time ingest, stream processing, DLQ patterns |
 | Orchestration | Airflow 2.8 | Scheduled pipelines, DAG-based operations |
 | Transformation | dbt-postgres | Staging and analytical marts |
-| Storage | PostgreSQL, Parquet, SQLite, Redis | Hot storage, cold storage, operational state, cache |
+| Storage | PostgreSQL, Parquet, SQLite, Redis | OLTP serving, OLAP storage/export, operational state, cache |
 | AI / Analytics | Custom intelligence modules, ML signal model | Multi-factor analysis and decision support |
 | Observability | Prometheus, Grafana, Marquez | Metrics, dashboards, lineage |
 | Quality | Ruff, GitHub Actions, DAG import tests | CI stability and code quality |
