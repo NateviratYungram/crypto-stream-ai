@@ -1,8 +1,0 @@
-{"timestamp": "2026-04-16T09:43:44.451880Z", "type": "security.threat_detected", "payload": {"source": "TEST_BOT", "pattern": "ignore all instructions"}}
-{"timestamp": "2026-04-16T16:19:10.671191Z", "type": "trade.attempt", "payload": {"symbol": "XAUUSD", "action": "SELL", "volume": 0.01, "reason": "Manual execution via agent. Guards: OK"}}
-{"timestamp": "2026-04-16T16:33:07.843027Z", "type": "trade.attempt", "payload": {"symbol": "GOLD", "action": "SELL", "volume": 0.01, "reason": "Manual execution via agent. Guards: OK"}}
-{"timestamp": "2026-04-16T20:09:20.299958Z", "type": "trade.attempt", "payload": {"symbol": "BTCUSD", "action": "BUY", "volume": 0.01, "reason": "Manual execution via agent. Guards: OK"}}
-{"timestamp": "2026-04-17T08:34:33.410240Z", "type": "trade.attempt", "payload": {"symbol": "BTCUSD", "action": "BUY", "volume": 0.01, "reason": "Manual execution via agent. Guards: OK"}}
-{"timestamp": "2026-04-17T09:56:58.458264Z", "type": "trade.attempt", "payload": {"symbol": "GOLD", "action": "BUY", "volume": 0.01, "reason": "Manual execution via agent. Guards: OK"}}
-{"timestamp": "2026-04-17T10:05:31.750540Z", "type": "trade.attempt", "payload": {"symbol": "GOLD", "action": "SELL", "volume": 0.01, "reason": "Manual execution via agent. Guards: OK"}}
-{"timestamp": "2026-04-17T12:58:43.836901Z", "type": "trade.attempt", "payload": {"symbol": "GOLD", "action": "BUY", "volume": 0.01, "reason": "Manual execution via agent. Guards: OK"}}
