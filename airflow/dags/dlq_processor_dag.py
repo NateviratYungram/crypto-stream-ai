@@ -250,7 +250,7 @@ def generate_dq_summary_report(**context):
         log.info(f"[DQ REPORT] Valid Records : {total_clean:,}")
         log.info(f"[DQ REPORT] DQ Errors     : {total_errors:,}")
         log.info(f"[DQ REPORT] Pass Rate     : {dq_pass_rate:.2f}%")
-        log.info(f"[DQ REPORT] Error Breakdown:")
+        log.info("[DQ REPORT] Error Breakdown:")
         for row in breakdown:
             log.info(f"[DQ REPORT]   - {row['error_reason']}: {row['error_count']:,}")
         log.info("=" * 60)

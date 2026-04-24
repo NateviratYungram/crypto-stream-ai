@@ -27,7 +27,8 @@ def get_brain_state() -> Dict[str, Any]:
 def update_brain_state(memory: Optional[str] = None, emotion: Optional[str] = None) -> Dict[str, Any]:
     """Update the AI's cognitive focus or emotional baseline."""
     current = get_brain_state()
-    if "error" in current: current = {"frontal_lobe": "", "emotion": "NEUTRAL"}
+    if "error" in current:
+        current = {"frontal_lobe": "", "emotion": "NEUTRAL"}
 
     if memory:
         current["frontal_lobe"] = memory

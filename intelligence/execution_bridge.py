@@ -78,10 +78,14 @@ def _calculate_lot_size(
 def _get_contract_size(mt5_symbol: str) -> float:
     """Approximate contract size for position sizing."""
     s = mt5_symbol.upper()
-    if "XAU" in s:    return 100.0   # Gold: 100 oz per lot
-    if "XAG" in s:    return 5000.0  # Silver: 5000 oz per lot
-    if "BTC" in s:    return 1.0     # BTC: 1 BTC per lot
-    if "ETH" in s:    return 1.0
+    if "XAU" in s:
+        return 100.0   # Gold: 100 oz per lot
+    if "XAG" in s:
+        return 5000.0  # Silver: 5000 oz per lot
+    if "BTC" in s:
+        return 1.0     # BTC: 1 BTC per lot
+    if "ETH" in s:
+        return 1.0
     if "NAS" in s or "SPX" in s or "US30" in s:
         return 1.0                   # Index CFD
     return 1.0
@@ -317,7 +321,7 @@ def execute_signal(
 
     # ── Step 4: Dry-run or Confirmation draft ─────────────────────────────────
     if dry_run:
-        logger.info(f"ExecutionBridge: DRY_RUN — no order sent to MT5")
+        logger.info("ExecutionBridge: DRY_RUN - no order sent to MT5")
         exec_result = {
             "status":       "DRY_RUN",
             "reason":       "dry_run=True — simulated, not sent to MT5",
@@ -394,7 +398,7 @@ def execute_signal(
             }
 
     except Exception as e:
-        logger.exception(f"ExecutionBridge: unexpected error during execution")
+        logger.exception("ExecutionBridge: unexpected error during execution")
         return {
             "status":    "ERROR",
             "reason":    f"Execution exception: {str(e)[:200]}",

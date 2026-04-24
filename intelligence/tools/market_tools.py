@@ -115,7 +115,8 @@ def _calculate_volatility_skew(prices: List[float]) -> float:
     import numpy as np
     from scipy.stats import skew
     try:
-        if len(prices) < 20: return 0.0
+        if len(prices) < 20:
+            return 0.0
         returns = np.diff(np.log(prices))
         return float(skew(returns))
     except Exception:
@@ -1127,7 +1128,8 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                 def _f(v):
                     try:
                         val = float(v)
-                        if pd.isna(val): return None
+                        if pd.isna(val):
+                            return None
                         return round(val, 4)
                     except: return None
 
@@ -1234,7 +1236,8 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                     def _s(v):
                         try:
                             val = float(v)
-                            if pd.isna(val): return 0.0
+                            if pd.isna(val):
+                                return 0.0
                             return round(val, 4)
                         except: return 0.0
 
@@ -2008,11 +2011,14 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
 
     def _liquid(stocks):
         def _parse_vol(v):
-            if isinstance(v, (int, float)): return v
+            if isinstance(v, (int, float)):
+                return v
             if isinstance(v, str):
                 v_clean = v.replace("N/A", "0")
-                if "M" in v_clean: return float(v_clean.replace("M", "")) * 1_000_000
-                if "K" in v_clean: return float(v_clean.replace("K", "")) * 1_000
+                if "M" in v_clean:
+                    return float(v_clean.replace("M", "")) * 1_000_000
+                if "K" in v_clean:
+                    return float(v_clean.replace("K", "")) * 1_000
                 try: return float(v_clean)
                 except: return 0
             return 0
@@ -2455,7 +2461,8 @@ def get_usd_rate(symbol: str) -> float:
         if not data.empty:
             rate = data["Close"].iloc[-1]
             # Use JPY inverse if needed
-            if base == "JPY": return 1.0 / rate
+            if base == "JPY":
+                return 1.0 / rate
             return float(rate)
 
         return fallbacks.get(base, 1.0)
@@ -2906,7 +2913,8 @@ def get_trading_tactics(symbol: str) -> str:
     try:
         # 1. Fetch data & Indicators
         df = get_kline_data(symbol, timeframe="1h", limit=100)
-        if df.empty: return json.dumps({"error": "No market data found"})
+        if df.empty:
+            return json.dumps({"error": "No market data found"})
 
         df = compute_indicators(df)
         indicators = get_indicator_summary(df)
@@ -3176,10 +3184,14 @@ def get_fear_greed_index() -> Dict[str, Any]:
             vix_cmp = max(0, min(100, 100 - (vix_val - 10) / 30 * 100))
             mmt_cmp = max(0, min(100, (spx_now / spx_ma50 - 0.9) / 0.3 * 100))
             stock_score = round(vix_cmp * 0.6 + mmt_cmp * 0.4, 1)
-            if stock_score >= 75: stock_label = "Extreme Greed"
-            elif stock_score >= 55: stock_label = "Greed"
-            elif stock_score >= 45: stock_label = "Neutral"
-            elif stock_score >= 25: stock_label = "Fear"
+            if stock_score >= 75:
+                stock_label = "Extreme Greed"
+            elif stock_score >= 55:
+                stock_label = "Greed"
+            elif stock_score >= 45:
+                stock_label = "Neutral"
+            elif stock_score >= 25:
+                stock_label = "Fear"
             else: stock_label = "Extreme Fear"
         except Exception:
             stock_score, stock_label = None, "N/A"
@@ -4472,12 +4484,18 @@ def run_custom_screener(
                 ret_1w = round((price / float(close.iloc[-5]) - 1) * 100, 2) if len(close) >= 5 else 0
 
                 # Apply filters
-                if rsi_max is not None and rsi > rsi_max:    return None
-                if rsi_min is not None and rsi < rsi_min:    return None
-                if vol_spike is not None and v_ratio < vol_spike: return None
-                if pct_from_52wh is not None and pct_h < -abs(pct_from_52wh): return None
-                if min_return_1w is not None and ret_1w < min_return_1w: return None
-                if max_return_1w is not None and ret_1w > max_return_1w: return None
+                if rsi_max is not None and rsi > rsi_max:
+                    return None
+                if rsi_min is not None and rsi < rsi_min:
+                    return None
+                if vol_spike is not None and v_ratio < vol_spike:
+                    return None
+                if pct_from_52wh is not None and pct_h < -abs(pct_from_52wh):
+                    return None
+                if min_return_1w is not None and ret_1w < min_return_1w:
+                    return None
+                if max_return_1w is not None and ret_1w > max_return_1w:
+                    return None
 
                 return {
                     "symbol":   sym.replace("-USD",""),
@@ -4810,11 +4828,15 @@ def execute_mt5_trade(
                 norm_sym = f"{norm_sym}USD"
             elif norm_sym in ["GOLD", "XAU"]:
                 # Try XAUUSD or GOLD
-                if mt5.symbol_info("XAUUSD"): norm_sym = "XAUUSD"
-                elif mt5.symbol_info("GOLD"): norm_sym = "GOLD"
+                if mt5.symbol_info("XAUUSD"):
+                    norm_sym = "XAUUSD"
+                elif mt5.symbol_info("GOLD"):
+                    norm_sym = "GOLD"
             elif norm_sym in ["OIL", "WTI", "BRENT"]:
-                if mt5.symbol_info("WTIUSD"): norm_sym = "WTIUSD"
-                elif mt5.symbol_info("CRUDE"): norm_sym = "CRUDE"
+                if mt5.symbol_info("WTIUSD"):
+                    norm_sym = "WTIUSD"
+                elif mt5.symbol_info("CRUDE"):
+                    norm_sym = "CRUDE"
 
             # Final check - if still not found, try to search for it as a prefix/suffix
             if mt5.symbol_info(norm_sym) is None:
