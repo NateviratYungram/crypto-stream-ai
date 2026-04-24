@@ -357,10 +357,10 @@ def compute_market_regime(**_):
     risk_score = 0  # positive = risk-on, negative = risk-off
 
     if sp500_vol_30d is not None:
-        if sp500_vol_30d > 0.25:          # >25% annualized = stressed
+        if sp500_vol_30d > 0.25:
             risk_score -= 30
             drivers.append("high_market_volatility")
-        elif sp500_vol_30d < 0.12:        # <12% = calm
+        elif sp500_vol_30d < 0.12:
             risk_score += 20
             drivers.append("low_market_volatility")
 

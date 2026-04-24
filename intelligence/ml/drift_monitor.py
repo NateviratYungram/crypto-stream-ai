@@ -58,8 +58,10 @@ class DriftMonitor:
         integrity_score = max(0, min(100, int(100 - (avg_z * 12))))
 
         status = "STABLE"
-        if integrity_score < 70: status = "WARNING"
-        if integrity_score < 40: status = "CRITICAL_DRIFT"
+        if integrity_score < 70:
+            status = "WARNING"
+        if integrity_score < 40:
+            status = "CRITICAL_DRIFT"
 
         return {
             "integrity_score": integrity_score,

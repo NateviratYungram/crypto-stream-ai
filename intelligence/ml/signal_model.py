@@ -302,11 +302,19 @@ def build_ml_dataset(
                     h = float(high_arr[j])
                     l = float(low_arr[j])
                     if side == "BUY":
-                        if l <= sl:  label = 0; break
-                        if h >= tp:  label = 1; break
+                        if l <= sl:
+                            label = 0
+                            break
+                        if h >= tp:
+                            label = 1
+                            break
                     else:
-                        if h >= sl:  label = 0; break
-                        if l <= tp:  label = 1; break
+                        if h >= sl:
+                            label = 0
+                            break
+                        if l <= tp:
+                            label = 1
+                            break
 
                 if label is None:
                     label = 0  # Default to loss if timed out
@@ -967,7 +975,8 @@ def predict_win_probability(features: Dict[str, float]) -> Dict[str, Any]:
         label = importance_map.get(f_key)
         if label:
             reasons.append(f"{label}")
-            if len(reasons) >= 3: break
+            if len(reasons) >= 3:
+                break
 
     return {
         "win_probability": round(calibrated_prob, 4),
@@ -1165,7 +1174,7 @@ def _consider_auto_retrain():
     import time
     global _LAST_AUTO_RETRAIN_CHECK
     now = time.time()
-    if now - _LAST_AUTO_RETRAIN_CHECK < 3600: # Only check once per hour
+    if now - _LAST_AUTO_RETRAIN_CHECK < 3600:
         return
     _LAST_AUTO_RETRAIN_CHECK = now
 

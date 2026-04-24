@@ -27,10 +27,14 @@ def get_macro_risk_data() -> Dict[str, Any]:
 
         # Calculate Danger Level (0-100)
         danger_level = 0
-        if vix_val > 35 or tnx_val > 5.0: danger_level = 90
-        elif vix_val > 25 or tnx_val > 4.5: danger_level = 60
-        elif vix_val > 20: danger_level = 30
-        else: danger_level = 10
+        if vix_val > 35 or tnx_val > 5.0:
+            danger_level = 90
+        elif vix_val > 25 or tnx_val > 4.5:
+            danger_level = 60
+        elif vix_val > 20:
+            danger_level = 30
+        else:
+            danger_level = 10
 
         return {
             "vix": float(vix_val),

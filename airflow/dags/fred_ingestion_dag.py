@@ -118,7 +118,7 @@ def _fetch_series(series_id: str, lookback_days: int = 365) -> List[dict]:
             continue
         date_str, val_str = parts
         val_str = val_str.strip()
-        if val_str == "." or not val_str:  # FRED uses "." for missing values
+        if val_str == "." or not val_str:
             continue
         try:
             rows.append({"date": date_str.strip(), "value": float(val_str)})

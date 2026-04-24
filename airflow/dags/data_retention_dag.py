@@ -201,7 +201,7 @@ def detect_ohlcv_gaps(**context):
 
             rows = cur.fetchall()
             for row in rows:
-                if row["gap_secs"] and row["gap_secs"] > 1800:  # > 30 min gap
+                if row["gap_secs"] and row["gap_secs"] > 1800:
                     log.warning(
                         f"GAP DETECTED | {ticker} | 15m | "
                         f"{row['prev_ts']} → {row['ts']} | "

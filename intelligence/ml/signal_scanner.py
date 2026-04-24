@@ -62,7 +62,7 @@ def _us_market_open() -> bool:
             type('tz', (), {'utcoffset': lambda s, dt: __import__('datetime').timedelta(hours=-4),
                             'tzname': lambda s, dt: 'EDT', 'dst': lambda s, dt: None})()
         )
-    if et.weekday() >= 5:   # Saturday=5, Sunday=6
+    if et.weekday() >= 5:
         return False
     return (et.hour, et.minute) >= (9, 30) and (et.hour, et.minute) < (16, 0)
 

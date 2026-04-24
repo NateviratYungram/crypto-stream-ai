@@ -40,7 +40,8 @@ def compute_hurst_exponent(ts: pd.Series, window: int = 100) -> float:
     H = 0.5: Random Walk (GBM)
     H > 0.5: Trending (persistent)
     """
-    if len(ts) < window: return 0.5
+    if len(ts) < window:
+        return 0.5
 
     try:
         data = ts.values[-window:]
@@ -52,7 +53,8 @@ def compute_hurst_exponent(ts: pd.Series, window: int = 100) -> float:
         R = np.max(cum_res) - np.min(cum_res)
         # Standard deviation
         S = np.std(data)
-        if S == 0: return 0.5
+        if S == 0:
+            return 0.5
 
         # Simple H estimate for rolling window
         H = np.log(R/S) / np.log(window)
@@ -223,9 +225,12 @@ def get_kline_data(
     if is_macro:
         ticker = MACRO_MAPPING.get(sym, sym)
         # Ensure ticker is standard for common names
-        if ticker in ("GOLD", "XAUUSD=X"): ticker = "GC=F"
-        if ticker == "NASDAQ": ticker = "^IXIC"
-        if ticker == "SP500": ticker = "^GSPC"
+        if ticker in ("GOLD", "XAUUSD=X"):
+            ticker = "GC=F"
+        if ticker == "NASDAQ":
+            ticker = "^IXIC"
+        if ticker == "SP500":
+            ticker = "^GSPC"
 
 
         # ── Choice 1: Archive SQL (High-Speed Historical Cache) ────────────────
@@ -334,7 +339,7 @@ def get_kline_data(
 
                 tf_mins = TIMEFRAME_SECONDS.get(timeframe, 60) / 60
                 market_status = "OPEN"
-                if diff_mins > (tf_mins * 4): # Stale for 4+ candles
+                if diff_mins > (tf_mins * 4):
                     market_status = "CLOSED"
 
                 df_yf.attrs["market_status"] = market_status

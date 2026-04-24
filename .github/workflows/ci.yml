@@ -21,12 +21,25 @@ jobs:
       - name: Install ruff
         run: pip install ruff
 
-      - name: Run ruff
+      - name: Run ruff auto-fix
+        run: |
+          ruff check --fix \
+            airflow/dags/ \
+            streaming/ \
+            intelligence/
+
+      - name: Check ruff status
         run: |
           ruff check \
             airflow/dags/ \
             streaming/ \
             intelligence/
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Ruff made changes. Run 'ruff check --fix airflow/dags streaming intelligence' locally, commit, and push."
+            git --no-pager diff
+            exit 1
+          fi
 
   # ── 2. Airflow DAG Import Tests ──────────────────────────────────────────
   dag-tests:

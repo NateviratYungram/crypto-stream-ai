@@ -200,8 +200,10 @@ class SignalBroadcaster:
         # ── Sniper Chart Link (Visual Confirmation) ──
         # Provide a quick TradingView link for visual double-check
         tv_sym = f"FX:{symbol}" if asset_class == "FOREX" else symbol
-        if symbol == "GOLD": tv_sym = "OANDA:XAUUSD"
-        if symbol == "BTCUSD": tv_sym = "BINANCE:BTCUSDT"
+        if symbol == "GOLD":
+            tv_sym = "OANDA:XAUUSD"
+        if symbol == "BTCUSD":
+            tv_sym = "BINANCE:BTCUSDT"
 
         chart_link = f"https://www.tradingview.com/chart/?symbol={tv_sym}"
         lines.append(f"🔍 View Chart: [TradingView]({chart_link})")

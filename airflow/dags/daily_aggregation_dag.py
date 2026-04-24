@@ -272,7 +272,7 @@ def log_completion(**context):
     target_date = context['data_interval_start'].date()
     run_id      = context['run_id']
     log.info("=" * 60)
-    log.info(f"[AUDIT] DAG: daily_aggregation | Status: SUCCESS")
+    log.info("[AUDIT] DAG: daily_aggregation | Status: SUCCESS")
     log.info(f"[AUDIT] report_date : {target_date}")
     log.info(f"[AUDIT] run_id      : {run_id}")
     log.info(f"[AUDIT] completed_at: {datetime.utcnow().isoformat()}Z")

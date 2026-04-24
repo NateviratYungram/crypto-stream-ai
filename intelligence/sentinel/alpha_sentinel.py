@@ -82,10 +82,12 @@ class AlphaSentinel:
                 logger.warning("Sentinel: MetaTrader5 not available. Guarding skipped.")
                 return
 
-            if not mt5.initialize(): return
+            if not mt5.initialize():
+                return
 
             positions = mt5.positions_get()
-            if not positions: return
+            if not positions:
+                return
 
             for pos in positions:
                 symbol = pos.symbol

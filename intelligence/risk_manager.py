@@ -25,7 +25,8 @@ class RiskManager:
         where p = win_prob, b = RR ratio (net odds)
         We use a fractional Kelly (0.5) to maintain institutional safety.
         """
-        if rr_ratio <= 0: return 0.01 # Fallback to 1%
+        if rr_ratio <= 0:
+            return 0.01  # Fallback to 1%
 
         # Kelly % calculation
         k_pct = (win_prob * (rr_ratio + 1) - 1) / rr_ratio
@@ -80,7 +81,8 @@ class RiskManager:
             max_corr = 0
             for active in active_symbols:
                 c = corr_matrix.loc[symbol, active]
-                if c > max_corr: max_corr = c
+                if c > max_corr:
+                    max_corr = c
                 if c > self.max_correlation:
                     conflicts.append({"symbol": active, "correlation": round(c, 2)})
 
@@ -132,9 +134,12 @@ class RiskManager:
             currencies = []
             if "USD" in symbol or symbol in ["GOLD", "XAU", "BTC", "ETH", "SOL", "NAS100", "SPX", "US30", "USOIL"]:
                 currencies.append("USD")
-            if "EUR" in symbol: currencies.append("EUR")
-            if "GBP" in symbol: currencies.append("GBP")
-            if "JPY" in symbol: currencies.append("JPY")
+            if "EUR" in symbol:
+                currencies.append("EUR")
+            if "GBP" in symbol:
+                currencies.append("GBP")
+            if "JPY" in symbol:
+                currencies.append("JPY")
 
             if not currencies:
                 currencies = ["USD"] # Default safe assumption
@@ -153,4 +158,3 @@ class RiskManager:
             return {"status": "SAFE", "reason": "News shield failed to fetch."}
 
 risk_manager = RiskManager()
-

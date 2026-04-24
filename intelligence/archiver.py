@@ -145,10 +145,12 @@ class IntelligenceArchiver:
                     "limit": limit_per_req
                 }
                 r = requests.get(url, params=params, timeout=10)
-                if r.status_code != 200: break
+                if r.status_code != 200:
+                    break
 
                 raw = r.json()
-                if not raw or not isinstance(raw, list): break
+                if not raw or not isinstance(raw, list):
+                    break
 
                 # Convert to DF
                 df = pd.DataFrame(raw, columns=[

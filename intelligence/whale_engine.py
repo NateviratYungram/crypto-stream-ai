@@ -42,14 +42,15 @@ class WhalePulseEngine:
 
             # Filter for Whale Walls
             def filter_walls(levels, side):
-                if not levels: return []
+                if not levels:
+                    return []
                 volumes = [float(l[1]) for l in levels]
                 avg_vol = sum(volumes) / len(volumes)
 
                 whale_levels = []
                 for price, vol in levels:
                     v = float(vol)
-                    if v > avg_vol * 4.5: # Institutional threshold
+                    if v > avg_vol * 4.5:
                         whale_levels.append({
                             "type": f"WHALE_{side.upper()}_WALL",
                             "price": round(float(price), 4),
@@ -62,8 +63,10 @@ class WhalePulseEngine:
             sell_walls = filter_walls(asks, "sell")
 
             bias = "NEUTRAL"
-            if len(buy_walls) > len(sell_walls): bias = "ACCUMULATION"
-            elif len(sell_walls) > len(buy_walls): bias = "DISTRIBUTION"
+            if len(buy_walls) > len(sell_walls):
+                bias = "ACCUMULATION"
+            elif len(sell_walls) > len(buy_walls):
+                bias = "DISTRIBUTION"
 
             return {
                 "buy_walls": buy_walls[:3],
