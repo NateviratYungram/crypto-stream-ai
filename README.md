@@ -101,15 +101,15 @@ flowchart LR
     end
 
     subgraph Storage
-        D1["PostgreSQL / pgvector"]
-        D2["Parquet data lake"]
+        D1["PostgreSQL / pgvector (OLTP)"]
+        D2["Parquet data lake (OLAP)"]
         D3["SQLite operational stores"]
         D4["Redis cache"]
     end
 
     subgraph Analytics
         E1["dbt models"]
-        E2["BigQuery export"]
+        E2["BigQuery export (OLAP)"]
         E3["Signal and portfolio analytics"]
     end
 
@@ -148,6 +148,25 @@ flowchart LR
     B3 --> G3
     G1 --> G4
     G2 --> F3
+```
+
+---
+
+## Data Flow
+
+```mermaid
+flowchart LR
+    A["Binance / Yahoo Finance / FRED / Broker context"] --> B["Kafka + Airflow ingestion"]
+    B --> C["Flink stream processing"]
+    B --> D["Scheduled Python intelligence jobs"]
+    C --> E["PostgreSQL / pgvector (OLTP)"]
+    C --> F["Parquet data lake (OLAP)"]
+    D --> E
+    E --> G["dbt transformations"]
+    F --> H["BigQuery export (OLAP)"]
+    G --> I["Analytics, signals, guard checks"]
+    H --> I
+    I --> J["Frontend, dashboards, alerts, execution workflows"]
 ```
 
 ---
