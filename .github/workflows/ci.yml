@@ -23,7 +23,7 @@ jobs:
 
       - name: Run ruff auto-fix
         run: |
-          ruff check --fix \
+          ruff check --fix --unsafe-fixes \
             airflow/dags/ \
             streaming/ \
             intelligence/
