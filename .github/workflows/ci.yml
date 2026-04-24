@@ -103,7 +103,24 @@ jobs:
           DBT_PASSWORD: password
         run: dbt parse --profiles-dir .
 
-  # ── 4. Schema Validation ─────────────────────────────────────────────────
+  # ── 4. Unit Tests ────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pytest pyyaml
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v
+
+  # ── 5. Schema Validation ─────────────────────────────────────────────────
   schema-validation:
     name: Avro schema lint
     runs-on: ubuntu-latest
