@@ -26,9 +26,7 @@ jobs:
           ruff check \
             airflow/dags/ \
             streaming/ \
-            intelligence/ \
-            --select E,F,W,I \
-            --ignore E501
+            intelligence/
 
   # ── 2. Airflow DAG Import Tests ──────────────────────────────────────────
   dag-tests:
@@ -46,12 +44,20 @@ jobs:
           pip install \
             "apache-airflow==2.8.1" \
             psycopg2-binary \
+            kafka-python \
             pandas \
             pyarrow \
             requests \
             yfinance==0.2.36 \
             multitasking==0.0.9 \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.8.1/constraints-3.11.txt"
+
+      - name: Initialize Airflow metastore
+        env:
+          AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+          AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////tmp/airflow_test.db
+          AIRFLOW__CORE__UNIT_TEST_MODE: "true"
+        run: airflow db migrate
 
       - name: Verify all DAGs parse without errors
         env:

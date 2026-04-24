@@ -18,7 +18,7 @@ class AuditLogger:
         self.log_path = log_path
         # Ensure directories exist
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
-        
+
     def log_event(self, event_type: str, payload: Dict[str, Any]):
         """Append a structured JSON event to the audit log."""
         entry = {
@@ -26,7 +26,7 @@ class AuditLogger:
             "type": event_type,
             "payload": payload
         }
-        
+
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")

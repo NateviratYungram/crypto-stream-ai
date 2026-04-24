@@ -25,7 +25,7 @@ def evaluate_formula(df: pd.DataFrame, formula: str) -> Union[float, pd.Series]:
     """
     # Clean formula
     formula = formula.strip()
-    
+
     # Prepare namespace
     # We map common terms to the DataFrame columns
     namespace = {
@@ -43,15 +43,15 @@ def evaluate_formula(df: pd.DataFrame, formula: str) -> Union[float, pd.Series]:
         'MAX': max,
         'NP': np,
     }
-    
+
     # Add lowercase versions for convenience
     namespace.update({k.lower(): v for k, v in namespace.items()})
-    
+
     try:
         # Use a restricted eval. In production, a more robust DSL parser is recommended.
         # But for this internal tool, a restricted eval is a good balance between speed and flexibility.
         result = eval(formula, {"__builtins__": {}}, namespace)
-        
+
         # If the result is a Series, take the last non-NaN value or return the series
         if isinstance(result, pd.Series):
             return result

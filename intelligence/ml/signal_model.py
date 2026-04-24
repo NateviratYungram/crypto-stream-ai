@@ -277,7 +277,7 @@ def build_ml_dataset(
             feature_list = []
             for i in range(len(df)):
                 feature_list.append(extract_features(df, i, symbol=sym, asset_class=asset_class))
-            
+
             feat_df = pd.DataFrame(feature_list)
 
             # Determine outcomes (Labels)
@@ -314,7 +314,7 @@ def build_ml_dataset(
                 # ── Sequential Data for Neural V8 ──
                 # Extract the last `sequence_length` feature vectors
                 seq = feat_df.iloc[i-sequence_length+1 : i+1][FEATURE_COLS].fillna(0).values
-                
+
                 # Flat features for Ensemble (just the current bar)
                 feats = feature_list[i].copy()
                 feats["label"] = label
@@ -691,7 +691,7 @@ def train_model(
 
     if dataset is None:
         dataset = build_ml_dataset(symbols=symbols, limit=limit)
-    
+
     if dataset.empty or "label" not in dataset.columns:
         return {"error": "Empty dataset — no signals found"}
 
@@ -740,7 +740,7 @@ def train_model(
         [len(y_train) / max(class_counts.get(label, 1) * len(class_counts), 1) for label in y_train],
         dtype=float,
     )
-    
+
     # Split for Neural
     X_train_neu = X_test_neu = None
     if X_neu is not None:
@@ -785,10 +785,10 @@ def train_model(
     voting_clf = model.named_steps["clf"]
     gbm = voting_clf.named_estimators_["gbm"]
     rf  = voting_clf.named_estimators_["rf"]
-    
+
     # Average the feature importances from both models
     importances = (gbm.feature_importances_ + rf.feature_importances_) / 2.0
-    
+
     feat_imp   = sorted(
         [{"feature": available[i], "importance": round(float(importances[i]), 6)}
          for i in range(len(available))],
@@ -960,7 +960,7 @@ def predict_win_probability(features: Dict[str, float]) -> Dict[str, Any]:
     # and map them to human reasons.
     reasons = []
     importance_map = {f["feature"]: f["label"] for f in bundle.get("feature_importance", [])}
-    
+
     # Simple logic: Top 3 features that are notably far from 'neutral' (0 for many scaled ones)
     sorted_feats = sorted(features.items(), key=lambda x: abs(x[1]), reverse=True)
     for f_key, f_val in sorted_feats:
@@ -1015,7 +1015,7 @@ def predict_with_neural_consensus(
     # 2. Neural V8 Opinion (Deep Sequence Analysis)
     v8_prob = None
     v8_weights = []
-    
+
     if TORCH_AVAILABLE:
         try:
             # Neural V8 requires sequence data (last 20 bars)
@@ -1023,10 +1023,10 @@ def predict_with_neural_consensus(
                 seq_data = []
                 for i in range(idx - 19, idx + 1):
                     seq_data.append(extract_features(df, i, symbol=symbol, asset_class=asset_class))
-                
+
                 # Convert list of dicts to a 2D numpy array of values
                 seq_arr = np.array([[f.get(c, 0.0) for c in FEATURE_COLS] for f in seq_data])
-                
+
                 from .neural_optimizer import get_neural_trainer
                 trainer = get_neural_trainer(input_size=len(FEATURE_COLS))
                 if trainer:
@@ -1042,7 +1042,7 @@ def predict_with_neural_consensus(
     if v8_prob is not None:
         # Weighted Consensus: Ensemble (50%) + Neural (50%)
         final_prob = (v3_result["win_probability"] * 0.5) + (v8_prob * 0.5)
-        
+
         # Unified Convergence: Both models agree > 75% on the signal (Sniper Threshold)
         if v3_result["win_probability"] > 0.75 and v8_prob > 0.75:
             neural_alignment = True

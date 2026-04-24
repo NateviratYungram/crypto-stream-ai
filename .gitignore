@@ -17,6 +17,7 @@ venv/
 env/
 __pycache__/
 *.py[cod]
+.ruff_cache/
 
 # Docker & Persistence
 postgres_data/

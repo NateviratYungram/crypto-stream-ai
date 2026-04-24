@@ -46,14 +46,14 @@ def sanitize_external_content(content: str, source: str = "RSS") -> str:
     suspicious = detect_suspicious_patterns(content)
     if suspicious:
         logger.warning(f"Security: Suspicious pattern detected in {source} content: {suspicious}")
-        # We don't block, but we alert. 
+        # We don't block, but we alert.
         # The wrapping below handles the actual LLM-layer protection.
 
     # 2. Wrap with boundaries
     # We replace any existing boundary tags to prevent 'escaping' the box.
     sanitized = content.replace(EXTERNAL_CONTENT_START, "[[MARKER_SANITIZED]]")
     sanitized = sanitized.replace(EXTERNAL_CONTENT_END, "[[END_MARKER_SANITIZED]]")
-    
+
     return (
         f"{EXTERNAL_CONTENT_WARNING}\n\n"
         f"{EXTERNAL_CONTENT_START}\n"

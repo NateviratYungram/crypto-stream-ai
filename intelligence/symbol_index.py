@@ -17,7 +17,7 @@ def search_market_symbols(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     Matches symbols by ticker name or description.
     """
     logger.info(f"SymbolIndex: Searching for '{query}'...")
-    
+
     try:
         if not _MT5_AVAILABLE:
             return []
@@ -32,10 +32,10 @@ def search_market_symbols(query: str, limit: int = 10) -> List[Dict[str, Any]]:
 
         query_clean = query.strip().upper()
         results = []
-        
+
         # 2. Local fuzzy matching (Case-insensitive Regex)
         pattern = re.compile(re.escape(query_clean), re.IGNORECASE)
-        
+
         for s in all_symbols:
             # Match against symbol name (e.g., BTCUSD) or description (e.g., Bitcoin)
             if pattern.search(s.name) or pattern.search(s.description):
@@ -47,13 +47,13 @@ def search_market_symbols(query: str, limit: int = 10) -> List[Dict[str, Any]]:
                     "trade_mode": s.trade_mode,
                     "base": s.path.split("\\")[0] if "\\" in s.path else "Unknown"
                 })
-            
+
             if len(results) >= limit:
                 break
-                
+
         # 3. Sort by exact name match first (relevance)
         results.sort(key=lambda x: 0 if x["symbol"].upper() == query_clean else 1)
-        
+
         logger.info(f"SymbolIndex: Found {len(results)} matches for '{query}'.")
         return results
     except Exception as e:

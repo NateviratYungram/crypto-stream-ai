@@ -9,25 +9,25 @@ from intelligence.tools.market_tools import _normalize_broker_symbol
 
 def test_xm_resolution():
     print("--- Testing XM Broker Symbol Resolution ---")
-    
+
     # Mock XM Global account
     mock_acc_xm = {"company": "XM Global Limited"}
-    
+
     with patch('intelligence.mt5_connector.get_mt5_account_info', return_value=mock_acc_xm), \
          patch('intelligence.mt5_connector._MT5_AVAILABLE', True):
-        
+
         print("\n1. Testing Indices (NASDAQ)...")
         res = _normalize_broker_symbol("NASDAQ")
         print(f"Candidates for NASDAQ: {res}")
         assert "US100Cash" in res
         print("OK: US100Cash found.")
-        
+
         print("\n2. Testing Stocks (NVDA)...")
         res = _normalize_broker_symbol("NVDA")
         print(f"Candidates for NVDA: {res}")
         assert "NVDA#" in res
         print("OK: NVDA# found.")
-        
+
         print("\n3. Testing Gold (XAUUSD)...")
         res = _normalize_broker_symbol("GOLD")
         print(f"Candidates for GOLD: {res}")
@@ -44,7 +44,7 @@ def test_xm_resolution():
     mock_acc_other = {"company": "Generic Broker"}
     with patch('intelligence.mt5_connector.get_mt5_account_info', return_value=mock_acc_other), \
          patch('intelligence.mt5_connector._MT5_AVAILABLE', True):
-        
+
         print("\n5. Testing non-XM account (NASDAQ)...")
         res = _normalize_broker_symbol("NASDAQ")
         print(f"Candidates for NASDAQ: {res}")

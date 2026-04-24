@@ -96,17 +96,17 @@ def _harden_sniper_v8(signal: dict) -> bool:
     """
     sym = signal.get("symbol")
     conf = signal.get("master_confidence", 0)
-    
+
     # 1. Integrity Check
     if not sym or conf < 0.5:
         logger.warning(f"🛡️ Bridge Block: Invalid signal integrity for {sym} (Conf: {conf})")
         return False
-        
+
     # 2. Sniper Validation (If V8 Sniper mode is claimed)
     if conf >= 0.85:
         logger.info(f"🎯 Bridge: Hardening V8 Sniper Signal for {sym}...")
         # Add additional safety lag or double-check indicators here if needed
-        
+
     return True
 
 
@@ -172,12 +172,12 @@ def execute_signal(
     # ── Buy-and-Hold Protection (Mode B Rules) ────────────────────────────────
     # Check if the asset is a Stock or if the user's focus is Strategic Value
     is_stock = False
-    
+
     # Check indicator summary or symbol list for stock indicators
     asset_class = state.get("indicator_summary", {}).get("asset_class", "UNKNOWN").upper()
     if asset_class == "STOCK" or (any(c.isdigit() for c in symbol) and len(symbol) > 4):
        is_stock = True
-    
+
     # Mode B logic from Persona: Stocks & ETFs are Long-Term Value
     if is_stock:
         logger.info(f"ExecutionBridge: STRATEGIC VALUE mode for {symbol} — Blocking MT5 Execution.")
@@ -211,7 +211,7 @@ def execute_signal(
     try:
         from intelligence.guards.macro_shield import is_in_danger_zone
         from intelligence.guards.correlation_guardian import check_correlation_safety
-        
+
         # Macro News check
         news_status = is_in_danger_zone()
         if news_status["blocked"]:
@@ -222,7 +222,7 @@ def execute_signal(
                 "news_detail": news_status,
                 "timestamp": timestamp,
             }
-            
+
         # Correlation check
         corr_status = check_correlation_safety(symbol)
         if not corr_status["passed"]:
@@ -333,7 +333,7 @@ def execute_signal(
         # Generate persistent ID: SYMBOL-TRADE-PLAN-XXXX
         short_id = str(uuid.uuid4())[:5].upper()
         draft_id = f"{mt5_symbol.upper()}-TRADE-PLAN-{short_id}"
-        
+
         # Save to persistent SQLite DB
         save_trade_draft(
             draft_id=draft_id,
@@ -345,7 +345,7 @@ def execute_signal(
             tp=tp1_price,
             comment=f"AI Draft via {timeframe}"
         )
-        
+
         logger.info(f"ExecutionBridge: PERSISTENT DRAFT {draft_id} created for {action} {mt5_symbol}")
         return {
             "status":       "DRAFT",

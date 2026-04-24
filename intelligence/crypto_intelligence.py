@@ -15,7 +15,7 @@ Pipeline order:
 
 Usage:
     from intelligence.crypto_intelligence import CryptoIntelligence
-    
+
     intel = CryptoIntelligence(gemini_client)
     result = intel.analyze("BTC", "15m")
     print(result["master_report"])
@@ -269,17 +269,17 @@ class CryptoIntelligence:
                 # ── Apply Trained ML Model (Ensemble + Neural) ────────────────
                 from intelligence.ml.signal_model import predict_with_neural_consensus
                 asset_cls = "MACRO" if sym in ["GOLD", "SILVER", "OIL", "EURUSD", "GBPUSD", "USDJPY"] else "CRYPTO"
-                
+
                 # We evaluate the probability of a WIN for both LONG and SHORT scenarios
                 idx = len(df) - 1
                 try:
                     buy_ml  = predict_with_neural_consensus(df, idx, side="BUY", symbol=sym, asset_class=asset_cls)
                     sell_ml = predict_with_neural_consensus(df, idx, side="SELL", symbol=sym, asset_class=asset_cls)
-                    
+
                     if buy_ml.get("available") and sell_ml.get("available"):
                         b_prob = buy_ml.get("win_probability", 0.5)
                         s_prob = sell_ml.get("win_probability", 0.5)
-                        
+
                         if b_prob >= s_prob:
                             best_prob = b_prob
                             best_dir = "BUY"
@@ -288,7 +288,7 @@ class CryptoIntelligence:
                             best_prob = s_prob
                             best_dir = "SELL"
                             rationale = sell_ml.get("rationale", [])
-                            
+
                         # Set thresholds: > 52% is considered an actionable edge
                         if best_prob > 0.52:
                             direction = best_dir
@@ -297,7 +297,7 @@ class CryptoIntelligence:
                         else:
                             direction = "HOLD"
                             confidence = min(98, int((best_prob - 0.50) * 2.0 * 100) if best_prob > 0.50 else int((0.50 - best_prob) * 2.0 * 100))
-                            
+
                         # Generate reasoning
                         if rationale:
                             reason = f"ML Focus: {' ∙ '.join(rationale)} (WinProb: {best_prob*100:.1f}%)"

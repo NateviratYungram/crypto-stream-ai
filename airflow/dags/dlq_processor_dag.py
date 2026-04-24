@@ -32,8 +32,17 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg2
 import psycopg2.extras
-from kafka import KafkaConsumer
-from kafka.errors import NoBrokersAvailable
+try:
+    from kafka import KafkaConsumer
+    from kafka.errors import NoBrokersAvailable
+    KAFKA_AVAILABLE = True
+except ImportError:
+    KafkaConsumer = None
+
+    class NoBrokersAvailable(Exception):
+        """Fallback error type when kafka-python is unavailable."""
+
+    KAFKA_AVAILABLE = False
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -90,6 +99,11 @@ def poll_dlq_messages(**context) -> int:
     log.info(f"Polling DLQ topic: {DLQ_TOPIC} (broker: {KAFKA_BROKER})")
 
     messages = []
+
+    if not KAFKA_AVAILABLE:
+        log.warning("kafka-python is not installed. Skipping DLQ poll and returning no messages.")
+        context['ti'].xcom_push(key='dlq_messages', value=[])
+        return 0
 
     try:
         consumer = KafkaConsumer(
@@ -269,19 +283,16 @@ with DAG(
     t_poll = PythonOperator(
         task_id='poll_dlq_messages',
         python_callable=poll_dlq_messages,
-        provide_context=True,
     )
 
     t_insert = PythonOperator(
         task_id='insert_to_dq_log',
         python_callable=insert_to_dq_log,
-        provide_context=True,
     )
 
     t_report = PythonOperator(
         task_id='generate_dq_summary_report',
         python_callable=generate_dq_summary_report,
-        provide_context=True,
     )
 
     # Sequential: poll → insert → report

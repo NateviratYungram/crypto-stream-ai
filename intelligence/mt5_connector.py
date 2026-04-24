@@ -39,11 +39,11 @@ def get_mt5_account_info() -> Dict[str, Any]:
         return {"error": "MetaTrader5 not installed. Install it to enable live trading."}
     if not initialize_mt5():
         return {"error": "Failed to connect to MT5"}
-    
+
     account_info = mt5.account_info()
     if account_info is None:
         return {"error": f"Failed to get account info, error code: {mt5.last_error()}"}
-    
+
     return account_info._asdict()
 
 def get_mt5_positions() -> List[Dict[str, Any]]:
@@ -52,11 +52,11 @@ def get_mt5_positions() -> List[Dict[str, Any]]:
         return []
     if not initialize_mt5():
         return []
-    
+
     positions = mt5.positions_get()
     if positions is None:
         return []
-    
+
     return [p._asdict() for p in positions]
 
 def get_mt5_quote(symbol: str) -> Dict[str, Any]:
@@ -125,7 +125,7 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
                 "message": "Execution-time safety guards triggered.",
                 "results": guard_results
             }
-        
+
         # Log the attempt to the institutional audit audit trail
         log_trade_attempt(symbol=symbol, action=action, volume=volume, reason=f"Manual execution via agent. Guards: OK")
     except Exception as guard_err:
@@ -134,7 +134,7 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         return {"error": f"Symbol {symbol} not found"}
-    
+
     if not symbol_info.visible:
         if not mt5.symbol_select(symbol, True):
             return {"error": f"Failed to select symbol {symbol}"}
@@ -169,7 +169,7 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
         if price is None or price <= 0:
             return {"error": "Pending orders require a valid entry price"}
         trade_action = mt5.TRADE_ACTION_PENDING
-    
+
     # Get current price if not provided
     if order_kind_upper == "MARKET" and price is None:
         tick = mt5.symbol_info_tick(symbol)
@@ -322,7 +322,7 @@ def mt5_get_rates(symbol: str, timeframe: str = "15m", count: int = 100) -> Opti
         if mt5.symbol_select(sym, True):
             resolved_sym = sym
             break
-    
+
     if not resolved_sym:
         logger.warning(f"MT5: Symbol {symbol} not found in Market Watch (checked: {candidates})")
         return None
@@ -336,7 +336,7 @@ def mt5_get_rates(symbol: str, timeframe: str = "15m", count: int = 100) -> Opti
     import pandas as pd
     df = pd.DataFrame(rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
-    
+
     # Standardize to our engine's format
     df = df.rename(columns={
         'time': 'Datetime',
@@ -346,7 +346,7 @@ def mt5_get_rates(symbol: str, timeframe: str = "15m", count: int = 100) -> Opti
         'close': 'Close',
         'tick_volume': 'Volume'
     })
-    
+
     logger.info(f"MT5: Successfully fetched {len(df)} bars for {resolved_sym} ({timeframe})")
     return df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']]
 
@@ -363,7 +363,7 @@ def normalize_broker_symbol(symbol: str) -> List[str]:
             acc = get_mt5_account_info()
             company = str(acc.get("company", "")).upper()
             is_xm = "XM GLOBAL" in company or "XM.COM" in company
-            
+
             if is_xm:
                 logger.info(f"MT5: XM Broker detected ({company}). Applying symbol resolution rules.")
                 # XM Index / Commodity / Forex Mapping
@@ -419,11 +419,11 @@ def normalize_broker_symbol(symbol: str) -> List[str]:
 
     except Exception as e:
         logger.warning(f"MT5: Broker symbol normalization failed: {e}")
-    
+
     # Standard fallbacks
     standard_fallbacks = [f"{symbol_upper}USD", f"{symbol_upper}USDT", f"{symbol_upper}."]
     for f in standard_fallbacks:
         if f not in candidates:
             candidates.append(f)
-            
+
     return candidates

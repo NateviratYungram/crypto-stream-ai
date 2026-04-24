@@ -54,19 +54,19 @@ def take_account_snapshot() -> Dict[str, Any]:
         except ImportError:
             return {"error": "MetaTrader5 not available"}
 
-        
+
         if not initialize_mt5():
             return {"error": "Failed to connect to MT5"}
-            
+
         account = get_mt5_account_info()
         positions = mt5.positions_get()
-        
+
         balance = account.get("balance", 0)
         equity = account.get("equity", 0)
         margin_level = account.get("margin_level", 0)
         total_pnl = account.get("profit", 0)
         pos_count = len(positions) if positions else 0
-        
+
         # Build asset breakdown
         breakdown = {}
         if positions:
@@ -77,14 +77,14 @@ def take_account_snapshot() -> Dict[str, Any]:
         conn = _get_db_conn()
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO account_snapshots 
+                INSERT INTO account_snapshots
                 (balance, equity, margin_level, total_pnl, position_count, asset_breakdown)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id;
             """, (balance, equity, margin_level, total_pnl, pos_count, json.dumps(breakdown)))
             snapshot_id = cur.fetchone()[0]
         conn.commit()
-        
+
         logger.info(f"Account snapshot captured. ID: {snapshot_id}")
         return {
             "status": "SUCCESS",

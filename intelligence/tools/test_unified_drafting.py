@@ -24,7 +24,7 @@ class TestUnifiedDrafting(unittest.TestCase):
                 "price": 60500
             }
         }
-        
+
         self.mock_state_stock = {
             "master_decision": "LONG",
             "symbol": "AAPL",
@@ -48,12 +48,12 @@ class TestUnifiedDrafting(unittest.TestCase):
         # Mock XM Broker
         mock_acc.return_value = {"company": "XM Global Limited", "balance": 10000}
         mock_init.return_value = True
-        
+
         # Mock Guard
         mock_guard = MagicMock()
         mock_guard.return_value = {"guard_passed": True, "guard_override_reason": ""}
         mock_guard_create.return_value = mock_guard
-        
+
         # Mock MT5 symbol_info to return something for BTCUSD
         mock_symbol_info = MagicMock()
         mock_symbol_info.name = "BTCUSD"
@@ -61,15 +61,15 @@ class TestUnifiedDrafting(unittest.TestCase):
 
         # Execute Crypto Signal
         result = execute_signal(self.mock_state_crypto, dry_run=False, confirmation_required=True)
-        
+
         self.assertEqual(result["status"], "DRAFT")
         self.assertIn("BTCUSD-TRADE-PLAN-", result["draft_id"])
-        
+
         # Check DB
         draft = get_trade_draft(result["draft_id"])
         self.assertIsNotNone(draft)
         self.assertEqual(draft["symbol"], "BTCUSD")
-        
+
         # Cleanup
         delete_trade_draft(result["draft_id"])
 
@@ -80,10 +80,10 @@ class TestUnifiedDrafting(unittest.TestCase):
         # Mock ANY Broker
         mock_acc.return_value = {"company": "Generic Broker", "balance": 10000}
         mock_init.return_value = True
-        
+
         # Execute Stock Signal
         result = execute_signal(self.mock_state_stock, dry_run=False, confirmation_required=True)
-        
+
         # Status should be HODL, NO Draft ID created
         self.assertEqual(result["status"], "HODL")
         self.assertNotIn("draft_id", result)

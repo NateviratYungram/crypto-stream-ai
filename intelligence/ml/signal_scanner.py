@@ -101,7 +101,7 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
     market_status = get_market_status_data()
     # Logic to send one-time alert when market status changes could be added here
     # For now, we'll just include it in the scan summary if it's a significant change
-    
+
     conn   = sqlite3.connect(PERSISTENCE_DB)
     cursor = conn.cursor()
 
@@ -120,7 +120,7 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
     for (sym, asset_class, tf) in TRADE_TRAIN_SYMBOLS:
         # Sniper Mode: We now scan ALL timeframes (15m, 1h, 4h) defined in TRADE_TRAIN_SYMBOLS
         # to find the absolute best entry across the spectrum.
-        
+
         lookup_key = f"{sym}_{tf}"
         if lookup_key in scanned_syms:
             continue
@@ -157,17 +157,17 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
 
                     # ── V8 Hybrid Inference: Ensemble + Neural Attention ──
                     result = predict_with_neural_consensus(
-                        df, 
-                        len(df) - 1, 
-                        side=side, 
-                        symbol=sym, 
-                        asset_class=asset_class, 
+                        df,
+                        len(df) - 1,
+                        side=side,
+                        symbol=sym,
+                        asset_class=asset_class,
                         sentiment_score=sent_v
                     )
-                    
+
                     if not result.get("available"):
                         continue
-                    
+
                     win_pct = result["win_pct"]
                     if win_pct > best_win_pct:
                         best_win_pct = win_pct
@@ -218,7 +218,7 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
             # ── Telegram notification ────────────────────────────────
             emoji = "📈" if best_side == "BUY" else "📉"
             import random
-            
+
             # Diverse phrases for institutional feel
             phrases = [
                 f"🎯 *SNIPER TARGET ACQUIRED*",
@@ -228,7 +228,7 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
                 f"🏦 *SMART MONEY FOOTPRINT FOUND*"
             ]
             header = random.choice(phrases)
-            
+
             # Market context line
             market_ctx = ""
             if asset_class == "MACRO":
@@ -271,9 +271,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("\n🚀 Starting ML Sniper V8 Dry-run Scanner...")
     print("--- Scanning for High-Probability (80%+) Signals ---\n")
-    
+
     res = scan_for_high_probability_signals()
-    
+
     print(f"\n✅ Scan Complete:")
     print(f"   Scanned    : {res.get('scanned')} assets/timeframes")
     print(f"   Found      : {res.get('found')} signals above threshold")

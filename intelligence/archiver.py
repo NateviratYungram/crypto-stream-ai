@@ -58,10 +58,10 @@ class IntelligenceArchiver:
                 df_sql["datetime"] = df_sql["Datetime"].astype(str)
             else:
                 df_sql["datetime"] = df_sql.index.astype(str)
-                
+
             df_sql["symbol"] = symbol.upper()
             df_sql["timeframe"] = timeframe
-            
+
             # Prepare for upsert
             for idx, row in df_sql.iterrows():
                 conn.execute("""
@@ -74,7 +74,7 @@ class IntelligenceArchiver:
                     row["symbol"], row["timeframe"], row["datetime"],
                     row["Open"], row["High"], row["Low"], row["Close"], row["Volume"]
                 ))
-            
+
             conn.commit()
             conn.close()
             logger.info(f"Archiver: Saved {len(df)} bars for {symbol} ({timeframe})")
@@ -94,10 +94,10 @@ class IntelligenceArchiver:
             """
             df = pd.read_sql_query(query, conn, params=(symbol.upper(), timeframe, limit))
             conn.close()
-            
+
             if df.empty:
                 return None
-            
+
             # Restore expected format
             df["Datetime"] = pd.to_datetime(df["Datetime"])
             df = df.sort_values("Datetime").reset_index(drop=True)
@@ -108,13 +108,13 @@ class IntelligenceArchiver:
 
     def bootstrap_history(self, symbol: str, asset_class: str = "MACRO", timeframe: str = "1d", years: int = 10):
         """
-        Maximizes historical depth. Uses pagination for Crypto (Binance) 
+        Maximizes historical depth. Uses pagination for Crypto (Binance)
         and max-period fetches for Macro (yfinance).
         """
         from intelligence.technical_engine import get_kline_data
-        
+
         logger.info(f"Archiver: Deep-Crawl started for {symbol} ({timeframe}) Target: {years}y")
-        
+
         if asset_class == "CRYPTO":
             return self._deep_crawl_binance(symbol, timeframe, years)
         else:
@@ -125,18 +125,18 @@ class IntelligenceArchiver:
         sym = symbol.upper().replace("USDT", "") + "USDT"
         limit_per_req = 1000
         interval = timeframe # e.g. '1h', '15m'
-        
+
         end_time = int(time.time() * 1000)
         start_target = end_time - (years * 365 * 24 * 60 * 60 * 1000)
-        
+
         total_synced = 0
         current_end = end_time
-        
+
         try:
             conn = sqlite3.connect(self.db_path)
             while current_end > start_target:
                 url = f"https://api.binance.com/api/v3/klines"
-                # For Binance, we usually crawl forwards or backwards. 
+                # For Binance, we usually crawl forwards or backwards.
                 # Let's crawl forwards from the target for simplicity in bulk insert.
                 params = {
                     "symbol": sym,
@@ -146,16 +146,16 @@ class IntelligenceArchiver:
                 }
                 r = requests.get(url, params=params, timeout=10)
                 if r.status_code != 200: break
-                
+
                 raw = r.json()
                 if not raw or not isinstance(raw, list): break
-                
+
                 # Convert to DF
                 df = pd.DataFrame(raw, columns=[
                     "ot","Open","High","Low","Close","Volume","ct","qav","tr","tbav","tqav","i"
                 ])
                 df["datetime"] = pd.to_datetime(df["ot"], unit="ms").astype(str)
-                
+
                 # Batch Upsert
                 data = []
                 for _, row in df.iterrows():
@@ -164,7 +164,7 @@ class IntelligenceArchiver:
                         float(row["Open"]), float(row["High"]), float(row["Low"]),
                         float(row["Close"]), float(row["Volume"])
                     ))
-                
+
                 conn.executemany("""
                     INSERT INTO ohlcv_archive (symbol, timeframe, datetime, open, high, low, close, volume)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -172,16 +172,16 @@ class IntelligenceArchiver:
                         open=excluded.open, high=excluded.high, low=excluded.low,
                         close=excluded.close, volume=excluded.volume
                 """, data)
-                
+
                 last_time = raw[-1][0]
                 if last_time >= current_end or len(raw) < limit_per_req:
                     break # Reached end of available data
-                
+
                 start_target = last_time + 1 # Move window forward
                 total_synced += len(raw)
                 logger.info(f"Archiver: {symbol} Syncing... {total_synced} bars")
                 time.sleep(0.1) # Respect rate limits
-                
+
             conn.commit()
             conn.close()
             return total_synced
@@ -192,15 +192,15 @@ class IntelligenceArchiver:
     def _deep_crawl_yfinance(self, symbol: str, timeframe: str, years: int):
         """Maximizes yfinance fetch for Macro assets."""
         from intelligence.technical_engine import get_kline_data
-        
+
         # yfinance period mapping
         period = "10y" if years <= 10 else "max"
         if timeframe in ["15m", "30m", "1h"]:
             period = "2y" # yfinance limit for intraday
-            
+
         logger.info(f"Archiver: yfinance Max-Fetch for {symbol} ({timeframe}) Period: {period}")
         df = get_kline_data(symbol, timeframe=timeframe, limit=50000, asset_class="MACRO")
-        
+
         if df is not None and not df.empty:
             self.save_data(symbol, timeframe, df)
             return len(df)

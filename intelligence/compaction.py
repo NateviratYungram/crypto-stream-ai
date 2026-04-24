@@ -19,13 +19,13 @@ def microcompact_history(history: List[Dict[str, Any]], keep_recent: int = 5) ->
     Helps maintain context window without expensive LLM summarization.
     """
     logger.info("Compaction: Running microcompact to strip large tool results.")
-    
+
     compacted_history = []
     tool_results_count = sum(1 for m in history if m.get("role") == "tool")
-    
+
     threshold_idx = max(0, tool_results_count - keep_recent)
     current_tool_idx = 0
-    
+
     for msg in history:
         if msg.get("role") == "tool":
             if current_tool_idx < threshold_idx:
@@ -36,7 +36,7 @@ def microcompact_history(history: List[Dict[str, Any]], keep_recent: int = 5) ->
                     msg["content"] = "[Content truncated for background efficiency]"
             current_tool_idx += 1
         compacted_history.append(msg)
-        
+
     return compacted_history
 
 def get_compaction_summary_prompt(history: List[Dict[str, Any]]) -> str:
@@ -47,7 +47,7 @@ def get_compaction_summary_prompt(history: List[Dict[str, Any]]) -> str:
         content = m.get("content", "")
         if isinstance(content, str) and len(content) < 1000:
             conversation.append(f"[{role}]: {content}")
-            
+
     prompt = f"""
     Summarize the following trading conversation into a 'Compact Memory' block.
     Preserve all critical data:
@@ -55,9 +55,9 @@ def get_compaction_summary_prompt(history: List[Dict[str, Any]]) -> str:
     2. Current risk settings.
     3. User preferences (stopped levels, lot sizes).
     4. Pending tasks.
-    
+
     Keep it concise but detailed on numbers and tickers.
-    
+
     Conversation:
     {chr(10).join(conversation)}
     """

@@ -89,11 +89,11 @@ def run_load_test():
         sys.exit(1)
 
     logger.info(f"🚀 Starting Load Test: {TARGET_TPS} TPS for {DURATION_SECONDS} seconds...")
-    
+
     total_messages = TARGET_TPS * DURATION_SECONDS
     messages_sent = 0
     start_time = time.time()
-    
+
     # Track statistics
     stats = {
         "normal": 0,
@@ -116,14 +116,14 @@ def run_load_test():
             else:
                 scenario = "invalid_negative_price"
                 scenario_stat = "invalid"
-                
+
             stats_key = scenario_stat if scenario_stat else scenario
             stats[stats_key] += 1
 
             trade_data = generate_mock_trade(scenario)
             producer.send(KAFKA_TOPIC, value=trade_data)
             messages_sent += 1
-            
+
             # Simple TPS pacing control (flush every sec or sleep)
             if i > 0 and i % TARGET_TPS == 0:
                 producer.flush()

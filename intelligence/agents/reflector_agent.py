@@ -19,11 +19,11 @@ def get_recent_outcomes(limit: int = 10) -> List[Dict[str, Any]]:
     try:
         if not os.path.exists(PAPER_DB):
             return []
-            
+
         conn = sqlite3.connect(PAPER_DB)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             SELECT symbol, side, entry_price, current_price, outcome, pnl_usd, ml_score, closed_at, features_json
             FROM paper_trades
@@ -31,7 +31,7 @@ def get_recent_outcomes(limit: int = 10) -> List[Dict[str, Any]]:
             ORDER BY closed_at DESC
             LIMIT ?
         """, (limit,))
-        
+
         rows = [dict(r) for r in cursor.fetchall()]
         conn.close()
         return rows
@@ -98,21 +98,21 @@ def get_bias_adjustments(outcomes: List[Dict[str, Any]] = None) -> Dict[str, flo
     """
     if outcomes is None:
         outcomes = get_recent_outcomes(10)
-    
+
     if not outcomes:
         return {"tech_weight": 1.0, "sent_weight": 1.0, "conf_weight": 1.0, "risk_scale": 1.0}
 
     # Simple logic: If win rate < 40%, reduce technical weight & scale down risk
     wins = sum(1 for o in outcomes if o['outcome'] == 'WIN')
     win_rate = wins / len(outcomes)
-    
+
     adj = {
         "tech_weight": 1.0,
         "sent_weight": 1.0,
         "conf_weight": 1.0,
         "risk_scale": 1.0
     }
-    
+
     if win_rate < 0.4:
         logger.info(f"🧠 Reflector CORE: Recent Win Rate {win_rate:.1%} is LOW. Applying defensive adjustments.")
         adj["tech_weight"] = 0.8  # Trust technicals 20% less
@@ -128,7 +128,7 @@ def get_reflexive_context(client, model_id: str) -> Dict[str, Any]:
     outcomes = get_recent_outcomes(10)
     lessons = generate_reflexive_lessons(client, model_id)
     bias_adj = get_bias_adjustments(outcomes)
-    
+
     return {
         "lessons": lessons,
         "bias_adjustments": bias_adj,

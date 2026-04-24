@@ -178,7 +178,7 @@ class SignalBroadcaster:
         # Extract extra ML metadata for Sniper V8
         v8_precision = state.get("ml_precision_score", "High")
         is_sniper = conf_pct >= 85
-        
+
         if decision == "LONG":
             emoji = "🎯 SNIPER LONG" if is_sniper else "📈 LONG"
         elif decision == "SHORT":
@@ -196,13 +196,13 @@ class SignalBroadcaster:
             f"Take Profit: TP1={tp1}  TP2={tp2}",
             f"Risk/Reward: 1:{rr}",
         ]
-        
+
         # ── Sniper Chart Link (Visual Confirmation) ──
         # Provide a quick TradingView link for visual double-check
         tv_sym = f"FX:{symbol}" if asset_class == "FOREX" else symbol
         if symbol == "GOLD": tv_sym = "OANDA:XAUUSD"
         if symbol == "BTCUSD": tv_sym = "BINANCE:BTCUSDT"
-        
+
         chart_link = f"https://www.tradingview.com/chart/?symbol={tv_sym}"
         lines.append(f"🔍 View Chart: [TradingView]({chart_link})")
 

@@ -11,7 +11,7 @@ from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
-# Mocked baseline - in a production environment, these would be loaded from a 
+# Mocked baseline - in a production environment, these would be loaded from a
 # 'training_stats.json' generated during signal_model.train_model()
 BASELINE_STATS = {
     "rsi": {"mean": 50.4, "std": 14.2, "weight": 1.0},
@@ -34,20 +34,20 @@ class DriftMonitor:
         drift_warnings = []
         total_z = 0
         weight_sum = 0
-        
+
         for feat, stats in self.baseline.items():
             val = current_features.get(feat)
             if val is None:
                 continue
-            
+
             # Simple Z-score check
-            z = abs((val - stats["mean"]) / stats["std"]) 
+            z = abs((val - stats["mean"]) / stats["std"])
             total_z += z * stats["weight"]
             weight_sum += stats["weight"]
-            
+
             if z > 3.0:
                 drift_warnings.append(f"OUTLIER: {feat} is {z:.1f} std devs from baseline.")
-            
+
             # Update history for rolling drift
             self.feature_history[feat].append(val)
             if len(self.feature_history[feat]) > self.history_limit:
@@ -56,7 +56,7 @@ class DriftMonitor:
         # Integrity Score calculation: 100 - (Avg Z * 10)
         avg_z = (total_z / weight_sum) if weight_sum > 0 else 0
         integrity_score = max(0, min(100, int(100 - (avg_z * 12))))
-        
+
         status = "STABLE"
         if integrity_score < 70: status = "WARNING"
         if integrity_score < 40: status = "CRITICAL_DRIFT"

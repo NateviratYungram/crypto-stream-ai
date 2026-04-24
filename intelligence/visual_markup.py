@@ -20,7 +20,7 @@ class VisualMarkupEngine:
 
     def apply_markup(self, image_path: str, zones: List[Dict[str, Any]]) -> str:
         """
-        Draws boxes on the image. 
+        Draws boxes on the image.
         'zones' expects list of {type: 'ob', box: [x1, y1, x2, y2], label: 'Bullish OB'}
         """
         if not os.path.exists(image_path):
@@ -31,15 +31,15 @@ class VisualMarkupEngine:
                 # Create a transparent layer for boxes
                 overlay = Image.new("RGBA", base.size, (255, 255, 255, 0))
                 draw = ImageDraw.Draw(overlay)
-                
+
                 for zone in zones:
                     z_type = zone.get("type", "order_block")
                     box = zone.get("box", [50, 50, 200, 200]) # Dummy coords
                     color = self.colors.get(z_type, (255, 255, 255, 100))
-                    
+
                     # Draw the rectangle
                     draw.rectangle(box, fill=color, outline=(255,255,255, 150))
-                    
+
                     # Label
                     label = zone.get("label", "")
                     if label:
@@ -47,11 +47,11 @@ class VisualMarkupEngine:
 
                 # Composite the layers
                 out = Image.alpha_composite(base, overlay)
-                
+
                 # Save as a new file to avoid overwriting original evidence
                 marked_path = image_path.replace(".png", "_marked.png")
                 out.convert("RGB").save(marked_path, "PNG")
-                
+
                 logger.info(f"VisualMarkup: Marked chart saved to {marked_path}")
                 return marked_path
         except Exception as e:

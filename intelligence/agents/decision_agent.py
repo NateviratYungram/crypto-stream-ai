@@ -135,10 +135,10 @@ Respond ONLY with valid JSON:
             entry = data.get("entry_zone", {})
             sl = data.get("stop_loss", {})
             tp = data.get("take_profit", {})
-            
+
             rr_val = data.get("risk_reward_ratio")
             rr = float(rr_val) if rr_val is not None else 1.5
-            
+
             horizon = data.get("forecast_horizon", "N/A")
             justification = data.get("justification", "")
             warnings = data.get("warnings", [])

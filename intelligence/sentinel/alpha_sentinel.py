@@ -21,7 +21,7 @@ class AlphaSentinel:
         self.notifier = NotificationService()
         self.target_symbols = ["BTC", "ETH", "SOL", "GOLD", "USOIL", "NAS100", "SPX"]
         self.active_scans = {}
-        
+
     async def run(self):
         """Main Sentinel loop."""
         logger.info(f"🛰️ Alpha Sentinel active. Interval: {self.interval}s")
@@ -29,10 +29,10 @@ class AlphaSentinel:
             try:
                 # 1. Proactive Opportunity Scan
                 await self.scan_for_alpha()
-                
+
                 # 2. Risk Guardian: Monitor active trades for SL adjustments
                 await self.guard_active_trades()
-                
+
                 await asyncio.sleep(self.interval)
             except asyncio.CancelledError:
                 break
@@ -47,34 +47,34 @@ class AlphaSentinel:
             try:
                 # Determine asset class
                 asset_class = "CRYPTO" if symbol in ["BTC", "ETH", "SOL"] else "MACRO"
-                
+
                 # Perform full analysis
                 # Run in thread pool to avoid blocking async loop
                 loop = asyncio.get_event_loop()
                 analysis = await loop.run_in_executor(
-                    None, 
-                    get_market_analysis, 
+                    None,
+                    get_market_analysis,
                     symbol, "15m", asset_class
                 )
-                
+
                 # Check for "Sentinel Trigger"
                 # Conditions: ML Prob > 80% AND Whale Injection Detected OR Major SMC Breakout
                 whale = analysis.get("whale_pulse", {})
                 ml = analysis.get("win_probability", 0)
                 smc = analysis.get("indicator_summary", {}).get("smart_money", {})
-                
+
                 high_conf = (ml >= 0.80) or (whale.get("injections", False) and ml >= 0.70)
-                
+
                 if high_conf and analysis.get("signal") in ["BUY", "SELL"]:
                     await self.notify_alpha(symbol, analysis)
-                    
+
             except Exception as e:
                 logger.error(f"Sentinel: Failed to scan {symbol}: {e}")
 
     async def guard_active_trades(self):
         """Monitors open MT5 positions and suggests SL modifications."""
         try:
-            # Note: This requires get_active_trades or similar. 
+            # Note: This requires get_active_trades or similar.
             # For now, we manually fetch from MT5
             try:
                 import MetaTrader5 as mt5
@@ -83,26 +83,26 @@ class AlphaSentinel:
                 return
 
             if not mt5.initialize(): return
-            
+
             positions = mt5.positions_get()
             if not positions: return
-            
+
             for pos in positions:
                 symbol = pos.symbol
                 ticket = pos.ticket
-                
+
                 # Fetch fresh Whale Pulse for this position
                 loop = asyncio.get_event_loop()
                 analysis = await loop.run_in_executor(None, get_market_analysis, symbol, "15m", "AUTO")
-                
+
                 whale = analysis.get("whale_pulse", {})
                 current_price = pos.price_current
                 entry_price = pos.price_open
-                
+
                 # Logic: If position is in profit and a Large Whale Wall forms at/near Entry
                 # PROACTIVE BE (Break Even) Trigger
                 profit_pips = abs(current_price - entry_price)
-                
+
                 # Simple example: if in profit and Whale Wall detected opposite to trade
                 threat_detected = False
                 if pos.type == mt5.POSITION_TYPE_BUY:
@@ -121,7 +121,7 @@ class AlphaSentinel:
                     )
                     await self.notifier.broadcast(msg)
                     # Future: mt5_modify_position(ticket, sl=entry_price)
-                    
+
         except Exception as e:
             logger.error(f"Sentinel: Guarding failed: {e}")
 
@@ -130,7 +130,7 @@ class AlphaSentinel:
         ml = analysis.get("win_probability", 0)
         signal = analysis.get("signal", "HOLD")
         bias = analysis.get("whale_pulse", {}).get("bias", "NEUTRAL")
-        
+
         msg = (
             f"🚀 *ALPHA SENTINEL TRIGGER*\n"
             f"Symbol: {symbol} | Signal: {signal}\n"

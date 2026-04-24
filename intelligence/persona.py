@@ -25,7 +25,7 @@ def get_current_persona() -> str:
         with open(PERSONA_FILE, "w", encoding="utf-8") as f:
             f.write(DEFAULT_PERSONA.strip())
         return DEFAULT_PERSONA.strip()
-        
+
     try:
         with open(PERSONA_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()

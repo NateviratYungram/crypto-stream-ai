@@ -19,7 +19,7 @@ def get_macro_risk_data() -> Dict[str, Any]:
         dxy_ticker = yf.Ticker('DX-Y.NYB')
         dxy_hist = dxy_ticker.history(period='1d')
         dxy_val = dxy_hist['Close'].iloc[-1] if not dxy_hist.empty else 100.0
-        
+
         # TNX: US 10-Year Treasury Yield (Critical for GOLD & Growth)
         tnx_ticker = yf.Ticker('^TNX')
         tnx_hist = tnx_ticker.history(period='1d')

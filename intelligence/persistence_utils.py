@@ -21,12 +21,12 @@ def save_trade_draft(
         conn = sqlite3.connect(PERSISTENCE_DB)
         cursor = conn.cursor()
         created_at = datetime.now(timezone.utc).isoformat()
-        
+
         cursor.execute("""
             INSERT INTO trade_drafts (id, session_id, symbol, action, volume, sl, tp, comment, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (draft_id, session_id, symbol, action.upper(), volume, sl, tp, comment, created_at))
-        
+
         conn.commit()
         conn.close()
         logger.info(f"Persistence: Draft {draft_id} saved successfully.")
@@ -41,12 +41,12 @@ def get_trade_draft(draft_id: str) -> Optional[Dict[str, Any]]:
         conn = sqlite3.connect(PERSISTENCE_DB)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         # Support case-insensitive draft_id
         cursor.execute("SELECT * FROM trade_drafts WHERE UPPER(id) = UPPER(?)", (draft_id,))
         row = cursor.fetchone()
         conn.close()
-        
+
         if row:
             return dict(row)
         return None

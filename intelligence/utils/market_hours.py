@@ -10,7 +10,7 @@ def is_us_market_holiday(date_obj: datetime.date) -> bool:
     year = date_obj.year
     month = date_obj.month
     day = date_obj.day
-    
+
     # Static Holidays
     holidays = [
         (1, 1),   # New Year's Day
@@ -18,31 +18,31 @@ def is_us_market_holiday(date_obj: datetime.date) -> bool:
         (7, 4),   # Independence Day
         (12, 25), # Christmas Day
     ]
-    
+
     if (month, day) in holidays:
         return True
-        
+
     # Floating Holidays (Logic approach)
     # MLK Day: 3rd Monday of Jan
     if month == 1 and date_obj.weekday() == 0 and 15 <= day <= 21:
         return True
-    
+
     # Presidents Day: 3rd Monday of Feb
     if month == 2 and date_obj.weekday() == 0 and 15 <= day <= 21:
         return True
-        
+
     # Memorial Day: Last Monday of May
     if month == 5 and date_obj.weekday() == 0 and day > 24:
         return True
-        
+
     # Labor Day: 1st Monday of Sep
     if month == 9 and date_obj.weekday() == 0 and day <= 7:
         return True
-        
+
     # Thanksgiving: 4th Thursday of Nov
     if month == 11 and date_obj.weekday() == 3 and 22 <= day <= 28:
         return True
-        
+
     # Special: Good Friday (Variables)
     good_fridays = {
         2024: (3, 29),
@@ -56,12 +56,12 @@ def is_us_market_holiday(date_obj: datetime.date) -> bool:
 
 def get_market_status_data() -> Dict[str, Any]:
     """
-    Calculates the current status (OPEN/CLOSED) and time remaining 
+    Calculates the current status (OPEN/CLOSED) and time remaining
     to the next state change for major market regimes.
     """
     now_utc = datetime.datetime.now(pytz.UTC)
     today_utc = now_utc.date()
-    
+
     # ── CRYPTO ──────────────────────────────────────────────────────────────
     crypto = {
         "status": "OPEN",
@@ -75,11 +75,11 @@ def get_market_status_data() -> Dict[str, Any]:
     forex_status = "CLOSED"
     forex_next = "OPEN"
     forex_target = None
-    
+
     # Day of week: Mon=0, Sun=6
     weekday = now_utc.weekday()
     hour = now_utc.hour
-    
+
     if (weekday == 6 and hour >= 21) or (weekday < 4) or (weekday == 4 and hour < 21):
         forex_status = "OPEN"
         forex_next = "CLOSE"
@@ -105,9 +105,9 @@ def get_market_status_data() -> Dict[str, Any]:
     stocks_next = "OPEN"
     stocks_target = None
     is_holiday = is_us_market_holiday(today_utc)
-    
+
     time_val = now_utc.hour * 100 + now_utc.minute
-    
+
     # Check if currently open
     if not is_holiday and weekday < 5 and (1330 <= time_val < 2000):
         stocks_status = "OPEN"

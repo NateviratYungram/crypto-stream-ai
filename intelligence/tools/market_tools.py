@@ -142,7 +142,7 @@ def _load_index_data():
     # Cache for 1 hour
     if _INDEX_CACHE["data"] and (now - _INDEX_CACHE["timestamp"]) < 3600:
         return _INDEX_CACHE["data"]
-    
+
     path = os.path.join("intelligence", "market_data", "index_tickers.json")
     if os.path.exists(path):
         try:
@@ -152,7 +152,7 @@ def _load_index_data():
                 return data
         except Exception as e:
             logger.error(f"Failed to load dynamic tickers: {e}")
-    
+
     # Fallback to hardcoded list if JSON missing
     return {
         "indices": {"SP500": SP500_TICKERS, "NASDAQ_100": NASDAQ_100_TICKERS},
@@ -165,7 +165,7 @@ def _get_db_conn():
     """Helper to get a fresh DB connection with failure caching to prevent timeouts."""
     global _last_pg_fail
     import time
-    
+
     # If we failed recently, don't even try - fail fast to allow SQLite fallback
     if time.time() - _last_pg_fail < 60:
         raise Exception("PostgreSQL is in a known-failed state (cooling down)")
@@ -306,7 +306,7 @@ def get_news_impact(symbol: str = "BTC") -> Dict[str, Any]:
     try:
         logger.info(f"Tool: Getting news impact for {symbol}")
         articles = _fetch_rss_news(symbol_hint=symbol)
-        
+
         if not articles:
             return {
                 "symbol": symbol,
@@ -319,12 +319,12 @@ def get_news_impact(symbol: str = "BTC") -> Dict[str, Any]:
 
         # Format headlines for the agent to see
         headlines = [f"[{a['source']}] {a['title']}" for a in articles[:5]]
-        
-        # We'll let the Master Agent do the deep semantic scoring, 
-        # but we provide the raw material and a heuristic 'Impact Score' 
-        # based on keyword density if we wanted to be fancy, 
+
+        # We'll let the Master Agent do the deep semantic scoring,
+        # but we provide the raw material and a heuristic 'Impact Score'
+        # based on keyword density if we wanted to be fancy,
         # but for now, we return the articles for the LLM to process.
-        
+
         return {
             "symbol": symbol,
             "news_count": len(articles),
@@ -712,9 +712,9 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
     import yfinance as yf
     import threading
     import sqlite3
-    
+
     result = {}
-    
+
     # ── Baseline: High-Speed Local Cache (SQLite) ──────────────────────────
     try:
         with sqlite3.connect('screener_v3.db') as sq_conn:
@@ -740,9 +740,9 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
     t = threading.Thread(target=fetch_yf)
     t.start()
     t.join(timeout=3.5) # Don't wait more than 3.5s
-    
+
     info = result.get('info', {})
-    
+
     # Fallback price from SQLite if YF fails
     price = info.get("currentPrice") or info.get("regularMarketPrice") or result.get('price_sq')
     if not price:
@@ -775,7 +775,7 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
         range_signal = "UNKNOWN"
         # Try SQLite fallback for range stats
         w52h = w52h or (price / (1 + (result.get('pct_52wh_sq', 0)/100)) if result.get('pct_52wh_sq') is not None else None)
-        
+
         if w52l and w52h and w52h > w52l:
             range_pct = round(((price - w52l) / (w52h - w52l)) * 100, 1)
             range_signal = (
@@ -1109,7 +1109,7 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                         } for n in yf.Ticker(symbol).news[:3]
                     ]
                 except: pass
-            
+
             nt = threading.Thread(target=fetch_news)
             nt.start()
             nt.join(timeout=2.0) # Only wait 2s for news
@@ -1125,7 +1125,7 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                 prev = df_with_indicators.iloc[-2]
 
                 def _f(v):
-                    try: 
+                    try:
                         val = float(v)
                         if pd.isna(val): return None
                         return round(val, 4)
@@ -1209,16 +1209,16 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
             smc = get_smart_money_analysis(df_with_indicators)
             if smc:
                 summary["smart_money"] = smc
-            
+
             # ── Whale Pulse Integration ──────────────────────────────────────
             # Adds real-time order book walls and volume injection analysis
             whale_data = whale_pulse.get_institutional_bias(symbol, df_with_indicators)
             summary["whale_pulse"] = whale_data
-            
+
             # ── Retail FOMO Detector (Liquidation Heatmap) ───────────────────
             fomo_data = onchain_engine.get_fomo_heatmap(symbol)
             summary["retail_fomo"] = fomo_data
-            
+
             summary["analysis_mode"] = "ICT_TRADING"
 
         # ── Multi-timeframe: fetch 1h trend bias (both modes) ────────────────
@@ -1232,7 +1232,7 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                     last_htf   = df_htf_ind.iloc[-1]
 
                     def _s(v):
-                        try: 
+                        try:
                             val = float(v)
                             if pd.isna(val): return 0.0
                             return round(val, 4)
@@ -1278,15 +1278,15 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
             past_trades = memories.get("past_trades", [])
             wins = len([m for m in past_trades if m.get("outcome") == "WIN"])
             losses = len([m for m in past_trades if m.get("outcome") == "LOSS"])
-            
+
             # 2. ML Probability (Math Logic)
             # Import inside function to avoid circular dependencies
             from intelligence.ml.signal_model import predict_win_probability
             from intelligence.ml.feature_extractor import extract_features
-            
+
             features = extract_features(df_with_indicators, -1, symbol=symbol, asset_class=asset_class)
             ml_res = predict_win_probability(features)
-            
+
             summary["historical_pulse"] = {
                 "past_performance": f"{wins} Wins / {losses} Losses (from last 5 memories)",
                 "ml_win_probability": f"{ml_res.get('win_pct', 50.0)}%",
@@ -1309,7 +1309,7 @@ def get_macro_sentiment() -> Dict[str, Any]:
     # This would ideally call sentiment_agent.py or similar
     # For now, we provide a structured placeholder that can be expanded
     return {
-        "market_regime": "Risk-On", 
+        "market_regime": "Risk-On",
         "correlations": {
             "BTC_vs_NASDAQ": 0.85,
             "BTC_vs_GOLD": -0.2
@@ -1419,11 +1419,11 @@ def get_institutional_ml_stats(symbol: str) -> Dict[str, Any]:
 
     try:
         sym = symbol.upper().replace("USDT", "").strip()
-        
+
         # 1. Real-World Performance Stats
         stats = get_ml_stats()
         win_rate = _safe_num(stats.get("win_rate"), default=0.75) if stats else 0.75
-        
+
         # 2. Neural Prediction (Current Live Snapshot)
         df = get_kline_data(sym, timeframe="1h", limit=500)
         prob = None
@@ -1433,7 +1433,7 @@ def get_institutional_ml_stats(symbol: str) -> Dict[str, Any]:
         neural_available = False
         neural_note = None
         data_points = 0
-        
+
         if df is not None and len(df) > 100:
             data_points = len(df)
             df = compute_indicators(df)
@@ -1463,7 +1463,7 @@ def get_institutional_ml_stats(symbol: str) -> Dict[str, Any]:
             else:
                 side = "HOLD"
                 neural_note = p_buy.get("note") or p_sel.get("note") or "ML model unavailable for live inference."
-            
+
             # Regime Analysis
             hurst = estimate_hurst_exponent(df["Close"].values)
             regime = "TRENDING" if hurst > 0.55 else "MEAN_REVERTING" if hurst < 0.45 else "MODERATE"
@@ -1496,7 +1496,7 @@ def sync_deep_history(symbol: str, years: int = 10) -> Dict[str, Any]:
     try:
         from intelligence.archiver import archiver, ARCHIVE_DB
         sym = symbol.upper().replace("USDT", "").strip()
-        
+
         results = {}
         tfs = [
             ("15m", 0.5), # ~6 months
@@ -1504,13 +1504,13 @@ def sync_deep_history(symbol: str, years: int = 10) -> Dict[str, Any]:
             ("4h",  5.0), # ~5 years
             ("1d",  int(years)) # ~10 years
         ]
-        
+
         total_bars = 0
         for tf, yr in tfs:
             cnt = archiver.bootstrap_history(sym, timeframe=tf, years=yr)
             results[f"{tf}_bars"] = cnt
             total_bars += cnt
-        
+
         return {
             "status": "SUCCESS",
             "symbol": sym,
@@ -1528,16 +1528,16 @@ def sync_deep_history(symbol: str, years: int = 10) -> Dict[str, Any]:
     """
     try:
         sym = symbol.upper().replace("USDT", "").strip()
-        
+
         # 1. Get win rate from historical labeled trades
         p_stats = get_ml_stats()
-        
+
         # 2. Get current Neural Consensus probability
-        # Note: In a production setup, we'd pass actual features. 
+        # Note: In a production setup, we'd pass actual features.
         # For this agent, we'll try to fetch fresh features using predict_with_neural_consensus fallback.
         n_res = predict_with_neural_consensus(sym)
         win_prob = n_res.get("win_probability", 0.5)
-        
+
         # 3. Get Neural Alpha (Adjusted risk)
         # Using Hurst Exponent from technical summary
         from intelligence.technical_engine import get_kline_data, compute_indicators, get_indicator_summary
@@ -1567,7 +1567,7 @@ PERSISTENCE_DB = "persistence.db"
 
 def prepare_mt5_trade_draft(symbol: str, side: str, volume: float, sl: Optional[float] = None, tp: Optional[float] = None, session_id: str = "default") -> Dict[str, Any]:
     """
-    REQUIRED FIRST STEP BEFORE ANY TRADE. 
+    REQUIRED FIRST STEP BEFORE ANY TRADE.
     Drafts a trade on MetaTrader 5 and generates a draft_id.
     You MUST present the trade details and draft_id to the user and ask for explicit confirmation (e.g., "พิมพ์ ยืนยัน [draft_id]" to execute).
     symbol: The trading symbol (e.g., 'XAUUSD', 'EURUSD', 'BTCUSD')
@@ -1608,7 +1608,7 @@ def prepare_mt5_trade_draft(symbol: str, side: str, volume: float, sl: Optional[
         # Generate a descriptive Draft ID: SYMBOL-TRADE-PLAN-XXXXX
         short_id = str(random.randint(10000, 99999)) # 5 digits like the screenshot
         draft_id = f"{normalized_symbol.upper()}-TRADE-PLAN-{short_id}"
-        
+
         _sl_val = float(sl) if sl else None
         _tp_val = float(tp) if tp else None
         _side_upper = side.strip().upper()
@@ -1676,17 +1676,17 @@ def execute_approved_mt5_trade(draft_id: str) -> Dict[str, Any]:
     try:
         # Robust Draft Resolution
         draft_id = str(draft_id).strip().upper()
-        
+
         trade = None
         try:
             conn = sqlite3.connect(PERSISTENCE_DB)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
+
             # Fetch the draft
             cursor.execute("SELECT * FROM trade_drafts WHERE UPPER(id) = ?", (draft_id,))
             row = cursor.fetchone()
-            
+
             if row:
                 trade = dict(row)
                 # Cleanup: Atomic delete after retrieval to prevent replay attacks
@@ -1836,7 +1836,7 @@ def execute_approved_mt5_trade(draft_id: str) -> Dict[str, Any]:
             sl=trade["sl"],
             tp=trade["tp"],
         )
-        
+
         # New: Register for Break-Even monitoring if successful
         if result.get("status") == "SUCCESS":
             try:
@@ -1952,9 +1952,9 @@ def _fetch_yf_screener(screen_id: str = "day_gainers", count: int = 10, exchange
                 volume_str = str(volume_raw)
             else:
                 volume_str = "N/A"
-                
+
             avg_volume = q.get("averageDailyVolume3Month", 0) or 0
-            
+
             # marketState: REGULAR | PRE | POST | PREPRE | POSTPOST | CLOSED
             market_state = q.get("marketState", "UNKNOWN")
             if market_state == "POST":
@@ -1963,7 +1963,7 @@ def _fetch_yf_screener(screen_id: str = "day_gainers", count: int = 10, exchange
                 market_state = "PRE (Pre-Market EST)"
             elif market_state == "REGULAR":
                 market_state = "REGULAR (Market Open)"
-                
+
             # Anomaly / Sanity Check Layer
             is_anomaly = False
             if abs(change_pct) > 30.0:
@@ -2066,18 +2066,18 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
                 "DOGE-USD", "AVAX-USD", "LINK-USD", "DOT-USD", "NEAR-USD", "TON-USD",
             ]
             basket = _scan_basket(crypto_basket)
-            
+
             # STRICT Rules: Gainers MUST be > 0. Losers MUST be < 0.
             crypto_gainer = [s for s in basket if s.get("change_percent", 0) > 0.0]
-            # _scan_basket sorts by descending change_percent. 
+            # _scan_basket sorts by descending change_percent.
             # Reverse sort for losers (most negative first)
-            crypto_loser = sorted([s for s in basket if s.get("change_percent", 0) < 0.0], 
+            crypto_loser = sorted([s for s in basket if s.get("change_percent", 0) < 0.0],
                                   key=lambda x: x.get("change_percent", 0))
-            
+
             # Add back to arrays of size 1 (if exist)
             crypto_gainer = [crypto_gainer[0]] if crypto_gainer else []
             crypto_loser  = [crypto_loser[0]] if crypto_loser else []
-            
+
             # fetch_news only for CRYPTO-only queries — skip when part of ALL (too slow)
             groups["CRYPTO"] = _build_group("CRYPTO", crypto_gainer, crypto_loser,
                                             fetch_news=(mode == "CRYPTO"))
@@ -2195,15 +2195,15 @@ def get_sector_rotation() -> Dict[str, Any]:
             "Utilities (XLU)": "XLU",
             "Real Estate (XLRE)": "XLRE"
         }
-        
+
         logger.info(f"Tool: Fetching Sector Rotation data for {len(sectors)} sectors...")
-        
+
         # Pull performance data (5-day)
         data = yf.download(list(sectors.values()), period="5d", interval="1d", progress=False)["Close"]
-        
+
         if data.empty:
             return {"error": "Failed to fetch sector data. Market may be closed or API restricted."}
-            
+
         perf = {}
         for name, ticker in sectors.items():
             if ticker in data.columns:
@@ -2211,10 +2211,10 @@ def get_sector_rotation() -> Dict[str, Any]:
                 if len(s_data) >= 2:
                     change = ((s_data.iloc[-1] - s_data.iloc[0]) / s_data.iloc[0]) * 100
                     perf[name] = round(change, 2)
-        
+
         # Sort sectors
         sorted_perf = sorted(perf.items(), key=lambda x: x[1], reverse=True)
-        
+
         sector_result = {
             "instruction": "Identify which sectors are attracting institutional capital (Leading) and which are being sold (Lagging).",
             "leading_sectors": sorted_perf[:3],
@@ -2236,14 +2236,14 @@ def calculate_risk_parameters(account_size: float, entry: float, stop_loss: floa
     try:
         if entry == stop_loss:
             return {"error": "Entry and Stop Loss cannot be the same price."}
-            
+
         risk_amount = account_size * (risk_pct / 100)
         distance = abs(entry - stop_loss)
         position_size = risk_amount / distance
-        
+
         # Calculate R:R assuming a standard 1:2 target if TP not provided
         suggested_tp = entry + (distance * 2) if entry > stop_loss else entry - (distance * 2)
-        
+
         return {
             "account_size": account_size,
             "risk_percentage": f"{risk_pct}%",
@@ -2346,17 +2346,17 @@ def get_market_climate() -> Dict[str, Any]:
     if cached is not None:
         return cached
     try:
-        # We use a 5-day window specifically to ensure we always have data 
+        # We use a 5-day window specifically to ensure we always have data
         # even during weekend-to-monday transitions or holidays.
         vix_hist = yf.Ticker('^VIX').history(period='5d')
         dxy_hist = yf.Ticker('DX-Y.NYB').history(period='5d')
         tnx_hist = yf.Ticker('^TNX').history(period='5d')
-        
+
         # Safe extraction with fallbacks (median values for neutral regime)
         vix = vix_hist['Close'].iloc[-1] if not vix_hist.empty else 18.5
         dxy = dxy_hist['Close'].iloc[-1] if not dxy_hist.empty else 102.5
         tnx = tnx_hist['Close'].iloc[-1] if not tnx_hist.empty else 4.2
-        
+
         # Normalized Risk Components (0-100)
         # VIX: 10 is low, 20 is median, 30+ is high
         vix_score = min(100, max(0, (vix - 10) / 25 * 100))
@@ -2364,23 +2364,23 @@ def get_market_climate() -> Dict[str, Any]:
         dxy_score = min(100, max(0, (dxy - 95) / 10 * 100))
         # TNX: 3% is low, 4.5% is high (for current market regime)
         tnx_score = min(100, max(0, (tnx - 3.0) / 2.0 * 100))
-        
+
         # Strategic Weighted Risk Score
         global_risk_score = (vix_score * 0.4) + (dxy_score * 0.3) + (tnx_score * 0.3)
-        
+
         regime = "NEUTRAL"
         threat_level = "LOW"
         color = "emerald"
-        
+
         if global_risk_score > 70:
             regime, threat_level, color = "EXTREME TURBULENCE", "DANGER", "rose"
         elif global_risk_score > 50:
             regime, threat_level, color = "RISK OFF", "ALERT", "amber"
         elif global_risk_score < 30:
             regime, threat_level, color = "RISK ON", "OPTIMAL", "emerald"
-            
+
         summary = f"Vol: {vix:.2f} | DXY: {dxy:.2f} | 10Y: {tnx:.2f}%"
-        
+
         climate_result = {
             "global_risk_score": round(global_risk_score, 2),
             "regime": regime,
@@ -2407,14 +2407,14 @@ def calculate_custom_indicator(symbol: str, formula: str, timeframe: str = "15m"
     """
     try:
         from intelligence.formula_engine import evaluate_formula, get_latest_value
-        
+
         df = get_kline_data(symbol, timeframe=timeframe, limit=100, asset_class=asset_class)
         if df is None or df.empty:
             return {"error": f"No data found for {symbol}."}
-            
+
         result = evaluate_formula(df, formula)
         latest = get_latest_value(result)
-        
+
         return {
             "symbol": symbol,
             "formula": formula,
@@ -2436,7 +2436,7 @@ def get_usd_rate(symbol: str) -> float:
         mapping = {
             "XAU": "GC=F",      # Gold Futures — reliable 24/5 on yfinance (XAUUSD=X fails weekends)
             "XAG": "SI=F",      # Silver Futures
-            "EUR": "EURUSD=X", 
+            "EUR": "EURUSD=X",
             "GBP": "GBPUSD=X", "JPY": "USDJPY=X", "BTC": "BTC-USD",
             "ETH": "ETH-USD"
         }
@@ -2444,20 +2444,20 @@ def get_usd_rate(symbol: str) -> float:
         fallbacks = {
             "XAU": 3300.0, "XAG": 33.0, "EUR": 1.08, "GBP": 1.25, "JPY": 0.0066
         }
-        
+
         base = symbol[:3].upper()
         yf_sym = mapping.get(base, f"{base}USD=X" if base not in ["USD","USDT"] else None)
-        
+
         if not yf_sym:
             return 1.0
-            
+
         data = yf.Ticker(yf_sym).history(period="1d")
         if not data.empty:
             rate = data["Close"].iloc[-1]
             # Use JPY inverse if needed
             if base == "JPY": return 1.0 / rate
             return float(rate)
-        
+
         return fallbacks.get(base, 1.0)
     except Exception:
         return 1.0
@@ -2474,20 +2474,20 @@ def get_portfolio_analytics() -> Dict[str, Any]:
         except ImportError:
             return {"error": "MetaTrader5 not available"}
 
-        
+
         if not initialize_mt5():
             return {"error": "Failed to connect to MT5"}
-            
+
         account = get_mt5_account_info()
         equity = account.get("equity", 0)
         positions = mt5.positions_get()
-        
+
         if not positions:
             return {"message": "No open positions found.", "equity": equity}
-            
+
         results = []
         total_market_value = 0
-        
+
         for p in positions:
             p_dict = p._asdict()
             sym = p_dict["symbol"]
@@ -2501,17 +2501,17 @@ def get_portfolio_analytics() -> Dict[str, Any]:
                 "market_value_usd": round(mv, 2),
                 "unrealized_pnl": round(p_dict["profit"], 2)
             })
-            
+
         # Calculate percentages
         warnings = []
         for res in results:
             mv = res["market_value_usd"]
             res["percent_of_equity"] = round((mv / equity * 100), 2) if equity > 0 else 0
             res["percent_of_portfolio"] = round((mv / total_market_value * 100), 2) if total_market_value > 0 else 0
-            
+
             if res["percent_of_equity"] > 20:
                 warnings.append(f"CONCENTRATION RISK: {res['symbol']} is {res['percent_of_equity']}% of equity.")
-        
+
         return {
             "equity": equity,
             "total_portfolio_value": round(total_market_value, 2),
@@ -2552,26 +2552,26 @@ def update_working_memory(memory: str = None, emotion: str = None, session_id: s
         conn = sqlite3.connect("persistence.db")
         cursor = conn.cursor()
         now = datetime.now().isoformat()
-        
+
         cursor.execute("SELECT memory, emotion FROM working_memory WHERE session_id = ?", (session_id,))
         row = cursor.fetchone()
-        
+
         new_mem = memory if memory is not None else (row[0] if row else "")
         new_emo = emotion if emotion is not None else (row[1] if row else "NEUTRAL")
-        
+
         cursor.execute("""
-            INSERT INTO working_memory (session_id, memory, emotion, updated_at) 
+            INSERT INTO working_memory (session_id, memory, emotion, updated_at)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET 
-                memory=excluded.memory, 
-                emotion=excluded.emotion, 
+            ON CONFLICT(session_id) DO UPDATE SET
+                memory=excluded.memory,
+                emotion=excluded.emotion,
                 updated_at=excluded.updated_at
         """, (session_id, new_mem, new_emo, now))
-        
+
         # Ensure session exists to avoid foreign key constraints (SQLite usually doesn't enforce without PRAGMA but good practice)
-        cursor.execute("INSERT OR IGNORE INTO sessions (id, title, updated_at) VALUES (?, ?, ?)", 
+        cursor.execute("INSERT OR IGNORE INTO sessions (id, title, updated_at) VALUES (?, ?, ?)",
                        (session_id, "Strategy Briefing", now))
-                       
+
         conn.commit()
         conn.close()
         logger.info(f"💾 Cognitive Stashing Successful for session {session_id}")
@@ -2907,14 +2907,14 @@ def get_trading_tactics(symbol: str) -> str:
         # 1. Fetch data & Indicators
         df = get_kline_data(symbol, timeframe="1h", limit=100)
         if df.empty: return json.dumps({"error": "No market data found"})
-        
+
         df = compute_indicators(df)
         indicators = get_indicator_summary(df)
         smc = get_smart_money_analysis(df)
-        
+
         last = df.iloc[-1]
         price = float(last['Close'])
-        
+
         # Helper data
         ema_data = indicators.get('ema', {})
         ema_50 = ema_data.get('ema_50', 0)
@@ -2924,9 +2924,9 @@ def get_trading_tactics(symbol: str) -> str:
         structure = smc.get('structure', {})
         liquidity = smc.get('liquidity', {})
         vol_spike = indicators.get('volume', {}).get('spike', False)
-        
+
         tactics = []
-        
+
         # --- 1. TREND CONTINUATION ---
         trend_score = 50
         trend_move = "SIT ON HANDS"
@@ -2936,7 +2936,7 @@ def get_trading_tactics(symbol: str) -> str:
         elif ema_data.get('long_term') == 'BEARISH' and price < ema_50:
             trend_score = 85
             trend_move = "SELL"
-            
+
         tactics.append({
             "name": "Trend Continuation",
             "style": "HTF Momentum",
@@ -2947,13 +2947,13 @@ def get_trading_tactics(symbol: str) -> str:
             "tp": "RR 1:2 or next structural resistance",
             "logic": f"Price vs EMA200: {ema_data.get('long_term')} | EMA Order: {ema_data.get('signal')}"
         })
-        
+
         # --- 2. LIQUIDITY SWEEP REVERSAL ---
         liq_score = 50
         has_eq = len(liquidity.get('buy_side', [])) > 0 or len(liquidity.get('sell_side', [])) > 0
         if has_eq and structure.get('choch'):
             liq_score = 90
-            
+
         tactics.append({
             "name": "Liquidity Sweep",
             "style": "Smart Money",
@@ -2964,12 +2964,12 @@ def get_trading_tactics(symbol: str) -> str:
             "tp": "Opposite side liquidity pool",
             "logic": f"Equal Levels: {'Yes' if has_eq else 'No'} | CHOCH: {structure.get('choch')}"
         })
-        
+
         # --- 3. BREAKOUT + RETEST ---
         break_score = 50
         if regime == 'RANGE' and vol_spike:
             break_score = 80
-            
+
         tactics.append({
             "name": "Breakout + Retest",
             "style": "Momentum",
@@ -2980,12 +2980,12 @@ def get_trading_tactics(symbol: str) -> str:
             "tp": "Measured move from range height",
             "logic": f"Regime: {regime} | Volume Spike: {vol_spike}"
         })
-        
+
         # --- 4. MEAN REVERSION ---
         rev_score = 50
         if regime == 'RANGE' and (rsi_val > 70 or rsi_val < 30):
             rev_score = 85
-            
+
         tactics.append({
             "name": "Mean Reversion",
             "style": "Range Oscillations",
@@ -2996,13 +2996,13 @@ def get_trading_tactics(symbol: str) -> str:
             "tp": "Mid-range (EMA 50 or BB Mid)",
             "logic": f"RSI: {rsi_val} | BB Position: {indicators.get('bollinger_bands', {}).get('position')}"
         })
-        
+
         # --- 5. STOCK ACCUMULATION ---
         acc_score = 50
         is_stock = any(x in symbol.upper() for x in ["NAS", "SPX", "NVDA", "TSLA", "AAPL"])
         if is_stock and price < ema_200:
             acc_score = 75
-            
+
         tactics.append({
             "name": "Stock Accumulation",
             "style": "Value / Long-term",
@@ -3013,12 +3013,12 @@ def get_trading_tactics(symbol: str) -> str:
             "tp": "Long-term trend recovery",
             "logic": f"Is Stock: {is_stock} | Below 200 EMA: {price < ema_200}"
         })
-        
+
         # --- 6. NO TRADE ---
         no_trade_score = 10
         if regime == 'CHAOS':
             no_trade_score = 100
-            
+
         tactics.append({
             "name": "No Trade",
             "style": "Safety / Capital Preservation",
@@ -3029,7 +3029,7 @@ def get_trading_tactics(symbol: str) -> str:
             "tp": "None (Capital Saved)",
             "logic": f"Regime: {regime} | Market Condition: High Risk"
         })
-        
+
         # --- 7. AI CONFIDENCE (Intelligence V4 Hybrid Brain) ---
         # Combines Ensemble V3 with Temporal Neural V4
         ai_side = "BUY" if trend_score > 50 or (smc and smc.get('choch')) else "SELL"
@@ -3037,25 +3037,25 @@ def get_trading_tactics(symbol: str) -> str:
             # Sync with news sentiment
             score_data = get_brain_state().get("sentiment", {}).get(symbol, {})
             sentiment_score = score_data.get("score", 0.0)
-            
+
             ml_result = predict_with_neural_consensus(
-                df, 
-                len(df) - 1, 
-                side=ai_side, 
-                symbol=symbol, 
+                df,
+                len(df) - 1,
+                side=ai_side,
+                symbol=symbol,
                 sentiment_score=sentiment_score
             )
         except Exception as e:
             logger.error(f"[V4] Neural Consensus failed: {e}")
             ml_result = {"available": False}
-        
+
         if ml_result.get("available"):
             ml_score = ml_result.get("win_pct", 50)
             ml_reasons = ml_result.get("rationale", [])
             ml_acc = ml_result.get("accuracy", 0)
             ml_samples = ml_result.get("n_samples", 0)
             neural_match = ml_result.get("neural_alignment", False)
-            
+
             tactics.append({
                 "name": "Deep Brain Confidence" if neural_match else "AI Confidence (V4 Hybrid)",
                 "style": "Neural Consensus" if neural_match else "Hybrid Stacking",
@@ -3066,11 +3066,11 @@ def get_trading_tactics(symbol: str) -> str:
                 "tp": "Dynamic (Institutional Risk Shield)",
                 "logic": f"Win Prob: {ml_score:.0f}% | Neural Match: {neural_match} | Samples: {ml_samples}",
             })
-        
+
         # --- STRATEGIC SELECTION LOGIC ---
         recommendation = "HOLD / NO CLEAR EDGE"
         best_tactic = "None"
-        
+
         if regime == 'CHAOS':
             recommendation = "STAY AWAY: Market is currently in CHAOS mode."
             best_tactic = "No Trade"
@@ -3090,13 +3090,13 @@ def get_trading_tactics(symbol: str) -> str:
         elif is_stock:
             recommendation = "INVESTMENT VIEW: Accumulation zones active."
             best_tactic = "Stock Accumulation"
-            
+
         # --- 8. INTELLIGENCE V7 SNIPER CORE ---
         v7_sniper_active = False
         sniper_lock_reason = None
-        
+
         ml_score = ml_result.get("win_pct", 0) if ml_result.get("available") else 0
-        
+
         # Sniper Lock: Confidence >= 80% + Institutional Liquidity Confirmation
         has_sweep = False
         sweeps = smc.get("liquidity_sweeps", {})
@@ -3125,7 +3125,7 @@ def get_trading_tactics(symbol: str) -> str:
                 "institutional_flow": smc.get("liquidity_sweeps", {})
             }
         })
-        
+
     except Exception as e:
         logger.error(f"Tactics Engine Failed: {e}")
         import traceback
@@ -3163,7 +3163,7 @@ def get_fear_greed_index() -> Dict[str, Any]:
         try:
             vix_hist = yf.Ticker("^VIX").history(period="5d")
             spx_ser = yf.Ticker("^GSPC").history(period="50d")["Close"]
-            
+
             if vix_hist.empty or spx_ser.empty:
                 vix_val = 20.0  # fallback
                 spx_now = 5000.0 # dummy
@@ -4701,15 +4701,15 @@ def get_trading_tactics(symbol: str) -> dict:
 
 # Export tools list for Gemini
 MARKET_TOOLS = [
-    get_market_analysis, 
-    get_macro_sentiment, 
-    get_news_impact, 
-    remember_trade, 
-    recall_memories, 
-    run_strategy_backtest, 
+    get_market_analysis,
+    get_macro_sentiment,
+    get_news_impact,
+    remember_trade,
+    recall_memories,
+    run_strategy_backtest,
     prepare_mt5_trade_draft,
-    execute_approved_mt5_trade, 
-    get_mt5_account_summary, 
+    execute_approved_mt5_trade,
+    get_mt5_account_summary,
     get_market_opportunities,
     get_sector_rotation,
     calculate_risk_parameters,
@@ -4755,14 +4755,14 @@ def calculate_risk_parameters(account_size: float, entry: float, stop_loss: floa
             account_balance_usdt=account_size,
             risk_percent=risk_pct
         )
-        
+
         if "error" in res:
             return {"status": "ERROR", "message": res["error"]}
-            
+
         # Get advice and scenarios
         advice = get_risk_advice_thai(res)
         scenarios = calculate_position_scenarios(entry, stop_loss, account_size)
-        
+
         return {
             "status": "SUCCESS",
             "calculation": res,
@@ -4788,7 +4788,7 @@ def execute_mt5_trade(
 ) -> Dict[str, Any]:
     """
     Proxy wrapper for AI executing a LIVE trade on MT5.
-    Includes an institutional-grade symbol normalization layer to handle 
+    Includes an institutional-grade symbol normalization layer to handle
     broker-specific naming conventions (e.g., BTC -> BTCUSD).
     """
     from intelligence.mt5_connector import mt5_execute_trade, initialize_mt5
@@ -4797,10 +4797,10 @@ def execute_mt5_trade(
     except ImportError:
         return {"error": "MetaTrader5 not available"}
 
-    
+
     # ── Symbol Normalization ──
     norm_sym = symbol.upper().strip()
-    
+
     # Check if direct match exists
     if initialize_mt5():
         # Check direct symbol
@@ -4815,7 +4815,7 @@ def execute_mt5_trade(
             elif norm_sym in ["OIL", "WTI", "BRENT"]:
                 if mt5.symbol_info("WTIUSD"): norm_sym = "WTIUSD"
                 elif mt5.symbol_info("CRUDE"): norm_sym = "CRUDE"
-            
+
             # Final check - if still not found, try to search for it as a prefix/suffix
             if mt5.symbol_info(norm_sym) is None:
                 all_symbols = [s.name for s in mt5.symbols_get()]
@@ -4823,7 +4823,7 @@ def execute_mt5_trade(
                     if s.startswith(norm_sym) or norm_sym in s:
                         norm_sym = s
                         break
-        
+
         logger.info(f"MT5: Normalized symbol {symbol} -> {norm_sym}")
         return mt5_execute_trade(
             symbol=norm_sym,
@@ -4837,7 +4837,7 @@ def execute_mt5_trade(
             filling_policy=filling_policy,
             deviation=deviation,
         )
-    
+
     return {"status": "ERROR", "message": "Failed to initialize MT5 for symbol normalization."}
 
 def send_telegram_alert(message: str) -> Dict[str, Any]:

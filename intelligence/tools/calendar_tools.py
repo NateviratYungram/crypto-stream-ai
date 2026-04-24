@@ -15,13 +15,13 @@ class CalendarTools:
         self._cache = []
         self._last_fetch = None
         self._cache_ttl = timedelta(hours=1)
-        
+
     def fetch_calendar(self):
         """Fetches and caches the weekly XML feed."""
         now = datetime.now(timezone.utc)
         if self._cache and self._last_fetch and (now - self._last_fetch) < self._cache_ttl:
             return self._cache
-            
+
         try:
             r = requests.get(self.feed_url, timeout=10)
             if r.status_code == 200:
@@ -59,11 +59,11 @@ class CalendarTools:
         events = self.fetch_calendar()
         if not events:
             return []
-            
+
         # Get today's date in FF format (MM-DD-YYYY)
         # Note: ForexFactory timezone can be tricky. We do a loose match.
         today_str = datetime.now().strftime("%m-%d-%Y")
-        
+
         filtered = []
         for ev in events:
             if ev["impact"] == "High" and ev["country"] in currencies:
@@ -71,7 +71,7 @@ class CalendarTools:
                 # In a full prod environment, we would translate US ET to UTC.
                 if ev["date"] == today_str:
                     filtered.append(ev)
-                    
+
         return filtered
 
 calendar_engine = CalendarTools()

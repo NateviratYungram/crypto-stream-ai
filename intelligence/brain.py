@@ -16,7 +16,7 @@ def get_brain_state() -> Dict[str, Any]:
             "emotion": "NEUTRAL",
             "last_updated": None
         }
-    
+
     try:
         with open(BRAIN_STATE_FILE, "r") as f:
             return json.load(f)
@@ -28,14 +28,14 @@ def update_brain_state(memory: Optional[str] = None, emotion: Optional[str] = No
     """Update the AI's cognitive focus or emotional baseline."""
     current = get_brain_state()
     if "error" in current: current = {"frontal_lobe": "", "emotion": "NEUTRAL"}
-    
+
     if memory:
         current["frontal_lobe"] = memory
     if emotion:
         current["emotion"] = emotion.upper()
-        
+
     current["last_updated"] = datetime.now().isoformat()
-    
+
     try:
         with open(BRAIN_STATE_FILE, "w") as f:
             json.dump(current, f, indent=2)

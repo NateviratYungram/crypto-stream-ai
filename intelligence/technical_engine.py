@@ -41,7 +41,7 @@ def compute_hurst_exponent(ts: pd.Series, window: int = 100) -> float:
     H > 0.5: Trending (persistent)
     """
     if len(ts) < window: return 0.5
-    
+
     try:
         data = ts.values[-window:]
         # Subtract mean to get residuals
@@ -53,7 +53,7 @@ def compute_hurst_exponent(ts: pd.Series, window: int = 100) -> float:
         # Standard deviation
         S = np.std(data)
         if S == 0: return 0.5
-        
+
         # Simple H estimate for rolling window
         H = np.log(R/S) / np.log(window)
         return float(np.clip(H, 0.0, 1.0))
@@ -69,7 +69,7 @@ def _get_pg_engine():
     """Return a cached SQLAlchemy engine for crypto_stream_db with failure caching."""
     global _pg_engine, _last_pg_engine_fail
     import time
-    
+
     if time.time() - _last_pg_engine_fail < 60:
         return None
 
@@ -80,7 +80,7 @@ def _get_pg_engine():
             db   = os.getenv("DB_NAME", "crypto_stream_db")
             user = os.getenv("DB_USER", "user")
             pw   = os.getenv("DB_PASS", "password")
-            
+
             _pg_engine = create_engine(
                 f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}",
                 pool_pre_ping=True,
@@ -117,7 +117,7 @@ def _query_market_ohlcv(ticker: str, timeframe: str, limit: int, ignore_freshnes
         engine = _get_pg_engine()
         if engine is None:
             return None
-            
+
         sql = text("""
             SELECT ts AS "Datetime", open AS "Open", high AS "High",
                    low AS "Low", close AS "Close", volume AS "Volume"
@@ -167,7 +167,7 @@ def get_kline_data(
     otherwise falls back to yfinance for Macro/Stock data.
     """
     sym = symbol.upper().replace("USDT", "").strip()
-    
+
     # ── Choice 0: MT5 Data Bridge (Highest Priority for Real-Time Sync) ──
     # Check MT5 with the RAW symbol before any alias mappings occur
     if _MT5_AVAILABLE and not ignore_freshness:
@@ -279,7 +279,7 @@ def get_kline_data(
                     "is_speculative": True,
                     "target_symbol": ticker
                 }])
-            
+
             # ── Fix: Handle MultiIndex / Symbol level extraction ──────────────────
             if isinstance(df_yf.columns, pd.MultiIndex):
                 levels = df_yf.columns.get_level_values(0).unique().tolist()
@@ -295,17 +295,17 @@ def get_kline_data(
 
 
             df_yf = df_yf.tail(limit).reset_index()
-            
+
             # Normalize column names
             df_yf = df_yf.rename(columns={
                 "Date": "Datetime",
                 "Adj Close": "Close_Adj"
             })
-            
+
             # Use Adj Close if it exists and is valid, otherwise regular Close
             if "Close_Adj" in df_yf.columns:
                 df_yf["Close"] = df_yf["Close_Adj"]
-            
+
             if "Datetime" not in df_yf.columns and "Date" in df_yf.columns:
                  df_yf = df_yf.rename(columns={"Date": "Datetime"})
 
@@ -323,7 +323,7 @@ def get_kline_data(
                         df_yf["Datetime"] = df_yf["Datetime"].dt.tz_convert(None)
                     except Exception:
                         pass
-            
+
             # ── Market Status Detection ───────────────────────────────────────
             # Logic: If latest candle is > 4x timeframe stale, market is likely closed.
             try:
@@ -331,12 +331,12 @@ def get_kline_data(
                 # Ensure UTC for comparison
                 now_ts = datetime.utcnow().replace(tzinfo=latest_ts.tzinfo)
                 diff_mins = (now_ts - latest_ts).total_seconds() / 60
-                
+
                 tf_mins = TIMEFRAME_SECONDS.get(timeframe, 60) / 60
                 market_status = "OPEN"
                 if diff_mins > (tf_mins * 4): # Stale for 4+ candles
                     market_status = "CLOSED"
-                
+
                 df_yf.attrs["market_status"] = market_status
                 df_yf.attrs["last_update"] = latest_ts.isoformat()
             except Exception:
@@ -646,7 +646,7 @@ def get_indicator_summary(df: pd.DataFrame, symbol: str = "") -> dict:
     # Safe extraction of Patterns and Trend (Wrapped in Try-Except for Robustness)
     patterns_data = {"detected": ["None"], "observation": "Analysis pending"}
     trend_data = {"status": "Analysis pending"}
-    
+
     try:
         patterns_data = detect_patterns(df)
     except Exception as e:
@@ -696,9 +696,9 @@ def detect_patterns(df: pd.DataFrame) -> dict:
     Detects Candle Patterns and Price Formations.
     """
     # Just-in-time check for enough data
-    if df is None or len(df) < 5: 
+    if df is None or len(df) < 5:
         return {"detected": ["None"], "observation": "Insufficient data for pattern analysis"}
-    
+
     # Check if this is a speculative shell
     if "is_speculative" in df.columns and df.iloc[0].get("is_speculative"):
         return {"detected": ["None"], "observation": "Speculative mode: visual analysis required"}
@@ -706,27 +706,27 @@ def detect_patterns(df: pd.DataFrame) -> dict:
     try:
         last_5 = df.tail(5)
         patterns = []
-        
+
         # 1. Engulfing Patterns
         curr = last_5.iloc[-1]
         prev = last_5.iloc[-2]
-        
+
         # Safe access to OHLC data
         c_close, c_open = curr['Close'], curr['Open']
         p_close, p_open = prev['Close'], prev['Open']
-        
+
         if c_close > p_open and c_open < p_close and p_close < p_open:
             patterns.append("Bullish Engulfing")
         elif c_close < p_open and c_open > p_close and p_close > p_open:
             patterns.append("Bearish Engulfing")
-            
+
         # 2. Pin Bar / Hammer
         body = abs(c_close - c_open)
         total_range = curr['High'] - curr['Low']
         if total_range > 0:
             upper_wick = curr['High'] - max(c_open, c_close)
             lower_wick = min(c_open, c_close) - curr['Low']
-            
+
             if lower_wick > body * 2 and upper_wick < body:
                 patterns.append("Hammer / Bullish Pin Bar")
             elif upper_wick > body * 2 and lower_wick < body:
@@ -745,7 +745,7 @@ def analyze_trend_channels(df: pd.DataFrame) -> dict:
     Trend Agent (Inspired by QuantAgent).
     Calculates trend slope and support/resistance levels.
     """
-    if df is None or len(df) < 20: 
+    if df is None or len(df) < 20:
         return {"status": "Insufficient data for trend analysis"}
 
     # Check if this is a speculative shell
@@ -754,29 +754,29 @@ def analyze_trend_channels(df: pd.DataFrame) -> dict:
 
     try:
         import math
-        
+
         # Drop NaN values first
         clean_df = df.dropna(subset=['Close', 'High', 'Low'])
         if len(clean_df) < 2:
             return {"status": "Not enough valid data"}
-            
+
         closes = clean_df['Close'].values
         x = np.arange(len(closes))
         slope, intercept = np.polyfit(x, closes, 1)
-        
+
         trend = "UP" if slope > 0 else "DOWN"
         mean_close = closes.mean()
         strength = abs(slope) / mean_close * 100 if mean_close != 0 else 0
-        
+
         # Support/Resistance based on rolling Min/Max
         support = clean_df['Low'].tail(20).min()
         resistance = clean_df['High'].tail(20).max()
-        
+
         def safe_float(v):
             if v is None or math.isnan(v) or math.isinf(v):
                 return 0.0
             return round(float(v), 4)
-        
+
         return {
             "primary_trend": trend,
             "slope_strength": safe_float(strength),
@@ -1066,26 +1066,26 @@ def detect_liquidity_sweeps(df: pd.DataFrame, lookback: int = 40) -> dict:
         highs = df_s["High"].values
         lows  = df_s["Low"].values
         closes = df_s["Close"].values
-        
+
         # Current candle data
         cur_high  = highs[-1]
         cur_low   = lows[-1]
         cur_close = closes[-1]
-        
+
         # Find previous significant swing points (excluding latest candles)
         # We look for the peak in the range [0, n-3]
         prev_range = df_s.iloc[:-2]
         p_high = prev_range["High"].max()
         p_low  = prev_range["Low"].min()
-        
+
         # Bullish Sweep: Price went below p_low but closed back above it
         if cur_low < p_low and cur_close > p_low:
             result = {"sweep_detected": True, "type": "BULLISH_SWEEP", "level": round(float(p_low), 4)}
-            
+
         # Bearish Sweep: Price went above p_high but closed back below it
         elif cur_high > p_high and cur_close < p_high:
             result = {"sweep_detected": True, "type": "BEARISH_SWEEP", "level": round(float(p_high), 4)}
-            
+
         return result
     except Exception as e:
         logger.warning(f"detect_liquidity_sweeps error: {e}")

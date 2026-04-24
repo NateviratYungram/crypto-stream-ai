@@ -117,7 +117,7 @@ def _fetch_rss_news(symbol_hint: str = "") -> list:
     if sym_upper and not is_macro:
         if sym_upper in _symbol_news_cache and (now - _symbol_news_cache[sym_upper]["timestamp"] < SYMBOL_CACHE_TTL):
             return _symbol_news_cache[sym_upper]["articles"]
-            
+
         try:
             import feedparser
             # YF RSS is great for specific ticker news
@@ -132,7 +132,7 @@ def _fetch_rss_news(symbol_hint: str = "") -> list:
                     "published": entry.get("published", ""),
                     "link": entry.get("link", "")
                 })
-            
+
             # If we found specific news, cache and return
             if articles:
                 _symbol_news_cache[sym_upper] = {"timestamp": now, "articles": articles}
@@ -145,7 +145,7 @@ def _fetch_rss_news(symbol_hint: str = "") -> list:
     cache_still_valid = (now - _rss_cache["timestamp"] < BROAD_CACHE_TTL
                          and _rss_cache["articles"]
                          and _rss_cache.get("feed_type") == feed_type)
-    
+
     if cache_still_valid:
         return _rss_cache["articles"]
 
@@ -271,17 +271,17 @@ def create_sentiment_agent(client):
         # Build news text for Gemini
         raw_news = f"=== Latest News (Relevance: {symbol}) ===\n\n"
         from intelligence.security import detect_suspicious_patterns
-        
+
         for art in articles[:12]:
             headline = art.get('title', '')
             suspicious = detect_suspicious_patterns(headline)
             if suspicious:
                 log_security_threat(source=f"RSS_{art['source']}", pattern=str(suspicious))
-                
+
             raw_news += f"[{art['source']}] {headline}\n"
             if art.get("summary"):
                 raw_news += f"  → {art['summary'][:120]}\n"
-        
+
         # Apply Security Sanitization (Institutional Logic)
         from intelligence.security import sanitize_external_content
         news_text = sanitize_external_content(raw_news, source="RSS_MULTI_FEED")

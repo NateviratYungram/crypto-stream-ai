@@ -20,20 +20,20 @@ def compute_hurst_exponent(series: pd.Series, window: int = 20) -> float:
     H = 0.5: Random Walk
     """
     if len(series) < window: return 0.5
-    
+
     # Use log returns
     vals = np.log(series / series.shift(1)).dropna().values[-window:]
     if len(vals) < 5: return 0.5
-    
+
     # Simplified R/S: Range of cumulative deviations / Standard Deviation
     mean_val = np.mean(vals)
     cum_dev  = np.cumsum(vals - mean_val)
     r = np.max(cum_dev) - np.min(cum_dev)
     s = np.std(vals)
-    
+
     if s == 0: return 0.5
     res = r / s
-    
+
     # Hurst ~ log(R/S) / log(n)
     h = np.log(res) / np.log(window)
     return float(np.clip(h, 0.0, 1.0))
@@ -47,12 +47,12 @@ def compute_volatility_skew(series: pd.Series, window: int = 20) -> float:
     if len(series) < window: return 0.0
     returns = np.log(series / series.shift(1)).dropna().values[-window:]
     if len(returns) < 5: return 0.0
-    
+
     # Skewness calculation
     mean = np.mean(returns)
     std  = np.std(returns)
     if std == 0: return 0.0
-    
+
     skew = np.mean((returns - mean)**3) / (std**3)
     return float(np.clip(skew, -5.0, 5.0))
 

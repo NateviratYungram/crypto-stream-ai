@@ -17,7 +17,7 @@ CORRELATION_GROUPS = {
 
 def check_correlation_safety(new_symbol: str) -> Dict[str, Any]:
     """
-    Analyzes current MT5 positions and determines if adding 'new_symbol' 
+    Analyzes current MT5 positions and determines if adding 'new_symbol'
     would violate correlation/exposure limits.
     """
     if not _MT5_AVAILABLE:
@@ -40,7 +40,7 @@ def check_correlation_safety(new_symbol: str) -> Dict[str, Any]:
             if any(s in new_symbol.upper() for s in symbols):
                 new_group = group_name
                 break
-        
+
         if not new_group:
             return {"passed": True} # Unknown group, let it pass
 

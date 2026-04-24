@@ -28,10 +28,10 @@ def verify_data():
         return
 
     logger.info(f"Listening to topic '{KAFKA_TOPIC}' for up to 10 seconds...")
-    
+
     count = 0
     start_time = time.time()
-    
+
     for message in consumer:
         data = message.value
         logger.info(f"SUCCESS: Received trade: {data['symbol']} Price: {data['price']}")

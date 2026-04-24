@@ -19,9 +19,9 @@ _NEWS_SHIELD_STATE = {
 
 def get_economic_calendar() -> List[Dict[str, Any]]:
     """
-    Fetches the economic calendar. 
+    Fetches the economic calendar.
     In a real-world scenario, this connects to a provider like Investing.com or ForexFactory.
-    For this institutional build, we use a robust RSS-based detection or a mocked state 
+    For this institutional build, we use a robust RSS-based detection or a mocked state
     that the user can populate via the 'news_poller_task'.
     """
     # For now, we return the danger zones detected by the poller
@@ -35,7 +35,7 @@ def is_in_danger_zone() -> Dict[str, Any]:
     for zone in _NEWS_SHIELD_STATE["danger_zones"]:
         event_time = zone["time"]
         diff = abs((now - event_time).total_seconds()) / 60
-        
+
         if diff <= DANGER_ZONE_MINUTES:
             return {
                 "blocked": True,
@@ -44,7 +44,7 @@ def is_in_danger_zone() -> Dict[str, Any]:
                 "minutes_to": round((event_time - now).total_seconds() / 60, 1),
                 "message": f"DANGER ZONE: High-impact event ({zone['event']}) in {round(diff, 1)} minutes."
             }
-            
+
     return {"blocked": False}
 
 def refresh_news_calendar():
@@ -56,13 +56,13 @@ def refresh_news_calendar():
         # In this implementation, we simulate fetching from a calendar.
         # Users can replace this with a real API like TradingView or Investing.com RSS.
         # For demonstration and safety, we look for major events.
-        
+
         # Example of how to structure the internal cache:
         # _NEWS_SHIELD_STATE["danger_zones"] = [
         #     {"time": datetime.now(timezone.utc) + timedelta(minutes=15), "event": "FOMC Press Conference"}
         # ]
-        
-        # We'll also cross-check with the Sentiment Agent's RSS news 
+
+        # We'll also cross-check with the Sentiment Agent's RSS news
         # to see if 'Breaking' macro news is hitting the tape.
         pass
     except Exception as e:

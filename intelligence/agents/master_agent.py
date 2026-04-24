@@ -37,7 +37,7 @@ def _compute_confluence_score(state: dict) -> float:
     """
     Simple confluence score based on agent agreement.
     Returns 0-100. Higher = more agents agree.
-    
+
     In full QuantAgent, this involves multi-timeframe agreement.
     Here we use multi-agent agreement as a proxy.
     """
@@ -266,7 +266,7 @@ Respond ONLY with valid JSON:
             kelly_size = 0.0
             if master_decision in ("LONG", "SHORT"):
                 kelly_size = risk_manager.calculate_kelly_size(
-                    win_prob=confidence, 
+                    win_prob=confidence,
                     rr_ratio=float(rr),
                     balance=100.0 # Standardize to % for now
                 )
@@ -292,7 +292,7 @@ Respond ONLY with valid JSON:
         if cfg.get("sniper_mode") and confidence < 0.80 and master_decision != "NO_TRADE":
             master_decision = "NO_TRADE"
             sniper_reason = f"REJECTED BY SNIPER CORE: Win Probability ({confidence:.0%}) < 80% Hard Threshold. Target long-term capital preservation."
-            
+
             # Log for the Audit Dashboard
             log_sniper_rejection(
                 symbol=symbol,
@@ -300,7 +300,7 @@ Respond ONLY with valid JSON:
                 reasoning=reasoning,
                 price=0.0 # Price not easily available here, logged as 0.0 or could be passed
             )
-            
+
             reasoning = sniper_reason + " | ORIGINAL: " + reasoning
 
         if master_decision in ("LONG", "SHORT"):

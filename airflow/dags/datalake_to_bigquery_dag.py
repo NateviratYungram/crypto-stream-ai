@@ -49,8 +49,7 @@ DRY_RUN = True   # ⚠️  KEEP TRUE until GCP project is intentionally enabled.
                  # and WILL incur real costs. Requires gcp-key.json with valid credentials.
 
 GCP_CONN_ID = 'google_cloud_default'
-# Reads from Airflow Variable; falls back to 'crypto-stream-lake-01' if not set
-GCS_BUCKET = Variable.get('gcs_bucket_name', default_var='crypto-stream-lake-01')
+DEFAULT_GCS_BUCKET = 'crypto-stream-lake-01'
 BQ_DATASET = 'crypto_stream'
 BQ_TABLE = 'raw_trades'
 
@@ -65,6 +64,22 @@ DEFAULT_ARGS = {
 }
 
 log = logging.getLogger(__name__)
+
+
+def get_gcs_bucket() -> str:
+    """
+    Resolve the bucket name at runtime instead of import time.
+    This keeps DAG parsing safe in CI environments where the Airflow
+    metastore has not been initialized yet.
+    """
+    try:
+        return Variable.get('gcs_bucket_name', default_var=DEFAULT_GCS_BUCKET)
+    except Exception as exc:
+        log.warning(
+            "Falling back to default GCS bucket because Airflow Variable lookup failed: %s",
+            exc,
+        )
+        return DEFAULT_GCS_BUCKET
 
 # ---------------------------------------------------------------------------
 # Python Callables
@@ -81,9 +96,9 @@ def scan_parquet_files(**context) -> bool:
     """Checks if there are Parquet files and stores their paths for uploading."""
     logical_date = context['data_interval_start'].date()
     target_path = _get_target_path(logical_date)
-    
+
     log.info(f"Checking for data in Partition path: {target_path}")
-    
+
     files = []
     if os.path.exists(target_path):
         files = glob.glob(os.path.join(target_path, "**/*.parquet"), recursive=True)
@@ -93,17 +108,17 @@ def scan_parquet_files(**context) -> bool:
         log.info(f"Partition path empty. Searching all of {LOCAL_DATALAKE_ROOT} recursively...")
         # Use recursive glob to find all parquet files anywhere in the datalake volume
         files = glob.glob(os.path.join(LOCAL_DATALAKE_ROOT, "**/*.parquet"), recursive=True)
-    
+
     if not files:
         # Final check: sometimes the root has files directy (non-recursive)
         files = glob.glob(os.path.join(LOCAL_DATALAKE_ROOT, "*.parquet"))
-    
+
     if not files:
         log.warning(f"No parquet files found in {LOCAL_DATALAKE_ROOT}. Skipping.")
         return False
-        
+
     log.info(f"SUCCESS: Found {len(files)} parquet files to process.")
-    
+
     # Store results for downstream tasks
     context['ti'].xcom_push(key='parquet_files', value=files)
     return True
@@ -111,18 +126,19 @@ def scan_parquet_files(**context) -> bool:
 def upload_files_to_gcs(**context):
     """Effectively uploads a list of local files to GCS bucket."""
     from airflow.providers.google.cloud.hooks.gcs import GCSHook
-    
+
     files = context['ti'].xcom_pull(task_ids='check_data_availability', key='parquet_files')
     target_date = context['data_interval_start'].date()
+    gcs_bucket = get_gcs_bucket()
     hook = GCSHook(gcp_conn_id=GCP_CONN_ID)
-    
-    log.info(f"Uploading {len(files)} files to gs://{GCS_BUCKET}/raw_trades/{target_date}/")
-    
+
+    log.info(f"Uploading {len(files)} files to gs://{gcs_bucket}/raw_trades/{target_date}/")
+
     for f in files:
         file_name = os.path.basename(f)
         destination_path = f"raw_trades/{target_date}/{file_name}"
         hook.upload(
-            bucket_name=GCS_BUCKET,
+            bucket_name=gcs_bucket,
             object_name=destination_path,
             filename=f
         )
@@ -131,7 +147,8 @@ def upload_files_to_gcs(**context):
 def dry_run_bq_load(**context):
     """Simulates loading files from GCS to BigQuery."""
     target_date = context['data_interval_start'].date()
-    log.info(f"[DRY RUN] Loading gs://{GCS_BUCKET}/raw_trades/{target_date}/*.parquet into {BQ_DATASET}.{BQ_TABLE}")
+    gcs_bucket = get_gcs_bucket()
+    log.info(f"[DRY RUN] Loading gs://{gcs_bucket}/raw_trades/{target_date}/*.parquet into {BQ_DATASET}.{BQ_TABLE}")
 
 
 # ---------------------------------------------------------------------------
@@ -150,28 +167,24 @@ with DAG(
     t_check = ShortCircuitOperator(
         task_id='check_data_availability',
         python_callable=scan_parquet_files,
-        provide_context=True,
     )
 
     if DRY_RUN or not GCP_PROVIDERS_AVAILABLE:
         t_upload = PythonOperator(
             task_id='upload_to_gcs',
             python_callable=lambda **c: log.info("DRY RUN: Uploading files..."),
-            provide_context=True,
         )
         t_create_ds = DummyOperator(task_id='create_dataset')
         t_load = PythonOperator(
             task_id='gcs_to_bigquery',
             python_callable=dry_run_bq_load,
-            provide_context=True,
         )
     else:
         t_upload = PythonOperator(
             task_id='upload_to_gcs',
             python_callable=upload_files_to_gcs,
-            provide_context=True,
         )
-        
+
         t_create_ds = BigQueryCreateEmptyDatasetOperator(
             task_id='create_dataset',
             dataset_id=BQ_DATASET,
@@ -179,10 +192,10 @@ with DAG(
             gcp_conn_id=GCP_CONN_ID,
             if_exists='ignore',
         )
-        
+
         t_load = GCSToBigQueryOperator(
             task_id='gcs_to_bigquery',
-            bucket=GCS_BUCKET,
+            bucket="{{ var.value.get('gcs_bucket_name', 'crypto-stream-lake-01') }}",
             source_objects=[f"raw_trades/{{{{ data_interval_start.strftime('%Y-%m-%d') }}}}/*.parquet"],
             destination_project_dataset_table=f"{BQ_DATASET}.{BQ_TABLE}",
             source_format='PARQUET',
