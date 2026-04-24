@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 PERSISTENCE_DB = "persistence.db"

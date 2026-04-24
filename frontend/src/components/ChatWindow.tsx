@@ -17,13 +17,15 @@ _renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
       </div>
     </div>`;
   }
-  return `<div class="code-block-wrap">
-    <button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-block-wrap').querySelector('code').innerText).then(()=>{this.textContent='✓';setTimeout(()=>{this.textContent='⎘'},1500)})">⎘</button>
-    <pre><code class="language-${lang||''}">${escaped}</code></pre>
-  </div>`;
+  return `
+    <div class="code-block-wrap theme-${document.documentElement.classList.contains('light') ? 'light' : 'dark'}">
+      <button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-block-wrap').querySelector('code').innerText).then(()=>{this.textContent='✓';setTimeout(()=>{this.textContent='⎘'},1500)})">⎘</button>
+      <pre shadow-xl><code class="language-${lang||''}">${escaped}</code></pre>
+    </div>`;
 };
 marked.use({ renderer: _renderer });
 import { HoverGlowCard } from './HoverGlowCard';
+import { useLanguage } from '../contexts/LanguageContext';
 import { useMode } from '../contexts/ModeContext';
 import TradingViewWidget from './TradingViewWidget';
 
@@ -91,8 +93,11 @@ interface ChatWindowProps {
 }
 
 export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearInitialMessage }) => {
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeId, setActiveId] = useState<string>('default');
+  const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions());
+  const [activeId, setActiveId] = useState<string>(() => {
+    const local = loadSessions();
+    return local[0]?.id || 'default';
+  });
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -102,13 +107,22 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
   const [showDeleteModal, setShowDeleteModal] = useState<string | null>(null);
   const [dontShowAgain, setDontShowAgain] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
 
   const activeSession = sessions.find(s => s.id === activeId) || sessions[0];
   const messages = activeSession?.messages || [];
 
+  const { lang, t } = useLanguage();
+  const { theme, isRetail } = useMode();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { isRetail } = useMode();
   const hasTriggeredInitial = useRef(false);
+
+  // Always-current refs for use inside effects without stale closures
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const prevLangRef = useRef(lang);
 
   useEffect(() => {
     // Initial Pulse Load
@@ -145,7 +159,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
 
     const initHistory = async () => {
       try {
-        const authKey = localStorage.getItem('APP_API_KEY') || 'demo';
+        const authKey = localStorage.getItem('crypto_terminal_key') || 'demo';
         const res = await fetch('/api/history', {
           headers: { 'X-API-Key': authKey }
         });
@@ -160,15 +174,21 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
             const fullSessions = serverSessions.map((s: any, i: number) => ({
               ...s,
               messages: i === 0 ? msgs : [],
-              updatedAt: new Date(s.updatedAt).getTime()
+              updatedAt: Number(s.updatedAt)
             }));
             setSessions(fullSessions);
             setActiveId(fullSessions[0].id);
           } else {
-            const defId = Date.now().toString();
-            setSessions([{ id: defId, title: 'Strategy Briefing', messages: [], updatedAt: Date.now() }]);
-            setActiveId(defId);
+            // No sessions on server, try localStorage fallback
+            const local = loadSessions();
+            setSessions(local);
+            setActiveId(local[0].id);
           }
+        } else {
+          // Server error, try localStorage fallback
+          const local = loadSessions();
+          setSessions(local);
+          setActiveId(local[0].id);
         }
       } catch (e) {
         console.error("History sync error:", e);
@@ -181,16 +201,60 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
   }, []);
 
   useEffect(() => {
-    if (initialMessage && !hasTriggeredInitial.current && isInitialized) {
-      hasTriggeredInitial.current = true;
+    if (initialMessage && isInitialized) {
+      // Use the ref to get the absolute latest activeId even if state hasn't painted yet
+      const targetId = activeIdRef.current;
+      console.log(`🚀 Triggering initial message for session ${targetId}: ${initialMessage}`);
       sendMessage(initialMessage);
       onClearInitialMessage?.();
     }
   }, [initialMessage, isInitialized]);
 
+  // Translate current session history when language changes
+  useEffect(() => {
+    if (prevLangRef.current === lang) return;
+    prevLangRef.current = lang;
+
+    const currentSessions = sessionsRef.current;
+    const currentActiveId = activeIdRef.current;
+    const sess = currentSessions.find(s => s.id === currentActiveId);
+    const msgs = sess?.messages.filter(m => !m.streaming && m.content) ?? [];
+    if (msgs.length === 0) return;
+
+    const authKey = localStorage.getItem('crypto_terminal_key') || 'demo';
+    setIsTranslating(true);
+
+    fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': authKey },
+      body: JSON.stringify({
+        messages: msgs.map(m => ({ role: m.role, content: m.content })),
+        language: lang,
+      }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        const map: Record<number, string> = {};
+        for (const t of data.translations ?? []) map[t.idx] = t.content;
+
+        setSessions(prev => prev.map(s => {
+          if (s.id !== currentActiveId) return s;
+          let msgIdx = -1;
+          const newMsgs = s.messages.map(m => {
+            if (!m.streaming && m.content) msgIdx++;
+            const translated = map[msgIdx];
+            return translated ? { ...m, content: translated } : m;
+          });
+          return { ...s, messages: newMsgs };
+        }));
+      })
+      .catch(() => {/* silently keep original */})
+      .finally(() => setIsTranslating(false));
+  }, [lang]);
+
   const syncSessionToServer = async (sess: ChatSession) => {
     try {
-      const authKey = localStorage.getItem('APP_API_KEY') || 'demo';
+      const authKey = localStorage.getItem('crypto_terminal_key') || 'demo';
       await fetch('/api/history', {
         method: 'POST',
         headers: { 
@@ -206,13 +270,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-  }, [sessions]);
+    // ONLY save to localStorage if we have successfully initialized from server/fallback
+    // This prevents overwriting server data with default empty state on mount.
+    if (isInitialized && sessions.length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    }
+  }, [sessions, isInitialized]);
 
   const updateActiveSession = (updater: (msgs: Message[]) => Message[]) => {
     setSessions(prev => {
       const newSess = prev.map(s => {
-        if (s.id !== activeId) return s;
+        if (s.id !== activeIdRef.current) return s;
         const newMsgs = updater(s.messages);
         let newTitle = s.title;
         if (s.title === 'Strategy Briefing' && newMsgs.length > 0) {
@@ -222,8 +290,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
           }
         }
         const updated = { ...s, messages: newMsgs, title: newTitle, updatedAt: Date.now() };
-        // Background sync to server
-        syncSessionToServer(updated);
         return updated;
       });
       return newSess;
@@ -249,7 +315,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
     if (target && target.messages.length === 0) {
       // Lazy load messages
       try {
-        const authKey = localStorage.getItem('APP_API_KEY') || 'demo';
+        const authKey = localStorage.getItem('crypto_terminal_key') || 'demo';
         const res = await fetch(`/api/history/${id}`, {
           headers: { 'X-API-Key': authKey }
         });
@@ -272,7 +338,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
 
   const confirmDelete = async (id: string) => {
     try {
-      const authKey = localStorage.getItem('APP_API_KEY') || 'demo';
+      const authKey = localStorage.getItem('crypto_terminal_key') || 'demo';
       await fetch(`/api/history/${id}`, { 
         method: 'DELETE',
         headers: { 'X-API-Key': authKey }
@@ -342,7 +408,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
           'Content-Type': 'application/json',
           'X-API-Key': authKey
         },
-        body: JSON.stringify({ message: userMsg, session_id: activeId, history: historyToSend }),
+        body: JSON.stringify({ 
+          message: userMsg, 
+          session_id: activeIdRef.current, 
+          history: historyToSend,
+          language: lang 
+        }),
         signal: abortController.signal,
       });
 
@@ -425,6 +496,20 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
         }
       }
 
+      // Flush any remaining buffered content after stream ends
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer);
+          if (data.type === 'chunk' && data.content) {
+            fullText += data.content;
+          } else if (data.type === 'metadata') {
+            if (data.tv_symbol) tvSymbolData = data.tv_symbol;
+            if (data.tv_symbols) tvSymbolsData = data.tv_symbols;
+            if (data.intent) intentData = data.intent;
+          }
+        } catch { /* incomplete line, ignore */ }
+      }
+
       // Finalize message state
       updateActiveSession(prev => prev.map((m, idx) =>
         idx === prev.length - 1 && m.streaming
@@ -446,179 +531,268 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       updateActiveSession(prev => prev.map((m, idx) =>
         idx === prev.length - 1 && m.streaming
-          ? { role: 'ai', content: isAbort ? '⏱️ หมดเวลา — AI ใช้เวลานานเกินไป กรุณาลองใหม่' : `⚠️ SYSTEM ALERT: ${err instanceof Error ? err.message : 'Uplink Failed'}`, streaming: false }
+          ? { role: 'ai', content: isAbort ? t('chat.timeout') : `⚠️ SYSTEM ALERT: ${err instanceof Error ? err.message : 'Uplink Failed'}`, streaming: false }
           : m
       ));
     } finally {
       clearTimeout(streamTimeout);
       setLoading(false);
+      // Sync to server after message is finalized
+      const currentSess = sessionsRef.current.find(s => s.id === activeIdRef.current);
+      if (currentSess) syncSessionToServer(currentSess);
     }
   };
 
-  const quickActions = isRetail 
+  const quickActions = isRetail
     ? [
-        { label: '📈 Analyze Gold', q: 'ตอนนี้ทองคำแนวโน้มเป็นยังไง?' },
-        { label: '🎯 Find Entry', q: 'มีจุดเข้า buy ทองมั้ย?' },
-        { label: '🛑 TP/SL Setup', q: 'เข้า buy ทอง ควรตั้ง TP/SL เท่าไหร่?' },
-        { label: '📰 Market News', q: 'วันนี้มีข่าวอะไรมีผลกับทอง?' },
-        { label: '💰 Risk Calc', q: 'ถ้ามีทุน 1000 ควรเปิด lot เท่าไหร่?' },
+        { label: t('chat.qa_retail_gold_label'),  q: t('chat.qa_retail_gold_q')  },
+        { label: t('chat.qa_retail_entry_label'), q: t('chat.qa_retail_entry_q') },
+        { label: t('chat.qa_retail_tpsl_label'),  q: t('chat.qa_retail_tpsl_q')  },
+        { label: t('chat.qa_retail_news_label'),  q: t('chat.qa_retail_news_q')  },
+        { label: t('chat.qa_retail_risk_label'),  q: t('chat.qa_retail_risk_q')  },
       ]
     : [
-        { label: 'Analyze Gold', q: 'Analyze current Gold trend and bias' },
-        { label: 'Find Entry', q: 'Find potential entry zones for NASDAQ' },
-        { label: 'Today Signal', q: 'Are there any trade signals for BTC today?' },
-        { label: 'Market News', q: 'High impact news events for this session' },
-        { label: 'Risk Calculator', q: 'Calculate lot size for 2% risk on $10k' },
+        { label: t('chat.qa_inst_gold_label'),    q: t('chat.qa_inst_gold_q')    },
+        { label: t('chat.qa_inst_entry_label'),   q: t('chat.qa_inst_entry_q')   },
+        { label: t('chat.qa_inst_signal_label'),  q: t('chat.qa_inst_signal_q')  },
+        { label: t('chat.qa_inst_news_label'),    q: t('chat.qa_inst_news_q')    },
+        { label: t('chat.qa_inst_risk_label'),    q: t('chat.qa_inst_risk_q')    },
       ];
 
   return (
-    <div className="flex h-full w-full bg-[#030712] overflow-hidden relative">
-      {/* Strategic Session Sidebar (Gemini-style) */}
-      <AnimatePresence>
-        {sidebarOpen && (
-          <motion.div 
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 280, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            className="h-full border-r border-white/5 bg-slate-950/40 backdrop-blur-3xl flex flex-col shrink-0"
-          >
-            <div className="p-4 border-b border-white/5 flex items-center justify-between">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Strategy Vault</span>
-              <button 
-                onClick={createNewChat}
-                className="p-2 bg-blue-600/10 border border-blue-500/20 rounded-xl hover:bg-blue-600/20 transition-all group"
-                title="New Strategic Session"
-              >
-                <Plus className="w-3.5 h-3.5 text-blue-400 group-hover:scale-110 transition-transform" />
-              </button>
-            </div>
+    <div className={`flex flex-1 w-full h-full overflow-hidden transition-all duration-700 ${
+      theme === 'dark' ? 'bg-[#030712]' : 'bg-slate-50'
+    }`}>
+      {/* Institutional Background Elements for Light Mode */}
+      {lang === 'th' && !isRetail && theme === 'light' && (
+        <div className="absolute inset-0 pointer-events-none opacity-40">
+          <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-blue-100/30 blur-[120px] rounded-full" />
+          <div className="absolute bottom-0 right-1/4 w-[400px] h-[400px] bg-indigo-100/20 blur-[100px] rounded-full" />
+        </div>
+      )}
 
-            <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
-              {sessions.map(s => (
-                <div key={s.id} className="relative group">
+      {/* Strategic Session Sidebar — flex sibling with width animation (avoids CSS transform context issue) */}
+      <motion.div
+        animate={{ width: sidebarOpen ? 320 : 0 }}
+        transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+        className={`shrink-0 overflow-hidden border-r flex flex-col z-30 ${
+          theme === 'dark' 
+            ? 'bg-[#030712] border-white/5 shadow-[4px_0_30px_rgba(0,0,0,0.5)]' 
+            : 'bg-white border-slate-200 shadow-[4px_0_20px_rgba(0,0,0,0.06)]'
+        }`}
+        style={{ minWidth: 0 }}
+      >
+        {/* Fixed-width inner so content doesn't squish during animation */}
+        <div className="w-[320px] h-full flex flex-col">
+          <div className={`p-8 border-b flex items-center justify-between ${
+            theme === 'dark' ? 'border-white/5' : 'border-slate-200'
+          }`}>
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <span className={`text-[11px] font-black uppercase tracking-[0.3em] ${
+                theme === 'dark' ? 'text-slate-500' : 'text-slate-900'
+              }`}>Strategy Vault</span>
+            </div>
+            <button 
+              onClick={createNewChat}
+              className={`p-2 rounded-xl border transition-all ${
+                theme === 'dark' ? 'bg-blue-600/10 border-blue-500/20 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-600'
+              }`}
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-8 space-y-6 custom-scrollbar">
+            <div className="px-4">
+              <p className={`text-[10px] font-bold uppercase tracking-[0.2em] opacity-30 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>Intelligence History</p>
+            </div>
+            {sessions.map(s => (
+              <div key={s.id} className="px-2 group/session">
+                <div className={`flex items-center gap-2 rounded-2xl transition-all border ${
+                  activeId === s.id 
+                  ? (theme === 'dark' ? 'bg-blue-600/10 border-blue-500/40' : 'bg-blue-50 border-blue-200 shadow-sm') 
+                  : (theme === 'dark' ? 'hover:bg-white/[0.02] border-transparent' : 'hover:bg-slate-50 border-transparent')
+                }`}>
                   <button
                     onClick={() => switchSession(s.id)}
-                    className={`w-full text-left p-3 rounded-2xl transition-all relative overflow-hidden flex items-center justify-between ${
+                    className={`flex-1 text-left p-3 rounded-2xl transition-all ${
                       activeId === s.id 
-                      ? 'bg-blue-600/10 border border-blue-500/30' 
-                      : 'hover:bg-white/5 border border-transparent'
+                      ? (theme === 'dark' ? 'text-white' : 'text-blue-700') 
+                      : (theme === 'dark' ? 'text-slate-500' : 'text-slate-500')
                     }`}
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${activeId === s.id ? 'bg-blue-400 animate-pulse' : 'bg-slate-600'}`} />
+                    <div className="flex items-center gap-3">
+                      <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${activeId === s.id ? 'bg-blue-500' : 'bg-slate-400/40'}`} />
                       <div className="flex flex-col min-w-0">
-                        <span className={`text-[11px] font-bold truncate tracking-tight uppercase ${activeId === s.id ? 'text-white' : 'text-slate-400 group-hover:text-slate-300'}`}>
-                          {s.title}
-                        </span>
-                        <span className="text-[8px] font-mono text-slate-600 uppercase">
-                          {new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
+                        <span className="text-[12px] font-bold truncate tracking-tight">{s.title}</span>
+                        <span className="text-[9px] font-mono opacity-50 mt-0.5">{new Date(s.updatedAt).toLocaleTimeString()}</span>
                       </div>
                     </div>
                   </button>
-                  
                   <button
                     onClick={(e) => handleDeleteClick(e, s.id)}
-                    className={`absolute right-2 top-1/2 -translate-y-1/2 p-2 hover:bg-red-500/20 rounded-lg text-slate-600 hover:text-red-400 transition-all opacity-0 group-hover:opacity-100 ${activeId === s.id ? 'bg-blue-900/40' : ''}`}
-                    title="Delete Session"
+                    className={`shrink-0 p-2 mr-1 rounded-xl opacity-0 group-hover/session:opacity-100 transition-all hover:bg-red-500/10 ${
+                      theme === 'dark' ? 'text-slate-600 hover:text-red-400' : 'text-slate-400 hover:text-red-500'
+                    }`}
+                    title="Delete session"
                   >
-                    <Trash2 className="w-3 h-3" />
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
-
-                  {activeId === s.id && (
-                    <motion.div 
-                      layoutId="active-sess"
-                      className="absolute inset-0 bg-blue-500/5 -z-10"
-                    />
-                  )}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
+          </div>
 
-            <div className="p-4 border-t border-white/5 bg-black/20">
-              <div className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/5 border border-white/5">
-                <Brain className="w-3.5 h-3.5 text-blue-400" />
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Neural Link Active</span>
+          <div className={`p-5 border-t mt-auto shrink-0 ${
+            theme === 'dark' ? 'bg-black/40 border-white/5' : 'bg-slate-50 border-slate-200'
+          }`}>
+            <div className={`flex items-center gap-4 px-5 py-4 rounded-[1.5rem] border ${
+              theme === 'dark' ? 'bg-slate-900 border-white/5' : 'bg-white border-slate-200 shadow-sm'
+            }`}>
+              <Brain className="w-4 h-4 text-blue-500" />
+              <div className="flex flex-col">
+                <span className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>Neural Link Active</span>
+                <span className="text-[8px] text-emerald-500 font-bold uppercase tracking-widest mt-1">● Encrypted Node</span>
               </div>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+        </div>
+      </motion.div>
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0 relative">
-        {/* Toggle Sidebar Button */}
+        {/* Translating overlay */}
+        <AnimatePresence>
+          {isTranslating && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className={`absolute inset-0 z-[100] backdrop-blur-md flex items-center justify-center ${
+                theme === 'dark' ? 'bg-slate-950/80' : 'bg-white/80'
+              }`}
+            >
+              <div className={`flex flex-col items-center gap-4 px-10 py-8 border rounded-[2.5rem] shadow-2xl scale-110 ${
+                theme === 'dark' ? 'bg-slate-900 border-blue-500/30' : 'bg-white border-blue-500/20'
+              }`}>
+                <div className="relative">
+                  <div className="w-12 h-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Sparkles className="w-5 h-5 text-blue-400 animate-pulse" />
+                  </div>
+                </div>
+                <span className="text-sm font-black text-blue-400 uppercase tracking-[0.3em]">
+                  {lang === 'th' ? 'กำลังปรับแต่งข้อมูล...' : 'Synthesizing...'}
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Toggle Sidebar Button — absolute within the relative main chat area */}
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="absolute left-4 top-4 z-[70] p-2.5 bg-slate-900/90 backdrop-blur-md border border-white/20 rounded-xl hover:border-blue-500/50 transition-all group shadow-2xl"
+          className={`absolute left-5 top-5 z-50 p-3 backdrop-blur-xl border rounded-2xl hover:scale-105 transition-all duration-300 group shadow-xl ${
+            theme === 'dark' 
+              ? 'bg-slate-900/90 border-white/20 text-slate-400' 
+              : 'bg-white/90 border-slate-200 text-slate-500'
+          }`}
         >
-          <Terminal className={`w-4 h-4 text-slate-400 transition-colors ${sidebarOpen ? 'text-blue-400' : 'group-hover:text-blue-400'}`} />
+          <Terminal className={`w-4 h-4 transition-colors ${sidebarOpen ? 'text-blue-500' : 'group-hover:text-blue-500'}`} />
         </button>
 
-        {/* Dynamic Context Marquee (Enhanced) */}
+        {/* Dynamic Context Marquee (Enhanced Institutional) */}
         <AnimatePresence>
           {pulse && (
           <motion.div 
             initial={{ y: -50, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: -50, opacity: 0 }}
-            className="w-full bg-[#030712]/95 backdrop-blur-3xl border-b border-white/5 h-16 flex items-center justify-between z-50 sticky top-0"
+            className={`w-full backdrop-blur-3xl border-b h-16 flex items-center justify-between z-50 sticky top-0 transition-all duration-500 ${
+              theme === 'dark' ? 'bg-[#030712]/95 border-white/5' : 'bg-white/90 border-slate-200'
+            }`}
           >
-            <div className="flex items-center gap-4 flex-1 h-full overflow-hidden">
-              <div className="flex items-center gap-3 shrink-0 bg-slate-950/50 px-4 py-1.5 rounded-xl border border-white/5 shadow-2xl z-20 ml-20">
-                <div className={`w-2 h-2 rounded-full animate-pulse bg-${pulse.climate.color}-500 shadow-[0_0_8px_rgba(var(--${pulse.climate.color}-500),0.6)]`} />
-                <span className={`text-[10px] font-black uppercase tracking-[0.2em] text-${pulse.climate.color}-400 whitespace-nowrap`}>
-                  Threat Level: {pulse.climate.threat_level}
+            <div className="flex items-center gap-6 flex-1 h-full overflow-hidden">
+              <div className={`flex items-center gap-3 shrink-0 px-5 py-2 rounded-2xl border shadow-xl z-20 ml-24 ${
+                theme === 'dark' ? 'bg-slate-950/60 border-white/10' : 'bg-slate-100/80 border-slate-200/80'
+              }`}>
+                <div className={`w-2 h-2 rounded-full animate-pulse bg-${pulse.climate.color}-500 shadow-[0_0_12px_rgba(var(--${pulse.climate.color}-500),0.8)]`} />
+                <span className={`text-[10px] font-black uppercase tracking-[0.25em] text-${pulse.climate.color}-400 whitespace-nowrap`}>
+                  Threat: {pulse.climate.threat_level}
                 </span>
               </div>
 
-              <div className="h-4 w-px bg-white/10 shrink-0 z-20" />
+              <div className={`h-5 w-px shrink-0 z-20 ${
+                theme === 'dark' ? 'bg-white/10' : 'bg-slate-200'
+              }`} />
 
-              <div className="flex-1 overflow-hidden relative group/marquee z-10 h-full flex items-center [mask-image:linear-gradient(to_right,transparent_0,black_40px,black_calc(100%-40px),transparent_100%)]">
-                <div className="flex items-center gap-16 animate-marquee-slow whitespace-nowrap min-w-full">
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Sentiment:</span>
+              <div className="flex-1 overflow-hidden relative z-10 h-full flex items-center [mask-image:linear-gradient(to_right,transparent_0,black_60px,black_calc(100%-60px),transparent_100%)]">
+                <div className="flex items-center gap-20 animate-marquee-slow whitespace-nowrap min-w-full">
+                  <div className="flex items-center gap-4 shrink-0">
                     <span className={`text-[10px] font-black uppercase tracking-widest ${
-                      pulse.sentiment.fear_greed > 60 ? 'text-emerald-400' :
-                      pulse.sentiment.fear_greed < 40 ? 'text-rose-400' : 'text-slate-400'
+                      theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                    }`}>Sentiment Profile:</span>
+                    <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg ${
+                      pulse.sentiment.fear_greed > 60 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                      pulse.sentiment.fear_greed < 40 ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 
+                      'bg-slate-500/10 text-slate-400 border border-slate-500/20'
                     }`}>
-                      {pulse.sentiment.label} ({pulse.sentiment.fear_greed})
+                      {pulse.sentiment.label} <span className="opacity-60 ml-1">({pulse.sentiment.fear_greed})</span>
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Regime:</span>
-                    <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">
+                  <div className="flex items-center gap-4 shrink-0">
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${
+                      theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                    }`}>Active Regime:</span>
+                    <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.15em] bg-blue-500/5 border border-blue-500/10 px-3 py-1 rounded-lg">
                       {pulse.climate.regime}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Macro Climate:</span>
-                    <span className="text-[10px] font-medium text-slate-300 italic">
+                  <div className="flex items-center gap-4 shrink-0">
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${
+                      theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                    }`}>Macro Intel:</span>
+                    <span className={`text-[10px] font-bold italic tracking-tight ${
+                      theme === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                    }`}>
                       {pulse.climate.summary}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Sector Lead:</span>
-                    <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">
-                      {pulse.leadership.top_sector} ({pulse.leadership.top_sector_chg > 0 ? '+' : ''}{pulse.leadership.top_sector_chg}%)
+                  <div className="flex items-center gap-4 shrink-0">
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${
+                      theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                    }`}>Capital Rotation:</span>
+                    <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest bg-indigo-500/5 border border-indigo-500/10 px-3 py-1 rounded-lg">
+                      {pulse.leadership.top_sector} <span className="opacity-60 ml-1">({pulse.leadership.top_sector_chg > 0 ? '+' : ''}{pulse.leadership.top_sector_chg}%)</span>
                     </span>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="hidden lg:flex items-center gap-5 shrink-0">
+            <div className="hidden lg:flex items-center gap-6 shrink-0 px-8">
               <div className="flex flex-col items-end">
-                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Global Risk Score</span>
-                <span className="text-xs font-mono font-bold text-white tracking-widest">{pulse.climate.score}%</span>
+                <span className={`text-[9px] font-black uppercase tracking-[0.2em] ${
+                  theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                }`}>Risk Score</span>
+                <span className={`text-[13px] font-black font-mono tracking-widest ${
+                  theme === 'dark' ? 'text-white' : 'text-slate-900'
+                }`}>{pulse.climate.score}%</span>
               </div>
-              <div className="w-px h-6 bg-white/10" />
-              <div className="flex items-center gap-2 px-3 py-1 bg-black/40 border border-white/5 rounded-lg">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-                <span className="text-[9px] font-black text-slate-300 uppercase tracking-tighter">Macro Shield Active</span>
+              <div className={`w-px h-8 ${
+                theme === 'dark' ? 'bg-white/10' : 'bg-slate-200'
+              }`} />
+              <div className={`flex items-center gap-3 px-4 py-2 border rounded-xl shadow-lg transition-all hover:shadow-blue-500/5 group/shield ${
+                theme === 'dark' ? 'bg-black/40 border-white/5' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <ShieldCheck className="w-4 h-4 text-emerald-500 group-hover/shield:scale-110 transition-transform" />
+                <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${
+                  theme === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                }`}>Macro Shield Enabled</span>
               </div>
             </div>
           </motion.div>
@@ -626,43 +800,61 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
       </AnimatePresence>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 space-y-12 scroll-smooth custom-scrollbar">
+      <div ref={scrollRef} className={`flex-1 overflow-y-auto px-6 py-8 space-y-8 scroll-smooth custom-scrollbar relative z-10 transition-all duration-700 ${
+        theme === 'dark' ? 'text-white' : 'text-slate-900'
+      }`}>
         {messages.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center space-y-8">
+          <div className="h-full flex flex-col items-center justify-center text-center space-y-8 px-4">
             <motion.div 
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               className="relative"
             >
-              <div className="w-24 h-24 bg-blue-600/10 rounded-[2.5rem] flex items-center justify-center border border-blue-500/20 shadow-2xl relative z-10">
-                <Database className="w-10 h-10 text-blue-400 glow-bloom" />
+              <div className={`w-20 h-20 rounded-[1.75rem] flex items-center justify-center border shadow-xl relative z-10 hover:scale-105 transition-transform duration-500 ${
+                theme === 'dark' ? 'bg-blue-600/10 border-blue-500/20' : 'bg-blue-500/5 border-blue-200/80'
+              }`}>
+                <Database className={`w-9 h-9 glow-bloom ${
+                  theme === 'dark' ? 'text-blue-400' : 'text-blue-600'
+                }`} />
               </div>
-              <div className="absolute inset-0 bg-blue-500/20 blur-[80px] rounded-full scale-150 -z-10 animate-pulse" />
+              <div className={`absolute inset-0 blur-3xl rounded-full scale-150 -z-10 animate-pulse ${
+                theme === 'dark' ? 'bg-blue-500/20' : 'bg-blue-400/8'
+              }`} />
             </motion.div>
-            <div className="space-y-3">
-              <h2 className="text-3xl font-black text-white tracking-tighter uppercase italic">
-                {isRetail ? 'ถามอะไรก็ได้เกี่ยวกับ Crypto ✨' : 'Query Intelligence Lakehouse'}
+            <div className="space-y-2">
+              <h2 className={`text-2xl font-black tracking-tighter uppercase italic leading-none ${
+                theme === 'dark' ? 'text-white' : 'text-slate-900'
+              }`}>
+                {t('chat.empty_title')}
               </h2>
-              <p className="text-sm text-slate-500 max-w-sm font-medium leading-relaxed">
-                {isRetail
-                  ? 'พิมพ์คำถามเป็นภาษาไทยหรืออังกฤษก็ได้ AI ของเราวิเคราะห์ข้อมูลแบบ real-time'
-                  : 'วิเคราะห์ตลาดด้วย AI — Whale Flow, Signals, และข้อมูล Real-time'}
+              <p className={`text-sm max-w-sm font-medium leading-relaxed ${
+                theme === 'dark' ? 'text-slate-500' : 'text-slate-500'
+              }`}>
+                {t('chat.empty_subtitle')}
               </p>
             </div>
-            <p className="text-[10px] text-amber-500/60 font-bold uppercase tracking-widest">
-              ⚠ AI ให้ข้อมูลเพื่อการศึกษาเท่านั้น — ไม่ใช่คำแนะนำทางการเงิน
-            </p>
-            <div className="flex flex-wrap items-center justify-center gap-2.5 max-w-md">
+            
+            <div className="flex flex-wrap items-center justify-center gap-2 max-w-xl px-4">
               {quickActions.map(({ label, q }) => (
                 <button
                   key={q}
                   onClick={() => setInput(q)}
-                  className="bg-slate-900/50 border border-white/5 hover:border-blue-500/30 hover:bg-blue-600/10 px-5 py-3 rounded-2xl text-xs font-black text-slate-400 hover:text-blue-400 transition-all uppercase tracking-widest shadow-lg shadow-black/20 active:scale-95"
+                  className={`px-4 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-wider transition-all active:scale-95 border ${
+                    theme === 'dark'
+                      ? 'bg-slate-900/60 border-white/5 text-slate-400 hover:text-blue-400 hover:border-blue-500/30 hover:bg-blue-600/10'
+                      : 'bg-white border-slate-200 text-slate-600 hover:text-blue-600 hover:border-blue-500/40 hover:bg-blue-50 shadow-sm'
+                  }`}
                 >
                   {label}
                 </button>
               ))}
             </div>
+
+            <p className={`text-[10px] font-bold uppercase tracking-widest max-w-xs leading-relaxed opacity-50 ${
+              theme === 'dark' ? 'text-amber-500' : 'text-amber-600'
+            }`}>
+              {t('chat.disclaimer')}
+            </p>
           </div>
         )}
 
@@ -670,71 +862,78 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
           {messages.map((m, i) => (
             <motion.div
               key={i}
-              initial={{ opacity: 0, x: m.role === 'user' ? 20 : -20, y: 10 }}
+              initial={{ opacity: 0, x: m.role === 'user' ? 30 : -30, y: 20 }}
               animate={{ opacity: 1, x: 0, y: 0 }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className={`flex gap-6 ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
+              transition={{ type: 'spring', damping: 28, stiffness: 180 }}
+              className={`flex gap-4 ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
             >
-              <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border transition-all ${
+              <div className={`w-9 h-9 rounded-2xl flex items-center justify-center shrink-0 border transition-all duration-300 ${
                 m.role === 'user'
-                  ? 'bg-blue-600 border-blue-400/30 shadow-[0_0_20px_rgba(37,99,235,0.2)]'
-                  : 'bg-slate-900 border-white/5 group-hover:border-blue-500/30'
+                  ? 'bg-blue-600 border-blue-400/30 shadow-lg shadow-blue-900/20'
+                  : (theme === 'dark' ? 'bg-slate-900 border-white/10 shadow-md' : 'bg-white border-slate-200 shadow-sm')
               }`}>
-                {m.role === 'user' ? <User className="w-5 h-5 text-white" /> : <Zap className="w-5 h-5 text-blue-400" />}
+                {m.role === 'user' ? <User className="w-4 h-4 text-white" /> : <Zap className={`w-4 h-4 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />}
               </div>
-               <div className={`max-w-full lg:max-w-[95%] space-y-4 ${m.role === 'user' ? 'text-right' : ''}`}>
+               <div className={`max-w-full lg:max-w-[88%] space-y-3 ${m.role === 'user' ? 'text-right' : ''}`}>
                  {m.role === 'ai' ? (
-                   <div className="flex flex-col gap-3 group/msg">
-                      {/* Floating Minimalist Metadata Header */}
-                      <div className="flex items-center justify-between px-4 opacity-40 group-hover/msg:opacity-100 transition-all duration-500">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2 bg-blue-500/10 border border-blue-400/20 rounded-xl">
-                            <Brain className={`w-3.5 h-3.5 text-blue-400 ${m.streaming ? 'animate-pulse' : ''}`} />
-                          </div>
-                          <div className="flex flex-col">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-black text-white/90 uppercase tracking-[0.2em] font-sans">Contextual Inference</span>
-                              <div className="w-1 h-1 rounded-full bg-blue-400/50" />
-                              <span className="text-[11px] font-bold text-blue-400/80 tracking-tighter uppercase whitespace-nowrap">Bank-Grade Audit</span>
-                            </div>
-                          </div>
+                   <div className="flex flex-col gap-4 group/msg">
+                      {/* Metadata — compact row */}
+                      <div className="flex items-center justify-between px-1 mb-1 opacity-50 group-hover/msg:opacity-100 transition-all duration-500">
+                        <div className="flex items-center gap-2">
+                          <Brain className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'} ${m.streaming ? 'animate-pulse' : ''}`} />
+                          <span className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>{t('chat.contextual_inference')}</span>
+                          <span className="opacity-30">·</span>
+                          <span className={`text-[10px] font-bold uppercase tracking-wider ${theme === 'dark' ? 'text-blue-400/60' : 'text-blue-600/70'}`}>{t('chat.bank_grade_audit')}</span>
                         </div>
-                        
-                        <div className={`px-2.5 py-1 rounded-lg border border-white/5 bg-white/5 backdrop-blur-md flex items-center gap-2 transition-all duration-700 ${m.streaming ? 'shadow-[0_0_20px_rgba(30,58,138,0.4)] border-blue-500/30' : ''}`}>
-                          <div className={`w-1.5 h-1.5 rounded-full ${m.streaming ? 'bg-blue-400 animate-pulse' : 'bg-slate-500/50'}`} />
-                          <span className="text-xs font-black text-slate-300 uppercase tracking-widest">{m.streaming && !m.content ? 'Initiating Neural Enclave...' : m.streaming ? 'Analyzing Enclave Pipeline...' : 'Financial Intelligence'}</span>
+                        <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg border text-[10px] font-bold ${
+                          m.streaming ? 'border-blue-500/30 text-blue-400' : (theme === 'dark' ? 'border-white/5 text-slate-600' : 'border-slate-200 text-slate-400')
+                        } ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50'}`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${m.streaming ? 'bg-blue-400 animate-pulse' : 'bg-slate-500/40'}`} />
+                          <span className="uppercase tracking-widest">{m.streaming && !m.content ? t('chat.initiating') : m.streaming ? t('chat.analyzing') : t('chat.intel')}</span>
                         </div>
                       </div>
 
-                      {/* Dynamic Status / Thought Capsule (Hidden on complete) */}
+                      {/* Dynamic Status / Thought Capsule */}
                       {m.streaming && m.status && (
                         <motion.div 
-                          initial={{ opacity: 0, y: -5 }}
+                          initial={{ opacity: 0, y: -10 }}
                           animate={{ opacity: 1, y: 0 }}
-                          className="mx-4 px-4 py-2 bg-blue-600/5 border border-blue-500/10 rounded-xl flex items-center gap-3"
+                          className={`mx-6 px-6 py-3 border rounded-2xl flex items-center gap-4 shadow-sm backdrop-blur-md ${
+                            theme === 'dark' ? 'bg-blue-600/5 border-blue-500/10' : 'bg-blue-500/5 border-blue-200/60'
+                          }`}
                         >
-                          <Activity className="w-3 h-3 text-blue-400 animate-pulse" />
-                          <span className="text-[10px] font-bold text-blue-400/80 uppercase tracking-widest leading-relaxed">
+                          <Activity className={`w-4 h-4 animate-pulse ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
+                          <span className={`text-[11px] font-black uppercase tracking-[0.15em] leading-relaxed ${
+                            theme === 'dark' ? 'text-blue-400/80' : 'text-blue-600'
+                          }`}>
                             {m.status}
                           </span>
                         </motion.div>
                       )}
 
-                      {/* Tool call reasoning trace (Phase 2 Evolution) */}
+                      {/* Tool call reasoning trace */}
                       {m.streaming && m.toolCalls && m.toolCalls.length > 0 && (
-                        <div className="flex flex-col gap-1.5 px-4 mb-3 border-l-2 border-blue-500/30 ml-4 py-1">
+                        <div className={`flex flex-col gap-2 px-6 mb-4 border-l-[3px] ml-8 py-1 ${
+                          theme === 'dark' ? 'border-blue-500/30' : 'border-blue-300/60'
+                        }`}>
                           {m.toolCalls.map((t, ti) => (
                             <motion.div 
                               key={ti}
-                              initial={{ opacity: 0, x: -5 }}
+                              initial={{ opacity: 0, x: -10 }}
                               animate={{ opacity: 1, x: 0 }}
-                              className="flex items-center gap-2.5"
+                              className="flex items-center gap-3"
                             >
-                              <div className="w-4 h-4 rounded-full bg-blue-500/20 flex items-center justify-center">
-                                <Activity className="w-2.5 h-2.5 text-blue-400 animate-pulse" />
+                              <div className={`w-5 h-5 rounded-full flex items-center justify-center border ${
+                                theme === 'dark' ? 'bg-blue-500/20 border-blue-400/20' : 'bg-blue-100 border-blue-400/20'
+                              }`}>
+                                <Activity className={`w-3 h-3 animate-pulse ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
                               </div>
-                                <span className="text-[10px] font-black text-blue-400/80 uppercase tracking-widest font-mono">
-                                  {t.name.replace(/_/g, ' ')} <span className="text-slate-500">Executing...</span>
+                                <span className={`text-[11px] font-black uppercase tracking-widest font-mono ${
+                                  theme === 'dark' ? 'text-blue-400/80' : 'text-blue-600'
+                                }`}>
+                                  {t.name.replace(/_/g, ' ')} <span className={`font-bold opacity-60 ${
+                                    theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                                  }`}>· Uplink Processing...</span>
                                 </span>
                             </motion.div>
                           ))}
@@ -743,26 +942,34 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
 
                       {/* Completed tool call chips */}
                       {!m.streaming && m.toolCalls && m.toolCalls.length > 0 && (
-                        <div className="flex flex-wrap gap-2 px-1 mb-2">
+                        <div className="flex flex-wrap gap-3 px-6 mb-2">
                           {m.toolCalls.map((t, ti) => (
-                            <span key={ti} className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-[10px] font-black text-blue-400 uppercase tracking-widest">
-                              <ShieldCheck className="w-2.5 h-2.5 text-emerald-500" />
+                            <span key={ti} className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors cursor-default ${
+                              theme === 'dark' ? 'bg-blue-500/5 border-blue-500/10 text-blue-400 hover:bg-blue-500/10' : 'bg-blue-50 border-blue-200/80 text-blue-600 hover:bg-blue-100'
+                            }`}>
+                              <ShieldCheck className="w-3 h-3 text-emerald-500" />
                               {t.name.replace(/_/g, ' ')}
                             </span>
                           ))}
                         </div>
                       )}
 
-                      <HoverGlowCard className="p-7 rounded-[2.5rem] border-white/10 bg-slate-900/40 backdrop-blur-2xl relative group overflow-hidden shadow-2xl transition-all duration-500 hover:shadow-blue-500/5">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-30 transition-opacity pointer-events-none">
-                          <Sparkles className="w-12 h-12 text-blue-400" />
+                      <HoverGlowCard className={`p-6 rounded-2xl backdrop-blur-xl relative group overflow-hidden shadow-lg transition-all duration-500 border ${
+                        theme === 'dark' 
+                          ? 'bg-slate-900/60 border-white/10 hover:shadow-blue-500/10 border-t-white/10' 
+                          : 'bg-white border-slate-200 hover:shadow-slate-300/80 border-t-blue-100'
+                      }`}>
+                        <div className="absolute top-0 right-0 p-6 opacity-5 group-hover:opacity-20 transition-all duration-1000 pointer-events-none group-hover:scale-110 group-hover:rotate-12">
+                          <Sparkles className={`w-16 h-12 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
                         </div>
 
                         {m.chart && !m.tvSymbol && (
                           <motion.div
-                            initial={{ opacity: 0, scale: 0.98 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            className="mb-10 rounded-2xl overflow-hidden border border-white/5 shadow-2xl bg-black/40"
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            className={`mb-12 rounded-[2rem] overflow-hidden border shadow-2xl transition-all hover:scale-[1.01] duration-500 ${
+                              theme === 'dark' ? 'bg-black/60 border-white/10' : 'bg-slate-50 border-slate-200'
+                            }`}
                           >
                             <img
                               src={`data:image/png;base64,${m.chart}`}
@@ -773,51 +980,63 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
                         )}
 
                         <div
-                          className="prose prose-invert prose-sm max-w-none text-slate-200 leading-relaxed font-medium tracking-tight px-1"
+                          className={`prose prose-sm max-w-none leading-relaxed font-normal transition-colors duration-500 ${
+                            theme === 'dark' ? 'prose-invert text-slate-200' : 'prose-slate text-slate-700'
+                          }`}
                           dangerouslySetInnerHTML={{ __html: marked.parse(
                             (typeof m.content === 'string' ? m.content : '')
-                              .replace(/^\s*\]\s*$/gm, '')   // strip stray ] lines from override leakage
+                              .replace(/^\s*\]\s*$/gm, '')
                               .trimEnd()
                           ) as string }}
                         />
 
                         {m.streaming && !m.content && (
-                          <div className="space-y-3 py-2 animate-pulse">
-                            <div className="h-2 bg-white/5 rounded-full w-3/4" />
-                            <div className="h-2 bg-white/5 rounded-full w-1/2" />
-                            <div className="h-2 bg-white/5 rounded-full w-2/3" />
+                          <div className="space-y-4 py-4 animate-pulse">
+                            <div className={`h-2.5 rounded-full w-4/5 ${theme === 'dark' ? 'bg-white/5' : 'bg-slate-200'}`} />
+                            <div className={`h-2.5 rounded-full w-3/5 ${theme === 'dark' ? 'bg-white/5' : 'bg-slate-200'}`} />
+                            <div className={`h-2.5 rounded-full w-2/3 ${theme === 'dark' ? 'bg-white/5' : 'bg-slate-200'}`} />
                           </div>
                         )}
 
                         {m.streaming && (
                           <motion.span
-                            animate={{ opacity: [1, 0.4, 1], scale: [1, 1.1, 1] }}
-                            transition={{ duration: 1.2, repeat: Infinity }}
-                            className="inline-block w-2 h-4 bg-blue-500/80 ml-2 rounded-sm align-middle shadow-[0_0_15px_rgba(59,130,246,0.5)]"
+                            animate={{ opacity: [1, 0.4, 1], scale: [1, 1.2, 1] }}
+                            transition={{ duration: 1, repeat: Infinity }}
+                            className="inline-block w-2.5 h-5 bg-blue-500 ml-3 rounded-sm align-middle shadow-[0_0_20px_rgba(59,130,246,0.8)]"
                           />
                         )}
-                        {m.sql && !m.streaming && <div className="mt-8 pt-6 border-t border-white/5"><SQLDisclosure query={m.sql} /></div>}
+                        {m.sql && !m.streaming && <div className={`mt-6 pt-5 border-t ${
+                          theme === 'dark' ? 'border-white/5' : 'border-slate-200/60'
+                        }`}><SQLDisclosure query={m.sql} /></div>}
                       </HoverGlowCard>
 
                       {/* Chart — shown when intent is ANALYZE */}
                       {m.intent === 'ANALYZE' && !m.streaming && (
                         m.tvSymbols && m.tvSymbols.length > 1 ? (
-                          <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-4">
+                          <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-6">
                             {m.tvSymbols.map((sym, idx) => (
-                              <div key={`${sym}-${idx}`} className="relative group/chart border border-white/5 rounded-2xl overflow-hidden shadow-inner bg-black/20">
-                                <div className="absolute top-4 left-4 z-10 flex items-center gap-2 bg-slate-900/95 backdrop-blur-2xl px-4 py-2 rounded-full border border-white/10 opacity-0 group-hover/chart:opacity-100 transform -translate-y-2 group-hover/chart:translate-y-0 transition-all duration-300 pointer-events-none shadow-2xl">
-                                  <TrendingUp className="w-3.5 h-3.5 text-blue-400" />
-                                  <span className="text-[11px] font-black text-slate-100 uppercase tracking-[0.15em]">{sym.split(':').pop()}</span>
+                              <div key={`${sym}-${idx}`} className={`relative group/chart border rounded-[2.5rem] overflow-hidden shadow-2xl transition-all hover:scale-[1.01] duration-500 ${
+                                theme === 'dark' ? 'bg-black/40 border-white/10' : 'bg-slate-50 border-slate-200'
+                              }`}>
+                                <div className={`absolute top-6 left-6 z-10 flex items-center gap-3 backdrop-blur-3xl px-5 py-2.5 rounded-full border shadow-2xl opacity-0 group-hover/chart:opacity-100 transform -translate-y-4 group-hover/chart:translate-y-0 transition-all duration-500 pointer-events-none ${
+                                  theme === 'dark' ? 'bg-slate-900/95 border-white/10 text-slate-100' : 'bg-white/95 border-slate-200 text-slate-900'
+                                }`}>
+                                  <TrendingUp className={`w-4 h-4 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
+                                  <span className="text-[12px] font-black uppercase tracking-[0.2em]">{sym.split(':').pop()}</span>
                                 </div>
                                 <TradingViewWidget symbol={sym} />
                               </div>
                             ))}
                           </div>
                         ) : m.tvSymbol ? (
-                          <div className="mt-3 relative group/chart border border-white/5 rounded-2xl overflow-hidden shadow-inner bg-black/20">
-                            <div className="absolute top-4 left-4 z-10 flex items-center gap-2 bg-slate-900/95 backdrop-blur-2xl px-4 py-2 rounded-full border border-white/10 opacity-0 group-hover/chart:opacity-100 transform -translate-y-2 group-hover/chart:translate-y-0 transition-all duration-300 pointer-events-none shadow-2xl">
-                              <TrendingUp className="w-3.5 h-3.5 text-blue-400" />
-                              <span className="text-[11px] font-black text-slate-100 uppercase tracking-[0.15em]">{m.tvSymbol.split(':').pop()}</span>
+                          <div className={`mt-4 relative group/chart border rounded-[2.5rem] overflow-hidden shadow-2xl transition-all hover:scale-[1.01] duration-500 ${
+                            theme === 'dark' ? 'bg-black/40 border-white/10' : 'bg-slate-50 border-slate-200'
+                          }`}>
+                            <div className={`absolute top-6 left-6 z-10 flex items-center gap-3 backdrop-blur-3xl px-5 py-2.5 rounded-full border shadow-2xl opacity-0 group-hover/chart:opacity-100 transform -translate-y-4 group-hover/chart:translate-y-0 transition-all duration-500 pointer-events-none ${
+                              theme === 'dark' ? 'bg-slate-900/95 border-white/10 text-slate-100' : 'bg-white/95 border-slate-200 text-slate-900'
+                            }`}>
+                              <TrendingUp className={`w-4 h-4 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
+                              <span className="text-[12px] font-black uppercase tracking-[0.2em]">{m.tvSymbol.split(':').pop()}</span>
                             </div>
                             <TradingViewWidget symbol={m.tvSymbol} />
                           </div>
@@ -827,33 +1046,43 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
                       {/* ML Edge Score Badge */}
                       {m.mlScore && (
                         <motion.div
-                          initial={{ opacity: 0, y: 6 }}
+                          initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
-                          className="mt-3 mx-1 flex items-center gap-3 px-4 py-3 rounded-2xl border border-blue-500/20 bg-blue-950/30 backdrop-blur-xl"
+                          className={`mt-4 mx-2 flex items-center gap-5 px-6 py-5 rounded-[2rem] border backdrop-blur-3xl transition-all hover:shadow-blue-500/10 duration-700 shadow-xl ${
+                            theme === 'dark' ? 'bg-blue-950/40 border-blue-500/30' : 'bg-blue-50/90 border-blue-200'
+                          }`}
                         >
-                          <div className="flex flex-col items-center justify-center w-14 h-14 rounded-xl bg-blue-500/10 border border-blue-500/20 shrink-0">
-                            <span className={`text-xl font-black tabular-nums ${m.mlScore.win_pct >= 60 ? 'text-emerald-400' : m.mlScore.win_pct >= 45 ? 'text-amber-400' : 'text-red-400'}`}>
+                          <div className={`flex flex-col items-center justify-center w-16 h-16 rounded-2xl border shrink-0 shadow-inner ${
+                            theme === 'dark' ? 'bg-blue-500/10 border-blue-500/20' : 'bg-blue-500/5 border-blue-200'
+                          }`}>
+                            <span className={`text-2xl font-black tabular-nums ${m.mlScore.win_pct >= 60 ? 'text-emerald-400' : m.mlScore.win_pct >= 45 ? 'text-amber-400' : 'text-red-400'}`}>
                               {m.mlScore.win_pct}%
                             </span>
-                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest mt-0.5">WIN</span>
+                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] mt-1">WIN</span>
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">ML Edge Score</span>
-                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest border ${m.mlScore.side === 'BUY' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
-                                {m.mlScore.side}
+                            <div className="flex items-center gap-3 mb-2">
+                              <span className={`text-[11px] font-black uppercase tracking-[0.2em] ${
+                                theme === 'dark' ? 'text-blue-400' : 'text-blue-600'
+                              }`}>Neural Edge Protocol</span>
+                              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border shadow-sm ${m.mlScore.side === 'BUY' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 shadow-emerald-500/10' : 'bg-red-500/10 border-red-500/20 text-red-400 shadow-red-500/10'}`}>
+                                {m.mlScore.side} SIGNAL
                               </span>
                             </div>
                             {/* Win probability bar */}
-                            <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden mb-2">
+                            <div className={`w-full h-2 rounded-full overflow-hidden mb-3 shadow-inner ${
+                              theme === 'dark' ? 'bg-white/5' : 'bg-slate-200'
+                            }`}>
                               <motion.div
                                 initial={{ width: 0 }}
                                 animate={{ width: `${m.mlScore.win_pct}%` }}
-                                transition={{ duration: 0.8, ease: 'easeOut' }}
-                                className={`h-full rounded-full ${m.mlScore.win_pct >= 60 ? 'bg-emerald-500' : m.mlScore.win_pct >= 45 ? 'bg-amber-500' : 'bg-red-500'}`}
+                                transition={{ duration: 1.2, ease: [0.22, 1, 0.36, 1] }}
+                                className={`h-full rounded-full shadow-[0_0_10px_currentColor] ${m.mlScore.win_pct >= 60 ? 'bg-emerald-500' : m.mlScore.win_pct >= 45 ? 'bg-amber-500' : 'bg-red-500'}`}
                               />
                             </div>
-                            <span className="text-[9px] text-slate-500 font-mono">
+                            <span className={`text-[10px] font-black font-mono uppercase tracking-widest opacity-80 ${
+                              theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                            }`}>
                               {m.mlScore.n_samples.toLocaleString()} historical setups · AUC {m.mlScore.roc_auc} · {m.mlScore.symbol}
                             </span>
                           </div>
@@ -862,21 +1091,32 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
 
                       {/* Institutional Verification Footer */}
                       {!m.streaming && (
-                        <div className="flex items-center gap-3 px-6 py-2 opacity-0 group-hover/msg:opacity-100 transition-all duration-500 -mt-1">
-                          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-md shrink-0">
-                            <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                            <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest whitespace-nowrap">Risk-Audited Analysis</span>
+                        <div className="flex items-center gap-3 px-2 py-1.5 opacity-0 group-hover/msg:opacity-100 transition-all duration-500">
+                          <div className={`flex items-center gap-2 px-3 py-1 border rounded-xl shrink-0 shadow-sm ${
+                            theme === 'dark' ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-100'
+                          }`}>
+                            <ShieldCheck className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                            <span className={`text-[10px] font-black uppercase tracking-[0.2em] whitespace-nowrap ${
+                              theme === 'dark' ? 'text-emerald-400' : 'text-emerald-700'
+                            }`}>Risk-Audited Report</span>
                           </div>
-                          <span className="text-[9px] font-bold text-slate-600 uppercase tracking-[0.15em] italic whitespace-nowrap overflow-hidden text-ellipsis">
+                          <span className={`text-[10px] font-black uppercase tracking-[0.2em] italic whitespace-nowrap overflow-hidden text-ellipsis opacity-60 ${
+                            theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                          }`}>
                             Report synthesized by CS-Financial Agent Autonomous Enclave
                           </span>
                         </div>
                       )}
                     </div>
                   ) : (
-                   <div className="bg-blue-600 hover:bg-blue-500 px-6 py-4 rounded-[2rem] rounded-tr-none text-white text-sm font-black shadow-2xl shadow-blue-900/30 leading-relaxed border border-blue-400/20 transition-all cursor-default inline-block text-left">
+                   <div className={`px-5 py-3.5 rounded-2xl rounded-tr-sm text-sm font-semibold leading-relaxed border transition-all cursor-default inline-block text-left shadow-md max-w-lg ${
+                     theme === 'dark'
+                       ? 'bg-blue-600 text-white border-blue-500/40 shadow-blue-900/20'
+                       : 'bg-blue-600 border-blue-700/20 text-white shadow-blue-500/15'
+                   }`}>
                      {m.content}
                    </div>
+
                  )}
               </div>
             </motion.div>
@@ -885,36 +1125,48 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
       </div>
 
       {/* Input */}
-      <div className="p-10 bg-gradient-to-t from-slate-950 via-slate-950/95 to-transparent border-t border-white/5 relative z-30">
-        <div className="max-w-4xl mx-auto relative group">
+      <div className={`p-5 border-t relative z-30 transition-all duration-500 shrink-0 ${
+        theme === 'dark' 
+          ? 'bg-slate-950/95 border-white/5' 
+          : 'bg-white/95 border-slate-200'
+      }`}>
+        <div className="max-w-4xl mx-auto relative">
           <textarea
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
-            placeholder={isRetail ? 'ถามอะไรก็ได้... เช่น "BTC จะขึ้นไหม?"' : 'Execute institutional multi-asset query...'}
-            className="w-full bg-slate-900/40 backdrop-blur-3xl border border-white/10 rounded-[2.5rem] px-10 py-7 pr-24 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/40 transition-all resize-none shadow-[0_20px_50px_rgba(0,0,0,0.5)] font-bold custom-scrollbar leading-[2.5rem]"
+            placeholder={t('chat.placeholder')}
+            className={`w-full border rounded-2xl px-5 py-3.5 pr-14 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/40 transition-all resize-none font-medium custom-scrollbar leading-relaxed duration-300 ${
+              theme === 'dark'
+                ? 'bg-slate-900/80 border-white/10 text-white placeholder:text-slate-500 shadow-lg hover:bg-slate-900'
+                : 'bg-white border-slate-200 text-slate-900 placeholder:text-slate-400 shadow-sm hover:border-slate-300'
+            }`}
             rows={1}
           />
-          <div className="absolute right-6 top-1/2 -translate-y-1/2 flex items-center gap-4">
+          <div className="absolute right-3 top-1/2 -translate-y-1/2">
             <button
               onClick={handleSend}
               disabled={!input.trim() || loading}
-              className="w-12 h-12 bg-blue-600 hover:bg-blue-500 disabled:opacity-20 disabled:grayscale text-white rounded-full transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center group/btn"
+              className={`w-9 h-9 bg-blue-600 hover:bg-blue-500 disabled:opacity-25 disabled:grayscale text-white rounded-xl transition-all shadow-md active:scale-95 flex items-center justify-center group/btn ${
+                theme === 'dark' ? 'shadow-blue-600/20' : 'shadow-blue-600/10'
+              }`}
             >
               {loading ? (
-                <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin" />
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
-                <Send className="w-5 h-5 -translate-x-0.5 translate-y-0.5 group-active/btn:scale-90 transition-transform" />
+                <Send className="w-4 h-4 group-active/btn:scale-90 transition-transform" />
               )}
             </button>
           </div>
         </div>
-        <div className="mt-4 flex items-center justify-center gap-6 opacity-30 group-hover:opacity-50 transition-opacity">
-           <div className="h-px w-12 bg-gradient-to-r from-transparent to-slate-500" />
-           <p className="text-xs text-slate-500 font-black uppercase tracking-[0.3em] whitespace-nowrap">
-              {isRetail ? 'SECURE DATA LINK · MULTI-ASSET' : 'INSTITUTIONAL GRADE INTELLIGENCE · SECURE ENCLAVE'}
+        <div className="mt-2 flex items-center justify-center gap-4 opacity-25">
+           <div className="h-px w-8 bg-gradient-to-r from-transparent to-slate-500" />
+           <p className={`text-[10px] font-bold uppercase tracking-widest whitespace-nowrap ${
+             theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+           }`}>
+              {isRetail ? 'SECURE DATA LINK' : 'INSTITUTIONAL GRADE · SECURE ENCLAVE'}
            </p>
-           <div className="h-px w-12 bg-gradient-to-l from-transparent to-slate-500" />
+           <div className="h-px w-8 bg-gradient-to-l from-transparent to-slate-500" />
         </div>
       </div>
       </div>
@@ -932,7 +1184,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-[2.5rem] p-8 shadow-2xl overflow-hidden"
+              className={`relative w-full max-w-sm border rounded-[2.5rem] p-8 shadow-2xl overflow-hidden ${
+                theme === 'dark' ? 'bg-slate-900 border-white/10' : 'bg-white border-slate-200'
+              }`}
             >
               <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500/0 via-red-500/50 to-red-500/0" />
               
@@ -942,89 +1196,40 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
                 </div>
                 
                 <div className="space-y-2">
-                  <h3 className="text-xl font-black text-white uppercase tracking-tight">Confirm Purge?</h3>
-                  <p className="text-xs text-slate-400 leading-relaxed max-w-[240px] mx-auto font-medium">
+                  <h3 className={`text-xl font-black uppercase tracking-tight ${
+                    theme === 'dark' ? 'text-white' : 'text-slate-900'
+                  }`}>Confirm Purge?</h3>
+                  <p className={`text-xs leading-relaxed max-w-[240px] mx-auto font-medium ${
+                    theme === 'dark' ? 'text-slate-400' : 'text-slate-600'
+                  }`}>
                     This action will permanently erase this strategy session from the persistent enclave.
                   </p>
                 </div>
 
                 <button 
                   onClick={() => setDontShowAgain(!dontShowAgain)}
-                  className="flex items-center gap-3 px-4 py-2 hover:bg-white/5 rounded-xl transition-all"
+                  className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all ${
+                    theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-slate-50'
+                  }`}
                 >
                   {dontShowAgain ? (
                     <CheckCircle className="w-4 h-4 text-emerald-400" />
                   ) : (
-                    <Circle className="w-4 h-4 text-slate-600" />
+                    <Circle className={`w-4 h-4 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-300'}`} />
                   )}
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none">Don't show this again</span>
+                  <span className={`text-[10px] font-black uppercase tracking-widest leading-none ${
+                    theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                  }`}>Don't show this again</span>
                 </button>
 
                 <div className="flex w-full gap-3 pt-2">
                   <button
                     onClick={() => setShowDeleteModal(null)}
-                    className="flex-1 py-4 px-6 rounded-2xl border border-white/5 bg-white/5 text-[11px] font-black text-slate-400 uppercase tracking-widest hover:bg-white/10 transition-all hover:text-white"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => confirmDelete(showDeleteModal)}
-                    className="flex-1 py-4 px-6 rounded-2xl bg-red-600 shadow-[0_0_20px_rgba(220,38,38,0.3)] text-[11px] font-black text-white uppercase tracking-widest hover:bg-red-500 transition-all active:scale-95"
-                  >
-                    Purge
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {showDeleteModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowDeleteModal(null)}
-              className="absolute inset-0 bg-black/80 backdrop-blur-md"
-            />
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-[2.5rem] p-8 shadow-2xl overflow-hidden"
-            >
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500/0 via-red-500/50 to-red-500/0" />
-              
-              <div className="flex flex-col items-center text-center space-y-6">
-                <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center border border-red-500/20">
-                  <AlertCircle className="w-8 h-8 text-red-500" />
-                </div>
-                
-                <div className="space-y-2">
-                  <h3 className="text-xl font-black text-white uppercase tracking-tight">Confirm Purge?</h3>
-                  <p className="text-xs text-slate-400 leading-relaxed max-w-[240px] mx-auto font-medium">
-                    This action will permanently erase this strategy session from the persistent enclave.
-                  </p>
-                </div>
-
-                <button 
-                  onClick={() => setDontShowAgain(!dontShowAgain)}
-                  className="flex items-center gap-3 px-4 py-2 hover:bg-white/5 rounded-xl transition-all"
-                >
-                  {dontShowAgain ? (
-                    <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ) : (
-                    <Circle className="w-4 h-4 text-slate-600" />
-                  )}
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none">Don't show this again</span>
-                </button>
-
-                <div className="flex w-full gap-3 pt-2">
-                  <button
-                    onClick={() => setShowDeleteModal(null)}
-                    className="flex-1 py-4 px-6 rounded-2xl border border-white/5 bg-white/5 text-[11px] font-black text-slate-400 uppercase tracking-widest hover:bg-white/10 transition-all hover:text-white"
+                    className={`flex-1 py-4 px-6 rounded-2xl border text-[11px] font-black uppercase tracking-widest transition-all ${
+                      theme === 'dark' 
+                        ? 'border-white/5 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white' 
+                        : 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
                   >
                     Cancel
                   </button>
@@ -1046,18 +1251,29 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
 
 const SQLDisclosure = ({ query }: { query: string }) => {
   const [open, setOpen] = useState(false);
+  const { theme } = useMode();
   return (
-    <div className="border border-white/5 rounded-2xl overflow-hidden bg-black/40">
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-white/5 transition-colors">
-        <div className="flex items-center gap-2.5 text-xs text-slate-500 font-black uppercase tracking-widest">
+    <div className={`border rounded-2xl overflow-hidden transition-all duration-500 ${
+      theme === 'dark' ? 'border-white/5 bg-black/40' : 'border-slate-200 bg-slate-50/50'
+    }`}>
+      <button onClick={() => setOpen(!open)} className={`w-full flex items-center justify-between px-4 py-2.5 transition-colors ${
+        theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-slate-100/50'
+      }`}>
+        <div className={`flex items-center gap-2.5 text-xs font-black uppercase tracking-widest ${
+          theme === 'dark' ? 'text-slate-500' : 'text-slate-500'
+        }`}>
           <Terminal className="w-3.5 h-3.5" />
           <span>Execution Trace</span>
         </div>
         {open ? <ChevronUp className="w-3.5 h-3.5 text-slate-500" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-500" />}
       </button>
       {open && (
-        <div className="px-4 py-3 bg-black/60 border-t border-white/5">
-          <code className="text-[11px] text-blue-300 font-mono font-bold whitespace-pre-wrap break-all leading-relaxed">{query}</code>
+        <div className={`px-4 py-3 border-t ${
+          theme === 'dark' ? 'bg-black/60 border-white/5' : 'bg-white border-slate-200'
+        }`}>
+          <code className={`text-[11px] font-mono font-bold whitespace-pre-wrap break-all leading-relaxed ${
+            theme === 'dark' ? 'text-blue-300' : 'text-blue-600'
+          }`}>{query}</code>
         </div>
       )}
     </div>

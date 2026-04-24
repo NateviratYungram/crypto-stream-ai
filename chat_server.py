@@ -27,7 +27,7 @@ if sys.platform == "win32":
         pass
 
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, List
 
 # ── Rotating log (never grows unbounded, never committed to git) ────────────
 log_handler = logging.handlers.RotatingFileHandler(
@@ -61,10 +61,26 @@ from urllib.parse import quote
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from datetime import datetime, timedelta, timezone
+import uuid
+
+# ── Auth Imports ─────────────────────────────────────────────────────────────
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "ultra_secure_jwt_secret_key_crypto_stream")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 1 week
 
 from intelligence.constants import NASDAQ_100_TICKERS, SP500_TICKERS, MACRO_MAPPING, SMALL_CAP_TICKERS
 from services.notification_service import NotificationService
 from intelligence.agents.sentiment_agent import create_sentiment_agent, _fetch_rss_news
+from intelligence.sentinel.alpha_sentinel import alpha_sentinel
+import sqlite3
+
+# Initialize shared services
+notifier = NotificationService()
 # ── Technical Tools ──────────────────────────────────────────────────────────
 # Tools are imported inside the runner to ensure scope stability
 
@@ -72,7 +88,7 @@ from intelligence.agents.sentiment_agent import create_sentiment_agent, _fetch_r
 async def run_agent_tool_async(name, args):
     """
     World-class tool executor with maximum robustness.
-    Uses dynamic lookup to prevent NameError/Scope issues.
+    Uses dynamic lookup and non-blocking execution to keep server responsive.
     """
     try:
         logger.info(f"🛠️ Agent Tool Calling: {name} with args {args}")
@@ -91,12 +107,42 @@ async def run_agent_tool_async(name, args):
         if isinstance(args, dict) and "symbol" in args:
             args["symbol"] = str(args["symbol"]).upper()
             
-        # Execute (get_market_analysis and get_macro_sentiment are synchronous)
-        # We run them in a thread if they take too long, but for now direct call is fine
-        res = func(**args) if isinstance(args, dict) else func()
-        
-        logger.info(f"✅ Tool {name} execution successful")
-        return res
+        # Execute in a separate thread to avoid blocking the main event loop
+        # Institutional stability: Timeout prevents indefinite hangs
+        try:
+            import functools
+            loop = asyncio.get_event_loop()
+            
+            # Prepare arguments
+            kwargs = args if isinstance(args, dict) else {}
+            
+            # Execute synchronously in a thread pool
+            timeout_seconds = 35.0 if name == "get_trading_tactics" else 18.0
+            res = await asyncio.wait_for(
+                loop.run_in_executor(None, functools.partial(func, **kwargs)),
+                timeout=timeout_seconds
+            )
+            
+            logger.info(f"✅ Tool {name} execution successful")
+            
+            # FunctionResponse requires a dict
+            if isinstance(res, str):
+                try:
+                    res = json.loads(res)
+                except Exception:
+                    res = {"result": res}
+                
+            return res
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Tool {name} TIMEOUT after {timeout_seconds:.0f}s")
+            return {"error": f"Tool execution for {name} timed out. The market server might be busy."}
+        except Exception as e:
+            logger.error(f"❌ Tool {name} internal error: {e}")
+            return {"error": str(e)}
+            
+    except Exception as e:
+        logger.error(f"❌ Tool runner critical failure: {e}")
+        return {"error": "Internal Tool Runner Error"}
         
     except Exception as e:
         logger.error(f"❌ Error in run_agent_tool_async ({name}): {e}")
@@ -144,6 +190,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # ==========================================
 _db_pool: Optional[pg_pool.ThreadedConnectionPool] = None
 GLOBAL_MACRO_CACHE = {}  # Stores latest yfinance macro data
+GLOBAL_ACCOUNT_CACHE = {} # Stores latest MT5 account details
 
 def get_db_pool() -> pg_pool.ThreadedConnectionPool:
     global _db_pool
@@ -168,6 +215,399 @@ def get_db_conn():
         get_db_pool().putconn(conn)
 
 # ==========================================
+# Persistence DB (SQLite) for History
+# ==========================================
+PERSISTENCE_DB = os.path.join(BASE_DIR, "persistence.db")
+
+def init_persistence_db():
+    """Ensure SQLite tables exist and are synchronized with current schema."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(PERSISTENCE_DB)
+        cursor = conn.cursor()
+        
+        # 1. Create sessions table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                last_message TEXT,
+                updated_at DATETIME
+            )
+        """)
+        
+        # 2. Migration: Check if last_message column exists (for older databases)
+        cursor.execute("PRAGMA table_info(sessions)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if "last_message" not in columns:
+            logger.info("🛠️ Migrating SQLite: Adding last_message column to sessions table")
+            cursor.execute("ALTER TABLE sessions ADD COLUMN last_message TEXT")
+            
+        # 3. Create messages table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                metadata TEXT,
+                created_at DATETIME,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+        """)
+        
+        # 4. Create users table for Auth
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE,
+                email TEXT UNIQUE,
+                hashed_password TEXT,
+                full_name TEXT,
+                disabled BOOLEAN DEFAULT FALSE,
+                created_at DATETIME
+            )
+        """)
+        
+        # 5. Create trade_drafts table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_drafts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                symbol TEXT,
+                action TEXT,
+                volume REAL,
+                sl REAL,
+                tp REAL,
+                comment TEXT,
+                created_at DATETIME
+            )
+        """)
+        
+        # 6. Create active_trades table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS active_trades (
+                ticket INTEGER PRIMARY KEY,
+                symbol TEXT,
+                entry_price REAL,
+                tp1 REAL,
+                be_triggered INTEGER DEFAULT 0,
+                draft_id TEXT,
+                created_at DATETIME
+            )
+        """)
+        
+        # 7. Create daily_performance table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS daily_performance (
+                date TEXT PRIMARY KEY,
+                balance REAL,
+                equity REAL,
+                drawdown REAL
+            )
+        """)
+        
+        # 8. Create sniper_audit_log table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sniper_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                confidence REAL,
+                reasoning TEXT,
+                price REAL,
+                timestamp DATETIME
+            )
+        """)
+        
+        # 9. Create tactics_audit_log table (Enriched)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tactics_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                recommendation TEXT,
+                price REAL,
+                strategy TEXT,
+                confidence REAL,
+                reasoning TEXT,
+                timestamp DATETIME
+            )
+        """)
+        
+        # 10. Create watchlist table (RE-CREATE with UNIQUE constraint if needed)
+        # Check if symbol has UNIQUE constraint
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='watchlist'")
+        row = cursor.fetchone()
+        has_unique = row and "UNIQUE" in row[0].upper()
+        
+        if row and not has_unique:
+            logger.info("⚠️ Watchlist schema is outdated (missing UNIQUE). Re-creating...")
+            cursor.execute("DROP TABLE IF EXISTS watchlist")
+            
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT UNIQUE,
+                note TEXT,
+                created_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                symbol TEXT,
+                condition TEXT,
+                message TEXT,
+                status TEXT DEFAULT 'ACTIVE',
+                created_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                review_text TEXT,
+                win_rate REAL,
+                score REAL,
+                created_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT,
+                detail TEXT,
+                time DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS paper_trades (
+                id TEXT PRIMARY KEY,
+                symbol TEXT,
+                side TEXT,
+                quantity REAL,
+                volume REAL,
+                entry_price REAL,
+                current_price REAL,
+                exit_price REAL,
+                pnl REAL,
+                pnl_usd REAL,
+                status TEXT DEFAULT 'OPEN',
+                opened_at DATETIME,
+                closed_at DATETIME,
+                sl REAL,
+                tp REAL,
+                outcome TEXT,
+                features_json TEXT,
+                ml_score REAL,
+                entry_source TEXT,
+                entry_reason TEXT,
+                close_reason TEXT,
+                label_source TEXT
+            )
+        """)
+        
+        # Migration: Ensure all columns exist in watchlist
+        cursor.execute("PRAGMA table_info(watchlist)")
+        w_cols = [c[1] for c in cursor.fetchall()]
+        if "note" not in w_cols:
+            logger.info("🛠️ Migrating watchlist: adding note column")
+            cursor.execute("ALTER TABLE watchlist ADD COLUMN note TEXT")
+        if "created_at" not in w_cols:
+            logger.info("🛠️ Migrating watchlist: adding created_at column")
+            cursor.execute("ALTER TABLE watchlist ADD COLUMN created_at DATETIME")
+        
+        cursor.execute("PRAGMA table_info(alerts)")
+        alert_cols = [c[1] for c in cursor.fetchall()]
+        alert_migrations = {
+            "user_id": "ALTER TABLE alerts ADD COLUMN user_id TEXT",
+            "symbol": "ALTER TABLE alerts ADD COLUMN symbol TEXT",
+            "condition": "ALTER TABLE alerts ADD COLUMN condition TEXT",
+            "message": "ALTER TABLE alerts ADD COLUMN message TEXT",
+            "status": "ALTER TABLE alerts ADD COLUMN status TEXT DEFAULT 'ACTIVE'",
+            "created_at": "ALTER TABLE alerts ADD COLUMN created_at DATETIME",
+        }
+        for col_name, sql in alert_migrations.items():
+            if col_name not in alert_cols:
+                logger.info(f"Alerts migration: adding {col_name}")
+                cursor.execute(sql)
+
+        cursor.execute("PRAGMA table_info(trade_reviews)")
+        review_cols = [c[1] for c in cursor.fetchall()]
+        trade_review_migrations = {
+            "review_text": "ALTER TABLE trade_reviews ADD COLUMN review_text TEXT",
+            "win_rate": "ALTER TABLE trade_reviews ADD COLUMN win_rate REAL",
+            "score": "ALTER TABLE trade_reviews ADD COLUMN score REAL",
+            "created_at": "ALTER TABLE trade_reviews ADD COLUMN created_at DATETIME",
+        }
+        for col_name, sql in trade_review_migrations.items():
+            if col_name not in review_cols:
+                logger.info(f"Trade review migration: adding {col_name}")
+                cursor.execute(sql)
+
+        cursor.execute("PRAGMA table_info(audit_activity)")
+        audit_cols = [c[1] for c in cursor.fetchall()]
+        audit_migrations = {
+            "type": "ALTER TABLE audit_activity ADD COLUMN type TEXT",
+            "detail": "ALTER TABLE audit_activity ADD COLUMN detail TEXT",
+            "time": "ALTER TABLE audit_activity ADD COLUMN time DATETIME",
+        }
+        for col_name, sql in audit_migrations.items():
+            if col_name not in audit_cols:
+                logger.info(f"Audit activity migration: adding {col_name}")
+                cursor.execute(sql)
+
+        cursor.execute("PRAGMA table_info(paper_trades)")
+        pt_cols = [c[1] for c in cursor.fetchall()]
+        paper_trade_migrations = {
+            "quantity": "ALTER TABLE paper_trades ADD COLUMN quantity REAL",
+            "volume": "ALTER TABLE paper_trades ADD COLUMN volume REAL",
+            "current_price": "ALTER TABLE paper_trades ADD COLUMN current_price REAL",
+            "exit_price": "ALTER TABLE paper_trades ADD COLUMN exit_price REAL",
+            "pnl": "ALTER TABLE paper_trades ADD COLUMN pnl REAL",
+            "pnl_usd": "ALTER TABLE paper_trades ADD COLUMN pnl_usd REAL",
+            "sl": "ALTER TABLE paper_trades ADD COLUMN sl REAL",
+            "tp": "ALTER TABLE paper_trades ADD COLUMN tp REAL",
+            "outcome": "ALTER TABLE paper_trades ADD COLUMN outcome TEXT",
+            "features_json": "ALTER TABLE paper_trades ADD COLUMN features_json TEXT",
+            "ml_score": "ALTER TABLE paper_trades ADD COLUMN ml_score REAL",
+            "entry_source": "ALTER TABLE paper_trades ADD COLUMN entry_source TEXT",
+            "entry_reason": "ALTER TABLE paper_trades ADD COLUMN entry_reason TEXT",
+            "close_reason": "ALTER TABLE paper_trades ADD COLUMN close_reason TEXT",
+            "label_source": "ALTER TABLE paper_trades ADD COLUMN label_source TEXT",
+        }
+        for col_name, sql in paper_trade_migrations.items():
+            if col_name not in pt_cols:
+                logger.info(f"Paper trade migration: adding {col_name}")
+                cursor.execute(sql)
+
+        # Migration: Add new columns if missing for tactics_audit_log
+        cursor.execute("PRAGMA table_info(tactics_audit_log)")
+        cols = [c[1] for c in cursor.fetchall()]
+        if "confidence" not in cols:
+            logger.info("🛠️ Migrating tactics_audit_log: adding confidence column")
+            cursor.execute("ALTER TABLE tactics_audit_log ADD COLUMN confidence REAL DEFAULT 0.0")
+        if "reasoning" not in cols:
+            logger.info("🛠️ Migrating tactics_audit_log: adding reasoning column")
+            cursor.execute("ALTER TABLE tactics_audit_log ADD COLUMN reasoning TEXT")
+        
+        conn.commit()
+        conn.close()
+        logger.info("✅ Persistence DB (SQLite) initialized with all institutional tables (incl. Watchlist).")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Persistence DB: {e}")
+
+def log_tactics_call(symbol: str, recommendation: str, price: float, strategy: str, confidence: float = 0.0, reasoning: str = ""):
+    """Log a tactics generation call for audit purposes."""
+    try:
+        conn = sqlite3.connect(PERSISTENCE_DB)
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        cursor.execute("""
+            INSERT INTO tactics_audit_log (symbol, recommendation, price, strategy, confidence, reasoning, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (symbol.upper(), recommendation, price, strategy, confidence, reasoning, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"❌ Failed to log tactics call: {e}")
+
+@contextmanager
+def get_persistence_conn():
+    import sqlite3
+    conn = sqlite3.connect(PERSISTENCE_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _append_audit_event(event_type: str, detail: str):
+    """Persist lightweight activity events for dashboard views."""
+    try:
+        with get_persistence_conn() as conn:
+            conn.execute(
+                "INSERT INTO audit_activity (type, detail, time) VALUES (?, ?, ?)",
+                (event_type, detail[:500], datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to append audit event: {e}")
+
+
+QUOTE_SYMBOL_MAP = {
+    "BTC": "BTC-USD",
+    "BTCUSDT": "BTC-USD",
+    "BTCUSD": "BTC-USD",
+    "ETH": "ETH-USD",
+    "ETHUSDT": "ETH-USD",
+    "ETHUSD": "ETH-USD",
+    "SOL": "SOL-USD",
+    "SOLUSDT": "SOL-USD",
+    "XRP": "XRP-USD",
+    "XRPUSDT": "XRP-USD",
+    "BNB": "BNB-USD",
+    "BNBUSDT": "BNB-USD",
+    "GOLD": "GC=F",
+    "SILVER": "SI=F",
+    "OIL": "CL=F",
+    "NASDAQ": "^IXIC",
+    "SP500": "^GSPC",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "USDJPY=X",
+}
+
+
+def _normalize_quote_symbol(symbol: str) -> str:
+    sym = (symbol or "").upper().strip()
+    return QUOTE_SYMBOL_MAP.get(sym, sym)
+
+
+def _get_live_price(symbol: str) -> float:
+    """Best-effort live mark price using Binance, cache, then Yahoo."""
+    try:
+        normalized = _normalize_quote_symbol(symbol)
+        raw_symbol = (symbol or "").upper().strip()
+
+        crypto_symbol = raw_symbol
+        if normalized.endswith("-USD"):
+            crypto_symbol = normalized.replace("-USD", "")
+        elif raw_symbol.endswith("USDT"):
+            crypto_symbol = raw_symbol.replace("USDT", "")
+
+        if crypto_symbol in {"BTC", "ETH", "SOL", "XRP", "BNB"}:
+            try:
+                resp = requests.get(
+                    "https://api.binance.com/api/v3/ticker/price",
+                    params={"symbol": f"{crypto_symbol}USDT"},
+                    timeout=6,
+                    headers={"User-Agent": "CryptoStreamAI/2.0"},
+                )
+                resp.raise_for_status()
+                price = float(resp.json().get("price") or 0.0)
+                if price > 0:
+                    return price
+            except Exception:
+                pass
+
+            cached_market = _cache_get("market_stocks_v2") or {}
+            cached_quote = cached_market.get(crypto_symbol) or {}
+            cached_price = float(cached_quote.get("price") or 0.0)
+            if cached_price > 0:
+                return cached_price
+
+        payload = _yahoo_batch_quotes([normalized])
+        quote = payload.get(normalized, {})
+        return float(quote.get("regularMarketPrice") or 0.0)
+    except Exception:
+        return 0.0
+
+# ==========================================
 # Rate Limiter (CRIT-03 fix)
 # ==========================================
 limiter = Limiter(key_func=get_remote_address)
@@ -179,18 +619,192 @@ limiter = Limiter(key_func=get_remote_address)
 async def lifespan(app: FastAPI):
     """Start Kafka consumers and Macro poller on startup."""
     logger.info("🚀 Starting background workers...")
+    
+    # Initialize history DB before workers start
+    init_persistence_db()
+    
     t1 = asyncio.create_task(kafka_consumer_task())
     t2 = asyncio.create_task(dlq_consumer_task())
     t3 = asyncio.create_task(macro_poller_task())
+    t4 = asyncio.create_task(alpha_sentinel.run())
+    t5 = asyncio.create_task(market_status_poller_task())
+    t6 = asyncio.create_task(signal_broadcaster_task())
+    t7 = asyncio.create_task(account_poller_task())
+    t8 = asyncio.create_task(auto_paper_trader_task())
+    
+    # Notify Telegram that system is online
+    asyncio.create_task(notifier.notify_system_startup())
+    
     yield  # App runs here
     logger.info("⏳ Shutting down background workers...")
     t1.cancel()
     t2.cancel()
     t3.cancel()
-    await asyncio.gather(t1, t2, t3, return_exceptions=True)
+    t4.cancel()
+    t5.cancel()
+    t6.cancel()
+    t7.cancel()
+    t8.cancel()
+    await asyncio.gather(t1, t2, t3, t4, t5, t6, t7, t8, return_exceptions=True)
     if _db_pool:
         _db_pool.closeall()
     logger.info("✅ Workers stopped and DB pool closed.")
+
+async def market_status_poller_task():
+    """Polls the market open/close status and notifies Telegram of changes."""
+    from intelligence.utils.market_hours import get_market_status_data
+    
+    last_status = {}
+    
+    while True:
+        try:
+            status_data = get_market_status_data()
+            
+            # Check Forex
+            forex = status_data.get("forex", {})
+            f_status = forex.get("status")
+            if last_status.get("forex") and last_status["forex"] != f_status:
+                if f_status == "OPEN":
+                    await notifier.notify_market_opened("Forex/Gold")
+                elif f_status == "CLOSED":
+                    await notifier.notify_market_closed("Forex/Gold")
+            last_status["forex"] = f_status
+            
+            # Check Stocks
+            stocks = status_data.get("stocks", {})
+            s_status = stocks.get("status")
+            if last_status.get("stocks") and last_status["stocks"] != s_status:
+                if s_status == "OPEN":
+                    await notifier.notify_market_opened("US Stocks (NASDAQ/NYSE)")
+                elif s_status in ["CLOSED", "HOLIDAY"]:
+                    await notifier.notify_market_closed("US Stocks (NASDAQ/NYSE)", reason=s_status)
+            last_status["stocks"] = s_status
+            
+        except Exception as e:
+            logger.warning(f"Market status poller error: {e}")
+            
+        await asyncio.sleep(60) # check every minute
+
+async def signal_broadcaster_task():
+    """[LIVE] Broadcasts ML signals + real system health to all WebSocket clients every 15s."""
+    logger.info("📡 Signal Broadcaster Task started.")
+    await asyncio.sleep(5)  # Short warm-up delay so the intelligence engine is ready
+
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+
+            # 1. Run ML signal generation in a thread (blocking I/O)
+            signals = []
+            if INTELLIGENCE_AVAILABLE and crypto_intel:
+                try:
+                    symbols = ["BTC", "ETH", "SOL", "XRP", "GOLD", "SILVER"]  # MT5-verified XM broker symbols only
+                    signals = await loop.run_in_executor(
+                        None,
+                        lambda: crypto_intel.get_quick_signals(symbols, timeframe="15m")
+                    )
+                except Exception as e:
+                    logger.warning(f"Signal broadcaster: ML inference failed — {e}")
+
+            # 2. Check real DB health (non-blocking ping)
+            db_ok = False
+            try:
+                if _db_pool:
+                    conn = _db_pool.getconn()
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                    _db_pool.putconn(conn)
+                    db_ok = True
+            except Exception as e:
+                logger.warning(f"Signal broadcaster: DB health check failed — {e}")
+
+            # 3. DQ Guard: signals dataset is considered clean if we got at least some signals
+            dq_ok = len(signals) > 0
+
+            # 4. Broadcast payload to all connected UI clients
+            if signals or True:  # Always broadcast (even empty list clears stale data)
+                await manager.broadcast({
+                    "type": "SIGNALS",
+                    "data": {
+                        "signals": signals,
+                        "db_ok": db_ok,
+                        "dq_ok": dq_ok,
+                        "timestamp": int(time.time() * 1000)
+                    }
+                })
+                logger.info(f"📡 Broadcasted {len(signals)} signals | DB={'OK' if db_ok else 'FAIL'} | DQ={'OK' if dq_ok else 'FAIL'}")
+
+        except Exception as e:
+            logger.error(f"Signal broadcaster critical error: {e}")
+
+        await asyncio.sleep(15)  # Broadcast every 15 seconds
+
+
+async def account_poller_task():
+    """[LIVE] Polls MT5 for account summary and open positions every 10s."""
+    logger.info("💳 Account Poller Task started.")
+    from intelligence.mt5_connector import get_mt5_account_info, get_mt5_positions
+    
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # 1. Fetch Account Info
+            acc_info = await loop.run_in_executor(None, get_mt5_account_info)
+            
+            # 2. Fetch Open Positions
+            positions = await loop.run_in_executor(None, get_mt5_positions)
+            
+            if "error" not in acc_info:
+                # 3. Store in cache
+                GLOBAL_ACCOUNT_CACHE["summary"] = {
+                    "login": acc_info.get("login"),
+                    "name": acc_info.get("name", ""),
+                    "company": acc_info.get("company", ""),
+                    "balance": acc_info.get("balance", 0),
+                    "equity": acc_info.get("equity", 0),
+                    "profit": acc_info.get("profit", 0),
+                    "margin": acc_info.get("margin", 0),
+                    "margin_free": acc_info.get("margin_free", 0),
+                    "margin_level": acc_info.get("margin_level", 0),
+                    "leverage": acc_info.get("leverage", 1),
+                    "currency": acc_info.get("currency", "USD"),
+                    "server": acc_info.get("server", "N/A"),
+                    "trade_allowed": acc_info.get("trade_allowed", False),
+                    "trade_expert": acc_info.get("trade_expert", False),
+                }
+                GLOBAL_ACCOUNT_CACHE["positions"] = positions
+                GLOBAL_ACCOUNT_CACHE["updated_at"] = time.time()
+                GLOBAL_ACCOUNT_CACHE["connected"] = True
+                
+                # 4. Broadcast to WebSocket
+                await manager.broadcast({
+                    "type": "ACCOUNT_UPDATE",
+                    "data": {
+                        "summary": GLOBAL_ACCOUNT_CACHE["summary"],
+                        "positions": positions,
+                        "timestamp": int(time.time() * 1000)
+                    }
+                })
+                logger.info(f"💳 Account Sync: Equity={acc_info.get('equity')} | Positions={len(positions)}")
+                
+                # 5. Optional: Log to persistence DB (SQLite) for history once per hour
+                if int(time.time()) % 3600 < 15: # roughly once an hour
+                    try:
+                        with sqlite3.connect(PERSISTENCE_DB) as conn:
+                            conn.execute(
+                                "INSERT OR REPLACE INTO daily_performance (date, balance, equity, drawdown) VALUES (?, ?, ?, ?)",
+                                (datetime.now().strftime("%Y-%m-%d %H:00"), acc_info.get("balance"), acc_info.get("equity"), 0)
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to log performance history: {e}")
+                        
+        except Exception as e:
+            logger.warning(f"Account poller error: {e}")
+            
+        await asyncio.sleep(12) # Poll every 12 seconds
+
 
 async def macro_poller_task():
     """Polls yfinance for Gold, Stocks, and Indices every 30s and broadcasts to UI."""
@@ -201,42 +815,66 @@ async def macro_poller_task():
     tickers = list(MACRO_MAPPING.values())
     
     while True:
+        # Give the server a few seconds to warm up before the first heavy fetch
+        # but don't wait the full 30s for the very first update
         try:
-            # Fetch latest data (5d to ensure we get last close on weekends)
-            data = yf.download(tickers, period="5d", interval="1m", progress=False)
+            # Fetch latest data (Attempt 2d first, fallback if thin)
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                None,
+                lambda: yf.download(tickers, period="5d", interval="1h", progress=False, group_by='ticker')
+            )
+            
             if not data.empty:
                 for sym, ticker in MACRO_MAPPING.items():
                     try:
-                        # Extract last valid close price for this ticker
-                        if ticker in data["Close"]:
-                            # Get the last non-NaN price
-                            ticker_series = data["Close"][ticker].dropna()
-                            if not ticker_series.empty:
-                                price = float(ticker_series.iloc[-1])
-                                # Calculate a simple daily delta for context
-                                delta = 0
-                                if len(ticker_series) > 1:
-                                    first_price = ticker_series.iloc[0]
-                                    delta = ((price - first_price) / first_price) * 100
-                                
-                                GLOBAL_MACRO_CACHE[sym] = {"price": price, "delta": delta}
-                                
-                                await manager.broadcast({
-                                    "type": "TICK",
-                                    "data": {
-                                        "symbol": sym,
-                                        "price": price,
-                                        "timestamp": int(time.time() * 1000),
-                                        "delta": delta
-                                    }
-                                })
+                        price = 0
+                        delta = 0
+                        
+                        # High-reliability fallback if batch fetch failed for this ticker
+                        if ticker not in data.columns.levels[0] or pd.isna(data[ticker]['Close'].iloc[-1]):
+                            try:
+                                # Quick fetch for missing ticker (Use fast_info for instant data)
+                                t_obj = yf.Ticker(ticker)
+                                price = t_obj.fast_info['lastPrice']
+                                # Use previous close if available for delta
+                                prev_close = t_obj.fast_info.get('previousClose', price)
+                                delta = ((price - prev_close) / (prev_close if prev_close != 0 else 1)) * 100
+                            except:
+                                # Deep fallback: try current price from history
+                                try:
+                                    hist = t_obj.history(period="5d")
+                                    if not hist.empty:
+                                        price = float(hist['Close'].iloc[-1])
+                                        prev_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else price
+                                        delta = ((price - prev_close) / (prev_close if prev_close != 0 else 1)) * 100
+                                except:
+                                    continue
+                        else:
+                            ticker_data = data[ticker].dropna(subset=['Close'])
+                            if not ticker_data.empty:
+                                price = float(ticker_data['Close'].iloc[-1])
+                                first_price = ticker_data['Close'].iloc[0]
+                                delta = ((price - first_price) / (first_price if first_price != 0 else 1)) * 100
+
+                        if price > 0:
+                            GLOBAL_MACRO_CACHE[sym] = {"price": price, "delta": delta}
+                            await manager.broadcast({
+                                "type": "TICK",
+                                "data": {
+                                    "symbol": sym,
+                                    "price": price,
+                                    "timestamp": int(time.time() * 1000),
+                                    "delta": delta
+                                }
+                            })
                     except Exception as e:
                         continue
-            logger.info(f"✅ Macro poller updated {len(symbols)} assets.")
+            logger.info(f"✅ Macro poller updated {len(GLOBAL_MACRO_CACHE)} assets.")
         except Exception as e:
             logger.warning(f"Macro poller error: {e}")
             
-        await asyncio.sleep(30)
+        await asyncio.sleep(20)
 
 app = FastAPI(title="CryptoStream AI", version="2.0.0", lifespan=lifespan)
 app.state.limiter = limiter
@@ -318,8 +956,8 @@ async def kafka_consumer_task():
         group_id="chat_server_v1",
         auto_offset_reset="latest"
     )
-    await consumer.start()
     try:
+        await consumer.start()
         async for msg in consumer:
             data = json.loads(msg.value.decode("utf-8"))
             
@@ -342,9 +980,16 @@ async def kafka_consumer_task():
                 # External notification
                 await notifier.notify_whale(data)
     except Exception as e:
-        print(f"Error in Consumer: {e}")
+        # Silence local connection errors if Kafka is missing (intentional for local dev)
+        if "Bootstrap failed" in str(e) or "connect" in str(e).lower():
+            logger.info("ℹ️ Kafka Trade Consumer skipped (local Kafka not found)")
+        else:
+            logger.error(f"⚠️ Kafka Trade Consumer failed: {e}")
     finally:
-        await consumer.stop()
+        try:
+            await consumer.stop()
+        except:
+            pass
 
 async def dlq_consumer_task():
     """Consumes DLQ topic for risk alerts."""
@@ -354,8 +999,8 @@ async def dlq_consumer_task():
         group_id="chat_server_dlq_v1",
         auto_offset_reset="latest"
     )
-    await consumer.start()
     try:
+        await consumer.start()
         async for msg in consumer:
             data = json.loads(msg.value.decode("utf-8"))
             await manager.broadcast({
@@ -365,9 +1010,16 @@ async def dlq_consumer_task():
             # External notification for risk
             await notifier.notify_risk(data.get("error_reason", "Data quality anomaly detected"))
     except Exception as e:
-        print(f"Error in DLQ Consumer: {e}")
+        # Silence local connection errors if Kafka is missing
+        if "Bootstrap failed" in str(e) or "connect" in str(e).lower():
+            logger.info("ℹ️ Kafka DLQ Consumer skipped (local Kafka not found)")
+        else:
+            logger.error(f"⚠️ Kafka DLQ Consumer failed: {e}")
     finally:
-        await consumer.stop()
+        try:
+            await consumer.stop()
+        except:
+            pass
 
 def get_market_snapshot():
     """Fetches the latest market metrics from PostgreSQL for AI context."""
@@ -442,23 +1094,279 @@ def _execute_sql(sql: str) -> dict:
 
 
 # ==========================================
+# Authentication Endpoints
+# ==========================================
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+class RegisterRequest(BaseModel):
+    email: str
+    username: str
+    password: str
+    full_name: str = ""
+    phone: str = ""
+    country: str = "Thailand"
+    account_type: str = "retail"
+    bio: str = ""
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@app.post("/api/auth/register")
+def register_user(req: RegisterRequest):
+    try:
+        with get_persistence_conn() as conn:
+            cursor = conn.cursor()
+            # Check if user exists
+            cursor.execute("SELECT id FROM users WHERE email = ? OR username = ?", (req.email, req.username))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="Email or username already registered")
+            
+            user_id = str(uuid.uuid4())
+            hashed_pw = pwd_context.hash(req.password)
+            
+            cursor.execute("""
+                INSERT INTO users (id, email, username, full_name, password_hash, phone, country, account_type, bio)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, req.email, req.username, req.full_name, hashed_pw, req.phone, req.country, req.account_type, req.bio))
+            conn.commit()
+            
+            user_profile = {
+                "id": user_id, "email": req.email, "username": req.username,
+                "full_name": req.full_name, "account_type": req.account_type,
+                "phone": req.phone, "country": req.country, "bio": req.bio
+            }
+            
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(data={"sub": user_id}, expires_delta=access_token_expires)
+            
+            return {"token": access_token, "user": user_profile}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/api/auth/login")
+def login_user(req: LoginRequest):
+    try:
+        with get_persistence_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE email = ?", (req.email,))
+            user = cursor.fetchone()
+            
+            if not user or not pwd_context.verify(req.password, user['password_hash']):
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+            
+            user_profile = {
+                "id": user['id'], "email": user['email'], "username": user['username'],
+                "full_name": user['full_name'], "account_type": user['account_type'],
+                "phone": user['phone'], "country": user['country'], "bio": user['bio']
+            }
+            
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(data={"sub": user['id']}, expires_delta=access_token_expires)
+            
+            return {"token": access_token, "user": user_profile}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ==========================================
+# MT5 Direct Execution Endpoints
+# ==========================================
+class MT5TradeRequest(BaseModel):
+    symbol: str
+    side: str        # "BUY" or "SELL"
+    volume: float
+    sl: float = 0.0
+    tp: float = 0.0
+    price: Optional[float] = None
+    order_kind: str = "MARKET"
+    filling_policy: str = "IOC"
+    deviation: int = 20
+    comment: str = "CryptoStream AI Trade"
+
+class MT5CloseRequest(BaseModel):
+    ticket: int
+
+@app.get("/api/mt5/quote")
+def mt5_quote(symbol: str = "GOLD"):
+    try:
+        from intelligence.mt5_connector import get_mt5_quote
+        result = get_mt5_quote(symbol.upper().strip())
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"MT5 quote error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/mt5/account")
+def mt5_account():
+    try:
+        cached = GLOBAL_ACCOUNT_CACHE.get("summary", {})
+        cached_at = GLOBAL_ACCOUNT_CACHE.get("updated_at", 0)
+        cache_age = time.time() - cached_at if cached_at else None
+        if cached and cache_age is not None and cache_age <= 20:
+            return {
+                "account": cached,
+                "positions": GLOBAL_ACCOUNT_CACHE.get("positions", []),
+                "connected": True,
+                "source": "cache_live",
+                "cache_age_seconds": round(cache_age, 1),
+            }
+
+        from intelligence.mt5_connector import get_mt5_account_info, get_mt5_positions
+        acc = get_mt5_account_info()
+        pos = get_mt5_positions()
+        if "error" in acc:
+            # Return cached data if MT5 offline
+            if cached:
+                cache_is_fresh = cache_age is not None and cache_age <= 60
+                return {
+                    "account": cached,
+                    "positions": GLOBAL_ACCOUNT_CACHE.get("positions", []),
+                    "connected": cache_is_fresh,
+                    "source": "cache_fallback",
+                    "cache_age_seconds": round(cache_age, 1) if cache_age is not None else None,
+                    "warning": acc["error"],
+                }
+            return {"connected": False, "error": acc["error"]}
+        GLOBAL_ACCOUNT_CACHE["summary"] = acc
+        GLOBAL_ACCOUNT_CACHE["positions"] = pos
+        GLOBAL_ACCOUNT_CACHE["updated_at"] = time.time()
+        GLOBAL_ACCOUNT_CACHE["connected"] = True
+        return {"account": acc, "positions": pos, "connected": True, "source": "direct"}
+    except Exception as e:
+        logger.error(f"MT5 account error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/mt5/positions")
+def mt5_positions():
+    try:
+        from intelligence.mt5_connector import get_mt5_positions
+        return {"positions": get_mt5_positions()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/mt5/trade")
+async def mt5_execute(req: MT5TradeRequest):
+    """Send a live market order to MT5."""
+    try:
+        loop = asyncio.get_event_loop()
+        from intelligence.tools.market_tools import execute_mt5_trade
+        result = await loop.run_in_executor(
+            None,
+            lambda: execute_mt5_trade(
+                symbol=req.symbol,
+                side=req.side.upper(),
+                volume=req.volume,
+                price=req.price,
+                sl=req.sl if req.sl else None,
+                tp=req.tp if req.tp else None,
+                order_kind=req.order_kind,
+                filling_policy=req.filling_policy,
+                deviation=req.deviation,
+                comment=req.comment,
+            )
+        )
+        if result.get("status") == "ERROR" or "error" in result:
+            raise HTTPException(status_code=400, detail=result.get("error") or result.get("message", "Trade failed"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"MT5 trade error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/mt5/close")
+async def mt5_close_position(req: MT5CloseRequest):
+    """Close a specific MT5 position by ticket."""
+    try:
+        loop = asyncio.get_event_loop()
+        from intelligence.mt5_connector import mt5_close_position
+        result = await loop.run_in_executor(None, lambda: mt5_close_position(req.ticket))
+        if result.get("status") == "ERROR" or "error" in result:
+            raise HTTPException(status_code=400, detail=result.get("error", "Close failed"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"MT5 close error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
 # Chat Endpoint (Full Logic Restored)
 # ==========================================
+class TranslateRequest(BaseModel):
+    messages: list  # [{role, content}]
+    language: str   # 'en' or 'th'
+
+@app.post("/api/translate")
+async def translate_messages(req: TranslateRequest):
+    target = 'English' if req.language == 'en' else 'Thai'
+    items = [(i, m) for i, m in enumerate(req.messages) if str(m.get('content', '')).strip()]
+    if not items:
+        return {"translations": []}
+
+    async def translate_one(idx: int, content: str) -> dict:
+        prompt = (
+            f"Translate the following financial analysis text COMPLETELY and FAITHFULLY to {target}.\n"
+            f"- Preserve ALL content, structure, and detail — do NOT summarize or omit anything\n"
+            f"- Keep ALL markdown: **, *, -, #, tables, bullet points, line breaks\n"
+            f"- Do NOT translate: ticker symbols, numbers, %, TP/SL/RSI/MACD/EMA/FVG/ATR acronyms\n"
+            f"- Return ONLY the translated text, nothing else\n\n"
+            f"{content}"
+        )
+        try:
+            res = await client.aio.models.generate_content(
+                model=MODEL_ID,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=0)
+                )
+            )
+            return {"idx": idx, "content": res.text or content}
+        except Exception:
+            return {"idx": idx, "content": content}
+
+    results = await asyncio.gather(*[translate_one(i, str(m['content'])) for i, m in items])
+    return {"translations": list(results)}
+
+
 class ChatRequest(BaseModel):
     message: str
+    session_id: str = "default"
     history: list = []  # Conversation history: [{"role": "user"|"ai", "content": "..."}]
+    language: str = "th"  # Default to Thai
 
 class ChatResponse(BaseModel):
     reply: str
     sql_query: str | None = None
     has_data: bool = False
 
-@app.get("/")
-def root():
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"error": "Frontend build not found. Please run 'npm run build' in the /frontend directory.", "path": index_path}
+# Root removed to avoid double-definition conflict with SPA routing at bottom
+
+
+@app.get("/api/system/market-status")
+def get_market_status():
+    """Returns real-time status (OPEN/CLOSED) and countdowns for major markets."""
+    from intelligence.utils.market_hours import get_market_status_data
+    return get_market_status_data()
 
 
 # ── Security ─────────────────────────────────────────────────────────────────
@@ -528,26 +1436,29 @@ def chat(request: Request, req: ChatRequest, x_api_key: str = Header(None)):
             return any(_re.search(p, t) for p in patterns)
 
         if _is_greeting(user_input) and len(user_input.strip().split()) <= 5:
-            reply = _random.choice([
-                "สวัสดีครับ! 😊 มีอะไรให้ช่วยเรื่องการลงทุนไหมครับ?",
-                "หวัดดีครับ 👋 วันนี้สนใจหุ้น, crypto หรือทองดีครับ?",
-                "ดีครับ! 📈 อยากวิเคราะห์ตัวไหน บอกมาได้เลย",
-                "มาแล้วครับ 🚀 วันนี้จะลุยตลาดไหนดี?",
-                "โย่ว 😎 มีตัวไหนให้ผมช่วยดูกราฟไหม?",
-                "พร้อมลุยตลาดแล้วครับ 🔥 อยากดู entry / exit ตัวไหน?",
-                "ผมอยู่ครับ 🤖 อยากคุยเรื่องตลาดหรือให้ช่วยวิเคราะห์อะไรดี?",
-            ])
+            if req.language == 'en':
+                reply = _random.choice([
+                    "Hello! 😊 How can I help you with your investments today?",
+                    "Hi there 👋 Interested in stocks, crypto, or gold today?",
+                    "Greetings! 📈 Which asset would you like to analyze?",
+                    "I'm here! 🚀 Which market are we tackling today?",
+                    "Yo 😎 Need help with any specific charts?",
+                    "Ready for action 🔥 Want to see entry/exit points for something?",
+                    "Standing by 🤖 How can I assist with your financial queries?",
+                ])
+            else:
+                reply = _random.choice([
+                    "สวัสดีครับ! 😊 มีอะไรให้ช่วยเรื่องการลงทุนไหมครับ?",
+                    "หวัดดีครับ 👋 วันนี้สนใจหุ้น, crypto หรือทองดีครับ?",
+                    "ดีครับ! 📈 อยากวิเคราะห์ตัวไหน บอกมาได้เลย",
+                    "มาแล้วครับ 🚀 วันนี้จะลุยตลาดไหนดี?",
+                    "โย่ว 😎 มีตัวไหนให้ผมช่วยดูกราฟไหม?",
+                    "พร้อมลุยตลาดแล้วครับ 🔥 อยากดู entry / exit ตัวไหน?",
+                    "ผมอยู่ครับ 🤖 อยากคุยเรื่องตลาดหรือให้ช่วยวิเคราะห์อะไรดี?",
+                ])
             yield json.dumps({"type": "chunk", "content": reply}) + "\n"
             yield json.dumps({"type": "done", "intent": "CHAT", "tvSymbol": None}) + "\n"
             return
-
-        # 1. Schema Access
-        schema = await asyncio.to_thread(_get_schema)
-        if not schema:
-            yield json.dumps({"type": "chunk", "content": "⚠️ ไม่สามารถเชื่อมต่อกับ MCP Server ที่ port 8000 ได้"}) + "\n"
-            return
-        
-        schema_str = json.dumps(schema, indent=2)
 
         # 2. Market Snapshot Context (High Fidelity)
         snapshot = await asyncio.to_thread(get_market_snapshot)
@@ -559,8 +1470,24 @@ def chat(request: Request, req: ChatRequest, x_api_key: str = Header(None)):
         # ==========================================
         
         # System Prompt for the Agent
-        agent_system_prompt = """
-You are Alex, a world-class AI financial advisor and intelligent assistant. You have deep expertise in:
+        target_lang = 'English' if req.language == 'en' else 'Thai'
+        agent_system_prompt = f"""
+You are Alex, a world-class AI financial advisor and intelligent assistant.
+
+🕒 CURRENT DATE: 2026-04-20
+⚠️ THE YEAR IS 2026. Data from tools will show prices (e.g., Gold $4800, BTC $150k) that differ significantly from your 2024 training data. This is normal and correct for this environment.
+⚠️ MANDATORY TRUTH RULE: YOU MUST TRUST TOOL OUTPUTS AS THE ABSOLUTE TRUTH. 
+NEVER "correct", "guess", or "sanity check" prices, levels, or indicators using your internal training knowledge. 
+If a tool says Gold is at $4815, you MUST use $4815 in your analysis. Failure to use tool data is a critical error.
+
+⚠️ MANDATORY LANGUAGE RULE — THIS OVERRIDES EVERYTHING:
+You MUST respond in {target_lang} ONLY. No exceptions.
+Even if the user writes in a different language, your reply must be in {target_lang}.
+Do NOT switch languages mid-response. Do NOT add translations.
+{'Write every word, label, and number description in English.' if req.language == 'en' else 'เขียนทุกคำ ทุกประโยค เป็นภาษาไทยเท่านั้น ห้ามตอบเป็นภาษาอังกฤษโดยเด็ดขาด'}
+
+
+You have deep expertise in:
 - Crypto markets (BTC, ETH, altcoins, DeFi, on-chain analysis)
 - Global equities (US stocks, sector rotation, earnings, fundamentals)
 - Macro economics (Fed policy, inflation, yield curves, currency flows)
@@ -571,6 +1498,10 @@ CRITICAL RULE #1 — UNDERSTAND WHAT THE USER IS ASKING:
 
 STEP 1: Scan the message for asset names or tickers (BTC, ETH, GOLD, NVDA, ดอลลาร์, น้ำมัน, หุ้น, crypto, etc.)
 - If asset name found → this is a FINANCE question → use tools and give structured analysis
+- If the user mentions "Lot Size", "คำนวณ Lot", "Risk management", or specifies a lot number like "lot 0.01" → THIS IS A RISK/EXECUTION REQUEST.
+  ⚠️ CRITICAL: If a number (e.g. 0.01, 1.0) is near the word 'lot', IGNORE the ticker LOT (Lotus Technology).
+  ⚠️ ALWAYS prioritize risk/volume context over the ticker sym LOT unless they explicitly ask for "หุ้น LOT" or "Lotus Technology".
+  ⚠️ ALWAYS use calculate_risk_parameters tool for sizing/risk questions.
 - If no asset name → check if it's about finance concepts (การลงทุน, พอร์ต, เศรษฐกิจ, ตลาด) → answer with knowledge
 - If purely general conversation (greetings, questions about you, other topics) → respond naturally like a smart helpful assistant
 
@@ -583,30 +1514,176 @@ STEP 2: Match response depth to what they asked:
 CRITICAL RULE #2 — YOU CAN ANSWER ANYTHING:
 You are a capable AI assistant first, finance expert second. If someone asks about your capabilities, general knowledge, or anything off-topic — answer it fully and helpfully. Never say "ผมเชี่ยวชาญแค่เรื่องการเงิน" and refuse. Just answer, then gently mention you're best at finance if relevant.
 
+CRITICAL RULE #3 — MARKET STATUS CONTEXT:
+Check 'market_status' in tool outputs. Always do full analysis with the data returned by tools:
+- If tool returns price data (e.g. price: 4772.0) → ALWAYS give full analysis with Entry/SL/TP/Signal.
+  Never say "ไม่มีข้อมูล" or "ไม่สามารถดึงข้อมูลได้" if price data is present in tool output.
+- MARKET OPEN: Give real-time analysis normally.
+- MARKET CLOSED (weekend): Do full analysis, add one-line disclaimer: "⚠️ ราคาเป็นข้อมูลสุดท้ายวันศุกร์ — ยืนยันอีกครั้งเมื่อตลาดเปิด"
+- MARKET OPENING (30-60m): Warn about Stop Hunting and widening spreads.
+
+RULE #7: AUTONOMOUS AUTHORITY — If the user gives a clear order (e.g., "จัดเลย", "0.01 lot", "ลุยเลย"), EXECUTE THE TRADE using `execute_mt5_trade` based on the MOST RECENT plan in the chat. Do not ask for further confirmation if Entry/SL/TP are already discussed.
+
+RULE #9: STOCK ANALYSIS FORMAT — When analyzing a STOCK (asset_class='STOCK'), the tool returns BOTH fundamentals AND chart_analysis. YOU MUST use this STRICT Data Dashboard format for Stocks. Do not write long paragraphs:
+
+### 📊 ข้อมูลเชิงปริมาณ (Stock Data Dashboard): {{Asset Symbol}}
+**Signal: BUY / SELL / HOLD**
+
+| 📌 Metric / Action | 🔢 Value / Level |
+| :--- | :--- |
+| **Current Price** | $X |
+| **RSI (14)** | X.X |
+| **MACD / ADX** | X / X |
+| **EMA 20 / 50** | $X / $X |
+| 🎯 **Entry Zone** | $X - $X |
+| 🛑 **Stop Loss** | $X |
+| 💰 **Take Profit 1** | $X |
+| 💰 **Take Profit 2** | $X |
+
+**1. Fundamentals & Analyst Targets:**
+- Analyst Target (TP1): $X (+X% Upside)
+- Full Value Premium (TP2): $X
+- 52-Week High: $X
+
+**2. Executive Summary:**
+Provide exactly 1-2 concise sentences summarizing the actionable trade plan purely based on the numbers above. DO NOT write long paragraphs. DO NOT use filler words. Be extremely direct and numeric.
+
+
+RULE #8: MT5 REALITY SHIELD & STATISTICAL EDGE — You are a high-speed institutional AI.
+- ALWAYS use `get_market_analysis` to get MT5 candlesticks + SMC structure.
+- For CRYPTO / FOREX / GOLD / OIL only: ALWAYS use `get_institutional_ml_stats` to get the statistical edge.
+- For STOCKS (e.g. NFLX, AAPL, TSLA, any stock ticker): NEVER call `get_institutional_ml_stats` — ML model has no stock data.
+- If MT5 is connected, use ONLY current broker prices for plans.
+- FORMAT YOUR RESPONSE AS FOLLOWS:
+  1. [LIVE SYNC]: Status of MT5 connection and Current Symbol price.
+  2. [STATISTICAL EDGE]: Quote Neural Win Probability, Historical Win Rate, and Hurst Exponent.
+  3. [ARCHITECTURE]: Describe BOS, CHOCH, and Liquidity zones.
+  4. [THE PLAN]: Clear Entry, Stop Loss, and Take Profit (synchronized with MT5 price).
+
+RULE #9: SIGNAL DECISION PROTOCOL — Do NOT default to HOLD just because one indicator is neutral.
+- For GOLD / FOREX / CRYPTO / OIL, use the 1h analysis as the PRIMARY directional bias.
+- Combine these three sources before deciding: `get_market_analysis` higher_timeframe/structure, `get_institutional_ml_stats`, and `get_trading_tactics`.
+- If at least 2 of the 3 sources align bullish → issue BUY.
+- If at least 2 of the 3 sources align bearish → issue SELL.
+- Use HOLD only when the sources genuinely conflict in DIRECTION (e.g., structure bullish but ML bearish). NOT just because confidence % is low.
+- 15m is for entry refinement only, not for deciding the main direction.
+- CRITICAL: Low ML Win Probability (e.g., 42%) does NOT automatically mean HOLD. It means lower confidence — still issue BUY or SELL if chart structure and Supply/Demand agree. Just reduce the confidence % shown.
+- HOLD is reserved for: (1) Price inside a tight range with no clear bias, OR (2) Higher timeframe and lower timeframe giving opposite signals, OR (3) ADX < 20 AND RSI stuck in 45-55 AND structure is flat.
+
+RULE #9b: STOCK SIGNAL PROTOCOL — For asset_class='STOCK' (e.g. NFLX, AAPL, TSLA):
+- NEVER call `get_institutional_ml_stats` for stocks. The ML model was trained on MT5 assets only (crypto/forex/gold/oil) and has no stock data — ML results for stocks are meaningless.
+- Use only 2 sources: `get_market_analysis` (structure/EMA/SMC) + `get_trading_tactics` (if available).
+- If both sources align → issue BUY or SELL directly.
+- If only 1 source available → use chart structure alone (EMA position + OB/FVG + RSI/ADX).
+- Do NOT mention "ML Win Probability" or "Statistical Bias" for stocks.
+
+RULE #10: MANDATORY HOLD EXPLANATION — When the signal is HOLD/WAIT, you are STRICTLY REQUIRED to explain:
+  a. WHY it is HOLD (e.g., "ADX = 14 แสดงว่าตลาดไม่มีทิศทาง", "RSI = 51 อยู่ในโซน Neutral", "Structure 1h bullish แต่ 4h bearish — ทิศทางขัดแย้ง"). NOTE: Low ML confidence alone is NOT a valid reason for HOLD if chart structure has a clear direction.
+  b. WHAT TO WATCH — State 2-3 specific numeric conditions the user should watch for before entering:
+     Example: "⏳ รอสัญญาณ: (1) ADX ขึ้นเกิน 25 จึงจะมีทิศทาง (ปัจจุบัน 14) (2) ราคาต้องยืนเหนือ EMA20 ที่ $X หรือหลุดต่ำกว่า $Y (3) RSI หลุดจาก 45-55 และไปทิศทางใดทิศทางหนึ่ง"
+  c. BIAS — Still give a directional lean: "แนวโน้มระยะ 1h เป็น BULLISH BUT ยังไม่ถึงเวลาเข้า"
+  d. ENTRY ALERT LEVEL — Give a specific price level where conditions will be met and you'd switch to BUY/SELL
+  NEVER just say "HOLD" and stop. Always give the user a roadmap.
+
+
+CRITICAL RULE #4 — ALWAYS USE FRESH TOOL DATA:
+- NEVER use price/analysis from previous messages in chat history.
+- If a user asks about GOLD/BTC/any asset → ALWAYS call the tool NOW to get fresh data.
+- Previous responses in chat history may be outdated. Ignore old analysis in history.
+
+CRITICAL RULE #5 — DATA SEPARATION (TRADING PHILOSOPHY):
+- LIVE DATA (get_market_analysis price/smc/htf) → Use ONLY for trade planning (Entry, SL, TP).
+- HISTORICAL DATA (historical_pulse, memories) → Use ONLY for statistics and logic refinement.
+- THE PLAN MUST BE ACCURATE TO THE 'NOW'. THE CONFIDENCE MUST BE DERIVED FROM THE 'BEFORE'.
+- Never use old prices as entry levels for a new plan. Always use live tool outputs for levels.
+
+CRITICAL RULE #6 — AUTONOMOUS TRADE EXECUTION (LIVE):
+- You possess THE AUTHORITY to execute trades through `execute_mt5_trade` for ALL Asset Classes (Forex, Crypto, Commodities, Indices, Stocks) supported by the broker.
+- ACTIVATION TRIGGERS (Thai): "จัดเลย", "เอาเลย", "ลุยเลย", "นำแผนนี้ไปเทรด", "เปิดออเดอร์ให้หน่อย", "นำแผนนี้ไปใช้", "0.01 lot", "เทรดให้หน่อย", "เทรดเลย".
+- ACTIVATION TRIGGERS (English): "Execute this plan", "Trade now", "Place the order", "Let's go".
+- EXECUTION PROCESS:
+  1. Detect activation trigger.
+  2. Search chat history for most recent trade plan (Symbol, Entry, SL, TP) provided by you. This applies to ANY asset (e.g., BTC, EURUSD, XAUUSD).
+  3. If the user specifies a 'Lot Size' (e.g., '0.01' or '1 lot'), map this value directly to the `volume` parameter in the tool.
+  4. If Lot Size / Volume is not specified → Call `calculate_risk_parameters` (default 1% risk) OR use 0.01-0.10 relative to account size.
+  5. CALL THE TOOL `execute_mt5_trade(symbol, side, volume, sl, tp)` IMMEDIATELY.
+  6. SAFETY EXCEPTION: If your most recent analysis result was "HOLD", "WAIT", or "NEUTRAL", DO NOT execute the trade. Explain clearly: "ฉันยังเทรดให้ไม่ได้ เพราะแผนล่าสุดระบุว่าต้อง [พักรอดูสถานการณ์]..."
+  7. CRITICAL: NEVER print a Ticket ID or say "กำลังดำเนินการ..." unless you have already called the tool and received a 'SUCCESS' response with a real ticket number.
+
+  6. DO NOT HALLUCINATE OR MAKE UP A TICKET ID.
+  7. YOU MUST WAIT FOR THE TOOL RESPONSE. 
+  8. ONLY AFTER the tool returns a real `ticket`, reply with "✅ Order Executed: [ticket]" and summarize. If the tool returns an error, report the error.
+- NEVER reply with a placeholder ID like #987654321. If you don't have a real ticket, the trade did not happen.
+
 TOOLS — call only when you need real market data:
 - Price/technicals/trend for any asset → get_market_analysis(symbol, asset_class)
-  · asset_class: "CRYPTO" for BTC/ETH/SOL/etc | "STOCK" for any company stock | "MACRO" for GOLD/OIL/NASDAQ/SP500/DXY
-- Global risk / macro climate → get_market_climate()
-- Sector money flow → get_sector_rotation()
-- Broad market scan → get_market_opportunities(asset_class="ALL"|"STOCK"|"CRYPTO")
-- Position sizing → calculate_risk_parameters(account_size, entry, stop_loss, risk_pct)
+- Execute LIVE trade on MT5 → execute_mt5_trade(symbol, side, volume, sl, tp)
+- Position sizing / Lot calculation → calculate_risk_parameters(account_size, entry, stop_loss, risk_pct)
+  (Use this whenever user asks 'คำนวณ lot', 'เทรดกี่ lot ดี', 'เสี่ยง 2% ต้องใช้ lotเท่าไหร่' or before execution if volume missing)
 
-OUTPUT FORMAT — adapt to context:
+OUTPUT FORMAT — ALWAYS FOLLOW THIS STRUCTURE FOR ANALYSIS:
 
 [Casual / General / Capability questions] → plain conversational reply, no headers, 1-3 sentences
 
-[Price check] → "ราคา BTC ตอนนี้ $X (+X% วันนี้) แนวรับ $X แนวต้าน $X"
+[Price check] → "ราคา BTC ตอนนี้ $X (+X% วันนี้) | แนวรับ $X แนวต้าน $X"
 
-[Full analysis] →
+[Full analysis] (NON-STOCK ASSETS ONLY) →
+### 📊 Analysis: {{Asset Symbol}}
 **Signal: BUY / SELL / HOLD** — Confidence X%
-**Why:** 2-3 sentences using real data
-**Entry:** $X | **Stop Loss:** $X | **Take Profit:** $X
-**Bear Case:** one sentence on main risk
 
-[Education / Concept] → clear explanation, simple language, bullet points only for 3+ items
+| Parameter | Level / Target |
+| :--- | :--- |
+| **Current Price** | $X |
+| 🎯 **Entry Zone** | $X - $X |
+| 🛑 **Stop Loss** | $X |
+| 💰 **Take Profit 1** | $X |
+| 💰 **Take Profit 2** | $X |
 
-PERSONALITY: Confident, direct, helpful. Speaks like a smart friend who's great at finance — but can hold a real conversation about anything.
-LANGUAGE: Always match user's language. Thai → Thai, English → English.
+CRITICAL TABLE RULE: ALL 4 price fields MUST contain real numeric price levels from tool data — NEVER write "รอสัญญาณ", "N/A", or leave blank.
+- BUY signal → Entry below current price or at support, SL below entry, TP1/TP2 above entry.
+- SELL signal → Entry above current price or at resistance/OB, SL above entry, TP1/TP2 below entry (lower prices = profit for short).
+- HOLD signal → Entry Zone = ⏳ Alert Level (the exact price that would trigger the LIKELY next direction), SL = Invalidation level, TP1/TP2 = projected targets if signal confirms.
+- CONSISTENCY CHECK: TP must be in the profit direction of the signal. If Signal=SELL, TP1 < Current Price. If Signal=BUY, TP1 > Current Price. Mismatched direction = wrong analysis.
+
+**1. Price Action & Market Structure:**
+Explain the trend context in detail. Ensure you use the EXACT price levels provided by the tools (e.g. $4815) and do not "correct" them. Mention BOS (Break of Structure) or MSS (Market Structure Shift) and timeframe alignment.
+
+**2. Supply/Demand & Liquidity:**
+Detail the specific Order Blocks (OB), Fair Value Gaps (FVG), and Liquidity zones identified by the tool.
+
+**3. 🐳 Whale Pulse & Institutional Flows:**
+Use 'whale_pulse' data to analyze:
+- **Whale Walls**: Mention specific price levels where large BUY/SELL orders are clustered (Liquidity Walls).
+- **Institutional Injections**: Identify if any recent candles show volume spikes > 300% (Institution entry footprints).
+- **Institutional Bias**: State if the current flow is 'ACCUMULATION' or 'DISTRIBUTION'.
+
+**4. 📈 Historical Context & Probability:**
+Use 'historical_pulse' from the tool result to refine your logic. Mention the ML Win Probability and how previous similar trades performed. Explain how this data influences your confidence in the current setup.
+
+**5. 🌍 Macro Guardian & Retail FOMO (The Alpha Edge):**
+Analyze how the broader market climate and on-chain sentiment impact this asset:
+- **Economic Calendar Guardian**: Check if there are any High-Impact news events looming. Suggest hard-stops or skipping trades to avoid macro slippage.
+- **Retail Liquidation Heatmap**: Use 'retail_fomo' data to check Long/Short account ratios. Explicitly state the retail sentiment (e.g., Extreme Long FOMO). Use this to justify a *Contrarian Bias* (e.g., "Retail is 75% Long, institutions are likely hunting for Shorts").
+
+**6. Tactical Execution:**
+Provide a clear step-by-step execution strategy (e.g., "Wait for a sweep of session liquidity, then look for a shift in structure on lower timeframes before entry").
+
+**7. 🧠 Agentic Synergy & Consensus:**
+Synthesize all above layers into a final judgment:
+- **Consensus**: Compare ML Win Probability vs. Whale Pulse Bias vs. SMC Structure. 
+- **Conflict Resolution**: If layers disagree (e.g., Technicals Bullish but Whales in Distribution), explain the risk and suggest waiting for a "Confluence Trigger".
+- **Final Confidence**: State the final trade confidence (Low/Med/High) based on how many layers align.
+
+**⚠️ Risk & Invalidation:**
+Explain where the logical bias fails and what the key 'exit' level is if the market shifts. Briefly mention the Bear Case / main threat.
+
+INSTITUTIONAL ORCHESTRATOR: You are not just a bot; you are an Agentic AI. You MUST use every intelligence feature provided by the tools (SMC, Whale Pulse, ML, History, News) to orchestrate the most precise trade plan. Do not ignore any layer of data.
+
+[Education / Concept] → clear explanation, simple language, bullet points ONLY for 3+ items.
+
+PERSONALITY: Confident, direct, helpful. Speaks like a senior portfolio manager who is your smart friend.
+INSTITUTIONAL INTELLIGENCE: When performing an 'ANALYZE' request, you must provide the highest possible level of detail. Explain the logic of the trade, reference specific technical levels from the tool data, and provide a comprehensive market outlook. Never be brief when asked for analysis.
+FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} only. No exceptions.
 """
 
         # Prepare tools for Gemini
@@ -693,6 +1770,47 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
                     "'ควร aggressive หรือ defensive?', 'BTC decoupled จาก stocks แล้วมั้ย?'"
                 ),
                 parameters=types.Schema(type="OBJECT", properties={})
+            ),
+            types.FunctionDeclaration(
+                name="get_trading_tactics",
+                description=(
+                    "Institutional Intelligence: Aggregates SMC, Trend, and Mean Reversion strategies "
+                    "to provide explicit entry/SL/TP 'moves' for a given symbol. "
+                    "Supports: CRYPTO (BTC, ETH, SOL, BNB, XRP, DOGE, AVAX, LINK, ADA, DOT, MATIC), "
+                    "COMMODITIES (GOLD/XAUUSD, SILVER/XAGUSD, OIL/USOIL), "
+                    "INDICES (NASDAQ/US100, SP500/US500, DOW/US30, GER40, UK100), "
+                    "FOREX (EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF). "
+                    "Pass the short symbol (e.g. 'BTC', 'GOLD', 'OIL', 'NASDAQ', 'EURUSD')."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "symbol": types.Schema(
+                            type="STRING",
+                            description="Short symbol: BTC, ETH, GOLD, OIL, NASDAQ, SP500, EURUSD, GBPUSD, etc."
+                        )
+                    },
+                    required=["symbol"]
+                )
+            ),
+            types.FunctionDeclaration(
+                name="get_institutional_ml_stats",
+                description=(
+                    "Fetch the institutional statistical edge for a symbol, including real-world win rate, "
+                    "current neural win probability, regime classification, and directional bias. "
+                    "ONLY for CRYPTO, FOREX, GOLD, OIL — these are the only asset classes in the training data. "
+                    "DO NOT call this for STOCKS (NFLX, AAPL, TSLA, etc.) — the model has no stock data and results are invalid."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "symbol": types.Schema(
+                            type="STRING",
+                            description="Short symbol: BTC, ETH, GOLD, OIL, NASDAQ, SP500, EURUSD, GBPUSD, etc."
+                        )
+                    },
+                    required=["symbol"]
+                )
             ),
             types.FunctionDeclaration(
                 name="get_top_movers",
@@ -854,6 +1972,17 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
                 name="get_market_climate",
                 description="Analyze current global macro risk, climate score, and threat level using VIX, DXY, and Bond Yields.",
                 parameters=types.Schema(type="OBJECT", properties={})
+            ),
+            types.FunctionDeclaration(
+                name="send_telegram_alert",
+                description="Send a notification or alert message to the user's Telegram. Use this when the user asks to push a message, set an alert, or broadcast an analysis.",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "message": types.Schema(type="STRING", description="The formatted message to send. Supports basic Markdown (bold, italic).")
+                    },
+                    required=["message"]
+                )
             )
         ])]
 
@@ -871,7 +2000,8 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
         SKIP_WORDS = {
             "BUY","SELL","LONG","SHORT","HOLD","AND","THE","FOR","NOT","USD",
             "THB","ATR","RSI","EMA","ICT","HTF","LTF","BOS","SMC","FVG",
-            "TP","SL","RR","ADX","OB","AI","TV","API","DB"
+            "TP","SL","RR","ADX","OB","AI","TV","API","DB","LOT","LOTS",
+            "VOLUME","VOL"
         }
 
         def _resolve_asset_class(sym: str) -> str:
@@ -1005,7 +2135,8 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
         # Split into stock-only vs broad (ALL) to avoid scanning unnecessary asset classes
         SCREENER_STOCK_KEYWORDS = [
             "หุ้นขึ้นแรง", "หุ้นลงแรง", "หุ้นขึ้นเยอะ", "หุ้นลงเยอะ",
-            "วันนี้หุ้น", "หุ้นอะไร", "หุ้นน่า", "หุ้นไหน",
+            "วันนี้หุ้น", "หุ้นอะไร", "หุ้นน่า", "หุ้นไหน", "หุ้นตัวไหน",
+            "น่า buy", "น่าซื้อหุ้น", "หุ้นน่าซื้อ", "หุ้นดี", "หุ้นเด่น",
             "stock scan", "scan หุ้น", "top gainer", "top loser",
         ]
         SCREENER_CRYPTO_KEYWORDS = [
@@ -1018,10 +2149,36 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
             "ตลาดเป็นยังไง", "ดูตลาดให้หน่อย", "สรุปตลาด", "วันนี้มีตัวไหนแววดี",
         ]
         
-        if any(kw in user_lower for kw in THEMATIC_KEYWORDS):
+        GOLD_KEYWORDS = ["ทอง", "gold", "xau", "xauusd", "ทองคำ"]
+        CRYPTO_ASSET_KEYWORDS = ["btc", "eth", "sol", "bitcoin", "ethereum", "crypto", "เหรียญ", "บิท"]
+        FOREX_KEYWORDS = ["eurusd", "gbpusd", "usdjpy", "forex", "ค่าเงิน", "ดอลลาร์"]
+        OIL_KEYWORDS = ["oil", "น้ำมัน", "crude", "wti", "brent"]
+        TELEGRAM_KEYWORDS = ["telegram", "แจ้งเตือน", "เตือนฉัน", "ส่งเข้าแชท", "alert me", "send to telegram"]
+        EXECUTE_KEYWORDS = ["จัดเลย", "เอาเลย", "ลุยเลย", "นำแผนนี้ไปเทรด", "นำแผนนี้ไปใช้", "เปิดออเดอร์", "execute", "trade now", "place order", "lot", "หลอด"]
+        # Add support for numeric inputs like "0.01" directly
+        is_numeric_lot = bool(re.search(r'\b\d+\.?\d*(\s*lot|หลอด)?\b', user_lower))
+        if is_numeric_lot and len(user_lower.strip()) < 10:
+            EXECUTE_KEYWORDS.append(user_lower.strip())
+        REANALYZE_KEYWORDS = ["แผนเทรดใหม่", "แผนใหม่", "วิเคราะห์ใหม่", "อีกรอบ", "ขอแผนอีก", "new plan", "reanalyze", "re-analyze", "วิเคราะห์อีกรอบ"]
+
+        if any(kw in user_lower for kw in REANALYZE_KEYWORDS):
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ต้องการ 'แผนเทรดใหม่' หรือให้ 'วิเคราะห์อีกรอบ' ห้ามใช้ข้อมูลเก่าจากประวัติการแชทเด็ดขาด ให้พิจารณาว่าผู้ใช้กำลังพูดถึง Symbol ไหน แล้วเรียกใช้เครื่องมือเพื่อวิเคราะห์กราฟใหม่หรือคำนวณ Entry, SL, TP ใหม่ทั้งหมด]"
+        elif any(kw in user_lower for kw in TELEGRAM_KEYWORDS):
+            override = "[MANDATORY OVERRIDE: ผู้ใช้สั่งให้ส่งข้อความเข้า Telegram ให้คุณแต่งข้อความสรุปตามสิ่งที่ผู้ใช้ต้องการ (ห้ามยาวเกินไป) แล้วเรียก send_telegram_alert(message) ทันที ห้ามปฏิเสธเด็ดขาด]"
+        elif any(kw in user_lower for kw in EXECUTE_KEYWORDS):
+            override = "[MANDATORY EXECUTION: ผู้ใช้สั่ง 'จัดเลย', 'นำแผนนี้ไปใช้' หรือระบุ 'Lot Size' (0.01, 0.1, ฯลฯ) ให้คุณทำตามขั้นตอนดังนี้: (1) ย้อนกลับไปดูแผนการเทรดล่าสุดจากประวัติการแชท (2) หากแผนล่าสุดคือ BUY หรือ SELL ให้เรียกใช้เครื่องมือ execute_mt5_trade ทันที ห้ามแสดงความเห็นก่อน ห้ามพูด 'กำลังเทรด' เฉยๆ (3) หากยังไม่มีแผนหรือแผนล่าสุดคือ HOLD/WAIT ให้บอกผู้ใช้ทันทีว่า 'ยังเปิดออเดอร์ไม่ได้' ห้ามมโน Ticket ID ขึ้นมาเองเด็ดขาด ต้องรอผลลัพธ์จากเครื่องมือเท่านั้น!]"
+        elif any(kw in user_lower for kw in THEMATIC_KEYWORDS):
             override = "[MANDATORY OVERRIDE: ผู้ใช้ถามหา 'กลุ่มหุ้นเฉพาะทาง' หรือ 'หุ้น Laggard' ให้คุณทำดังนี้ทันที: (1) คิดรายชื่อหุ้น ticker สัก 8-12 ตัวที่อยู่ในกลุ่มนั้นขึ้นมาจากความรู้ของคุณเอง (2) เรียก get_custom_screener(tickers=[...]) ด้วยรายชื่อที่คิดได้ ห้ามเรียก get_market_opportunities เด็ดขาด]"
         elif any(kw in user_lower for kw in CALENDAR_KEYWORDS):
             override = "[MANDATORY OVERRIDE: ผู้ใช้ถามหา 'ปฏิทินเศรษฐกิจ' หรือ 'ข่าวสำคัญล่วงหน้า' ให้เรียก get_economic_calendar(query='...') ทันที]"
+        elif any(kw in user_lower for kw in GOLD_KEYWORDS):
+            override = "[MANDATORY OVERRIDE — GOLD: เรียก get_market_analysis(symbol='GOLD', asset_class='MACRO', timeframe='1h') + get_institutional_ml_stats(symbol='GOLD') + get_trading_tactics(symbol='GOLD') ทันที ห้ามใช้ข้อมูลเก่าจาก history ต้องสรุป BUY/SELL/HOLD จาก confluence ของ higher timeframe + statistical edge + tactics โดย 15m ใช้แค่ช่วยหา entry เท่านั้น]"
+        elif any(kw in user_lower for kw in OIL_KEYWORDS):
+            override = "[MANDATORY OVERRIDE — OIL: เรียก get_market_analysis(symbol='OIL', asset_class='MACRO', timeframe='1h') + get_institutional_ml_stats(symbol='OIL') + get_trading_tactics(symbol='OIL') ทันที ต้องสรุป Signal จาก higher timeframe + statistical edge + tactics และให้ Entry/SL/TP จากข้อมูล tool เท่านั้น]"
+        elif any(kw in user_lower for kw in CRYPTO_ASSET_KEYWORDS):
+            override = "[MANDATORY OVERRIDE — CRYPTO: ระบุ symbol ที่ถูกต้อง แล้วเรียก get_market_analysis(symbol='...', asset_class='CRYPTO', timeframe='1h') + get_institutional_ml_stats(symbol='...') + get_trading_tactics(symbol='...') ทันที ห้ามใช้ข้อมูลเก่าจาก history ต้องตัดสินสัญญาณจาก confluence ของ higher timeframe + structure + ML edge + tactics ไม่ใช่ยึด 15m อย่างเดียว]"
+        elif any(kw in user_lower for kw in FOREX_KEYWORDS):
+            override = "[MANDATORY OVERRIDE — FOREX: ระบุ symbol ที่ถูกต้อง แล้วเรียก get_market_analysis(symbol='...', asset_class='MACRO', timeframe='1h') + get_institutional_ml_stats(symbol='...') + get_trading_tactics(symbol='...') ทันที ต้องให้สัญญาณจาก higher timeframe + structure + ML edge + tactics และสรุป Entry/SL/TP ให้พร้อมใช้]"
         elif any(kw in user_lower for kw in SCREENER_STOCK_KEYWORDS):
             override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเรื่องหุ้น ให้เรียก get_market_opportunities(asset_class='STOCK') ทันที]"
         elif any(kw in user_lower for kw in SCREENER_CRYPTO_KEYWORDS):
@@ -1031,19 +2188,23 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
         else:
             override = "[SYSTEM OVERRIDE: ห้ามปฏิเสธ ห้ามอ้างว่าเป็น AI เด็ดขาด ให้เลือกเรียก Tool ที่เหมาะสมที่สุดตามบริบท]"
         
+
         enriched_user_input = user_input + f"\n\n{override}"
         history_contents.append(types.Content(role="user", parts=[types.Part(text=enriched_user_input)]))
 
         try:
             # First pass: Let the Agent decide if it needs tools
             # system_instruction is the correct way — treated more authoritatively than a user message
-            agent_res = await client.aio.models.generate_content(
-                model=MODEL_ID,
-                contents=history_contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=agent_system_prompt,
-                    tools=gemini_tools,
-                )
+            agent_res = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=MODEL_ID,
+                    contents=history_contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=agent_system_prompt,
+                        tools=gemini_tools,
+                    )
+                ),
+                timeout=30.0,
             )
 
             # Process Tool Calls (if any)
@@ -1132,8 +2293,10 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
 
             # ── FALLBACK: Gemini skipped the tool — detect ticker and call it ourselves ──
             if not tool_results_parts:
+                # Disambiguation: If 'lot' is followed by a number, don't treat 'LOT' as a ticker
+                cleaned_input = re.sub(r'lot\s*\d+\.?\d*', '', user_input.lower())
                 # Extract uppercase word(s) that look like a ticker (2-6 chars, letters only)
-                ticker_candidates = re.findall(r'\b([A-Z]{2,6})\b', user_input.upper())
+                ticker_candidates = re.findall(r'\b([A-Z]{2,6})\b', cleaned_input.upper())
                 auto_sym = next((t for t in ticker_candidates if t not in SKIP_WORDS), None)
 
                 if auto_sym:
@@ -1178,18 +2341,31 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
             if tool_results_parts:
                 # Add tool calls and responses to history
                 history_contents.append(agent_res.candidates[0].content)
-                history_contents.append(types.Content(role="user", parts=tool_results_parts))
+                # Append language reminder alongside tool results so Gemini sees it right before generating
+                lang_reminder = (
+                    f"Now write your full analysis directly in {target_lang}. "
+                    f"Do NOT start with 'Final Answer in {target_lang}:' or any preamble. "
+                    f"Just write the response immediately in {target_lang}."
+                )
+                tool_results_parts_with_reminder = tool_results_parts + [types.Part(text=lang_reminder)]
+                history_contents.append(types.Content(role="user", parts=tool_results_parts_with_reminder))
 
                 final_stream = await client.aio.models.generate_content_stream(
                     model=MODEL_ID,
                     contents=history_contents,
                     config=types.GenerateContentConfig(
                         system_instruction=agent_system_prompt,
-                    )  # No tools → text-only
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    )  # No tools → text-only, no thinking tokens
                 )
                 has_yielded_text = False
                 async for chunk in final_stream:
                     try:
+                        # Skip thinking tokens (Gemini 2.5 thinking model)
+                        if chunk.candidates:
+                            parts = chunk.candidates[0].content.parts if chunk.candidates[0].content else []
+                            if any(getattr(p, 'thought', False) for p in parts):
+                                continue
                         if chunk.text:
                             has_yielded_text = True
                             yield json.dumps({"type": "chunk", "content": chunk.text}) + "\n"
@@ -1200,9 +2376,36 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
                 if not has_yielded_text:
                     yield json.dumps({"type": "chunk", "content": "*(AI ประมวลผลสำเร็จ แต่อาจถูกจำกัดการอธิบายข้อความ กรุณาอ้างอิงข้อมูลจากหน้าจอและผลลัพธ์การสแกนครับ)*"}) + "\n"
             else:
-                # No tool calls and no ticker detected — yield original response
-                if agent_res.text:
-                    yield json.dumps({"type": "chunk", "content": agent_res.text}) + "\n"
+                # No tool calls and no ticker detected — stream a language-enforced response
+                lang_reminder = (
+                    f"Now write your response directly in {target_lang}. "
+                    f"Do NOT use any other language. Write immediately without preamble."
+                )
+                history_contents.append(agent_res.candidates[0].content)
+                history_contents.append(types.Content(role="user", parts=[types.Part(text=lang_reminder)]))
+                try:
+                    no_tool_stream = await client.aio.models.generate_content_stream(
+                        model=MODEL_ID,
+                        contents=history_contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=agent_system_prompt,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0),
+                        )
+                    )
+                    async for chunk in no_tool_stream:
+                        try:
+                            if chunk.candidates:
+                                parts = chunk.candidates[0].content.parts if chunk.candidates[0].content else []
+                                if any(getattr(p, 'thought', False) for p in parts):
+                                    continue
+                            if chunk.text:
+                                yield json.dumps({"type": "chunk", "content": chunk.text}) + "\n"
+                        except ValueError:
+                            pass
+                except Exception:
+                    # Fallback to first-pass text
+                    if agent_res.text:
+                        yield json.dumps({"type": "chunk", "content": agent_res.text}) + "\n"
 
         except Exception as e:
             logging.error(f"Agent Workflow Error: {e}")
@@ -1210,7 +2413,15 @@ LANGUAGE: Always match user's language. Thai → Thai, English → English.
 
         return # End of agentic response
 
-    return StreamingResponse(generate_response(), media_type="application/x-ndjson")
+    async def safe_generate():
+        try:
+            async for chunk in generate_response():
+                yield chunk
+        except Exception as e:
+            logging.error(f"Unhandled stream error: {e}")
+            yield json.dumps({"type": "chunk", "content": f"⚠️ ระบบขัดข้อง: {str(e)}"}) + "\n"
+
+    return StreamingResponse(safe_generate(), media_type="application/x-ndjson")
 
 @app.get("/api/health")
 def health():
@@ -1254,13 +2465,34 @@ def get_dashboard_data(category: str):
     if category not in queries:
         raise HTTPException(status_code=404, detail="Category not found")
         
+    if category == "audits":
+        try:
+            with get_persistence_conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT type, detail, time FROM audit_activity
+                    UNION ALL
+                    SELECT 'AI_QUERY' as type, SUBSTR(reasoning, 1, 120) as detail, timestamp as time
+                    FROM tactics_audit_log
+                    ORDER BY time DESC
+                    LIMIT 50
+                    """
+                ).fetchall()
+            return {"data": [dict(row) for row in rows]}
+        except Exception as e:
+            logger.warning(f"Audit activity fallback failed: {e}")
+            return {"data": []}
+
     result = _execute_sql(queries[category])
-    
+
     # Return raw database results - no synthetic data fabrication
     # Trading platforms must only display verified market data
     if "data" not in result:
         result = {"data": []}
-    
+
+    if category == "whales" and not result.get("data"):
+        result = {"data": _fetch_binance_whales()}
+
     return result
 
 @app.get("/api/signals")
@@ -1269,14 +2501,20 @@ def get_signals():
     [UPGRADED] Multi-Agent signals using technical indicators (RSI/MACD/ADX).
     Falls back to price-delta method if Intelligence Layer unavailable.
     """
+    cached = _cache_get("signals_v1")
+    if cached:
+        return cached
     # ── Try Intelligence Layer first ──────────────────────────────────────────
     if INTELLIGENCE_AVAILABLE and crypto_intel:
         try:
-            symbols = ["BTC", "ETH", "SOL", "BNB", "XRP", "GOLD", "NASDAQ", "SP500"]
+            symbols = ["BTC", "ETH", "SOL", "XRP", "GOLD", "SILVER"]  # MT5-verified XM broker symbols only
             signals = crypto_intel.get_quick_signals(symbols, timeframe="15m")
+
             if signals:
                 logging.info(f"✅ Intelligence signals: {len(signals)} symbols")
-                return {"signals": signals, "source": "multi_agent_indicators"}
+                payload = {"signals": signals, "source": "multi_agent_indicators"}
+                _cache_set("signals_v1", payload)
+                return payload
         except Exception as e:
             logging.warning(f"Intelligence signals failed, falling back: {e}")
 
@@ -1334,7 +2572,9 @@ def get_signals():
             })
 
         signals.sort(key=lambda x: x['confidence'], reverse=True)
-        return {"signals": signals[:10], "source": "price_delta_fallback"}
+        payload = {"signals": signals[:10], "source": "price_delta_fallback"}
+        _cache_set("signals_v1", payload)
+        return payload
 
     except Exception as e:
         logging.error(f"Signals error: {e}")
@@ -1495,57 +2735,205 @@ def intelligence_status():
 
 _market_cache: dict = {}  # { key: { data: ..., ts: float } }
 MARKET_CACHE_TTL = 300  # 5 minutes
+MARKET_CACHE_TTL_RULES = {
+    "signals_v1": 30,
+    "crypto_fg_v2": 900,
+    "cnn_fg_v2": 900,
+    "market_indices_v5": 180,
+    "market_pulse_v1": 180,
+    "market_stocks_v2": 120,
+    "market_screener_v2_": 300,
+    "tactics:": 300,
+    "tactics_audit_logs_v1": 60,
+    "whales_all_v1": 120,
+    "funding_rates_v1": 90,
+    "etf_flows_v1": 900,
+    "portfolio_wallet:": 300,
+    "alerts_payload_v1": 15,
+    "alerts_refresh_v1": 45,
+}
+_tactics_inflight: dict[str, asyncio.Task] = {}
+_alerts_refresh_task: Optional[asyncio.Task] = None
 
-def _cache_get(key: str):
+def _cache_ttl_for(key: str, ttl: Optional[int] = None) -> int:
+    if ttl is not None:
+        return ttl
+    for prefix, configured_ttl in MARKET_CACHE_TTL_RULES.items():
+        if key == prefix or key.startswith(prefix):
+            return configured_ttl
+    return MARKET_CACHE_TTL
+
+def _cache_get(key: str, ttl: Optional[int] = None, allow_stale: bool = False):
     entry = _market_cache.get(key)
-    if entry and (time.time() - entry["ts"]) < MARKET_CACHE_TTL:
+    if not entry:
+        return None
+    effective_ttl = _cache_ttl_for(key, ttl=ttl if ttl is not None else entry.get("ttl"))
+    if allow_stale or (time.time() - entry["ts"]) < effective_ttl:
         return entry["data"]
     return None
 
-def _cache_set(key: str, data):
-    _market_cache[key] = {"data": data, "ts": time.time()}
+def _cache_get_stale(key: str):
+    return _cache_get(key, allow_stale=True)
+
+def _cache_set(key: str, data, ttl: Optional[int] = None):
+    _market_cache[key] = {"data": data, "ts": time.time(), "ttl": ttl}
+
+def _cache_delete(key: str):
+    _market_cache.pop(key, None)
+
+def _fetch_crypto_fear_greed_sync():
+    cached = _cache_get("crypto_fg_v2")
+    if cached:
+        return cached
+    r = requests.get(
+        "https://api.alternative.me/fng/?limit=31&format=json",
+        timeout=8,
+        headers={"User-Agent": "CryptoStreamAI/2.0"},
+    )
+    r.raise_for_status()
+    payload = r.json()
+    data = payload["data"]
+
+    curr = data[0]
+    yesterday = data[1] if len(data) > 1 else curr
+    last_week = data[7] if len(data) > 7 else data[-1]
+    last_month = data[30] if len(data) > 30 else data[-1]
+
+    result = {
+        "value": int(curr["value"]),
+        "label": curr["value_classification"],
+        "timestamp": curr["timestamp"],
+        "history": {
+            "yesterday": {"value": int(yesterday["value"]), "label": yesterday["value_classification"]},
+            "last_week": {"value": int(last_week["value"]), "label": last_week["value_classification"]},
+            "last_month": {"value": int(last_month["value"]), "label": last_month["value_classification"]},
+        }
+    }
+    _cache_set("crypto_fg_v2", result)
+    return result
+
+def _fetch_cnn_fear_greed_sync():
+    cached = _cache_get("cnn_fg_v2")
+    if cached:
+        return cached
+    r = requests.get(
+        "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+        timeout=10,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Referer": "https://www.cnn.com/markets/fear-and-greed",
+        },
+    )
+    r.raise_for_status()
+    payload = r.json()
+    fg = payload.get("fear_and_greed", {})
+
+    result = {
+        "value": round(float(fg.get("score", 50)), 1),
+        "label": fg.get("rating", "Neutral").replace("_", " ").title(),
+        "timestamp": fg.get("timestamp", ""),
+        "history": {
+            "yesterday": {"value": round(float(fg.get("previous_close", 50)), 1), "label": fg.get("previous_close_rating", "Neutral").replace("_", " ").title()},
+            "last_week": {"value": round(float(fg.get("previous_1_week", 50)), 1), "label": fg.get("previous_1_week_rating", "Neutral").replace("_", " ").title()},
+            "last_month": {"value": round(float(fg.get("previous_1_month", 50)), 1), "label": fg.get("previous_1_month_rating", "Neutral").replace("_", " ").title()},
+        }
+    }
+    _cache_set("cnn_fg_v2", result)
+    return result
+
+def _build_market_indices_payload():
+    cached = _cache_get("market_indices_v5")
+    if cached:
+        return cached
+
+    def _fetch_yahoo_chart(symbol: str, range_: str, interval: str):
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
+        r = requests.get(
+            url,
+            params={
+                "range": range_,
+                "interval": interval,
+                "includePrePost": "false",
+                "events": "div,splits",
+            },
+            timeout=12,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://finance.yahoo.com/",
+            },
+        )
+        r.raise_for_status()
+        payload = r.json()
+        chart = (payload or {}).get("chart", {})
+        err = chart.get("error")
+        if err:
+            raise ValueError(str(err))
+        results = chart.get("result") or []
+        if not results:
+            raise ValueError("Empty chart result")
+        return results[0]
+
+    def _series_from_chart_result(chart_result: dict):
+        ts = chart_result.get("timestamp") or []
+        ind = (chart_result.get("indicators") or {}).get("quote") or []
+        closes = (ind[0] if ind else {}).get("close") or []
+        series = []
+        for t, c in zip(ts, closes):
+            if c is None:
+                continue
+            series.append({"time": int(t), "value": round(float(c), 2)})
+        return series
+
+    result = {}
+    symbols_map = {
+        "^NDX": {"key": "nasdaq", "name": "Nasdaq 100"},
+        "^DJI": {"key": "dow", "name": "Dow Jones"},
+        "^GSPC": {"key": "sp500", "name": "S&P 500"},
+        "DX-Y.NYB": {"key": "dxy", "name": "US Dollar Index"},
+        "^VIX": {"key": "vix", "name": "CBOE VIX"},
+    }
+
+    for sym, meta in symbols_map.items():
+        try:
+            chart_result = _fetch_yahoo_chart(sym, "5d", "15m")
+            series = _series_from_chart_result(chart_result)
+            if not series:
+                chart_result = _fetch_yahoo_chart(sym, "1mo", "1d")
+                series = _series_from_chart_result(chart_result)
+
+            meta_info = chart_result.get("meta") or {}
+            prev_close = meta_info.get("previousClose")
+            if prev_close is None:
+                prev_close = meta_info.get("chartPreviousClose")
+
+            price = float(series[-1]["value"]) if series else 0.0
+            prev = float(prev_close) if prev_close not in (None, 0, "0") else (float(series[-2]["value"]) if len(series) > 1 else price)
+            chg_pct = ((price - prev) / prev) * 100 if prev else 0.0
+
+            result[meta["key"]] = {
+                "name": meta["name"],
+                "price": round(price, 2),
+                "change_pct": round(chg_pct, 2),
+                "previous_close": round(prev, 2),
+                "series": series,
+            }
+        except Exception as inner_e:
+            logger.warning(f"Yahoo chart API {sym} error: {inner_e}")
+            result[meta["key"]] = {"name": meta["name"], "price": 0, "change_pct": 0, "previous_close": 0, "series": []}
+
+    _cache_set("market_indices_v5", result)
+    return result
 
 @app.get("/api/market/crypto-fear-greed")
 async def crypto_fear_greed():
     """Crypto Fear & Greed Index from alternative.me — includes historical data."""
-    cached = _cache_get("crypto_fg_v2")
-    if cached:
-        return cached
     try:
-        # Fetch current and historical (limit=31 to cover last month)
-        r = requests.get(
-            "https://api.alternative.me/fng/?limit=31&format=json",
-            timeout=8,
-            headers={"User-Agent": "CryptoStreamAI/2.0"},
-        )
-        r.raise_for_status()
-        payload = r.json()
-        data = payload["data"]
-        
-        # Current
-        curr = data[0]
-        
-        # Historical mapping
-        # data[0] = now, data[1] = yesterday, data[7] = last week, data[30] = last month
-        yesterday = data[1] if len(data) > 1 else curr
-        last_week = data[7] if len(data) > 7 else data[-1]
-        last_month = data[30] if len(data) > 30 else data[-1]
-
-        result = {
-            "value": int(curr["value"]),
-            "label": curr["value_classification"],
-            "timestamp": curr["timestamp"],
-            "history": {
-                "yesterday": {"value": int(yesterday["value"]), "label": yesterday["value_classification"]},
-                "last_week": {"value": int(last_week["value"]), "label": last_week["value_classification"]},
-                "last_month": {"value": int(last_month["value"]), "label": last_month["value_classification"]},
-            }
-        }
-        _cache_set("crypto_fg_v2", result)
-        return result
+        return await asyncio.to_thread(_fetch_crypto_fear_greed_sync)
     except Exception as e:
         logger.warning(f"Crypto F&G fetch error: {e}")
-        cached_fallback = _market_cache.get("crypto_fg_v2", {}).get("data")
+        cached_fallback = _cache_get_stale("crypto_fg_v2")
         return cached_fallback or {
             "value": 50, "label": "Neutral", "timestamp": "",
             "history": {
@@ -1558,39 +2946,11 @@ async def crypto_fear_greed():
 @app.get("/api/market/cnn-fear-greed")
 async def cnn_fear_greed():
     """CNN Fear & Greed Index — includes historical data from CNN API."""
-    cached = _cache_get("cnn_fg_v2")
-    if cached:
-        return cached
     try:
-        r = requests.get(
-            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
-            timeout=10,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json",
-                "Referer": "https://www.cnn.com/markets/fear-and-greed",
-            },
-        )
-        r.raise_for_status()
-        payload = r.json()
-        fg = payload.get("fear_and_greed", {})
-        
-        # CNN provides historical fields in the response
-        result = {
-            "value": round(float(fg.get("score", 50)), 1),
-            "label": fg.get("rating", "Neutral").replace("_", " ").title(),
-            "timestamp": fg.get("timestamp", ""),
-            "history": {
-                "yesterday": {"value": round(float(fg.get("previous_close", 50)), 1), "label": fg.get("previous_close_rating", "Neutral").replace("_", " ").title()},
-                "last_week": {"value": round(float(fg.get("previous_1_week", 50)), 1), "label": fg.get("previous_1_week_rating", "Neutral").replace("_", " ").title()},
-                "last_month": {"value": round(float(fg.get("previous_1_month", 50)), 1), "label": fg.get("previous_1_month_rating", "Neutral").replace("_", " ").title()},
-            }
-        }
-        _cache_set("cnn_fg_v2", result)
-        return result
+        return await asyncio.to_thread(_fetch_cnn_fear_greed_sync)
     except Exception as e:
         logger.warning(f"CNN F&G fetch error: {e}")
-        cached_fallback = _market_cache.get("cnn_fg_v2", {}).get("data")
+        cached_fallback = _cache_get_stale("cnn_fg_v2")
         return cached_fallback or {
             "value": 50, "label": "Neutral", "timestamp": "",
             "history": {
@@ -1603,10 +2963,8 @@ async def cnn_fear_greed():
 @app.get("/api/market/indices")
 async def market_indices():
     """Nasdaq Composite (^IXIC), Dow Jones (^DJI), and VIX (^VIX) via Yahoo Finance with Intraday History."""
-    cached = _cache_get("market_indices_v5")
-    if cached:
-        return cached
     try:
+        return await asyncio.to_thread(_build_market_indices_payload)
         def _fetch_yahoo_chart(symbol: str, range_: str, interval: str):
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
             r = requests.get(
@@ -1648,8 +3006,10 @@ async def market_indices():
 
         result = {}
         symbols_map = {
-            "^IXIC": {"key": "nasdaq", "name": "Nasdaq Composite"},
+            "^NDX": {"key": "nasdaq", "name": "Nasdaq 100"},
             "^DJI": {"key": "dow", "name": "Dow Jones"},
+            "^GSPC": {"key": "sp500", "name": "S&P 500"},
+            "DX-Y.NYB": {"key": "dxy", "name": "US Dollar Index"},
             "^VIX": {"key": "vix", "name": "CBOE VIX"},
         }
 
@@ -1685,11 +3045,41 @@ async def market_indices():
         return result
     except Exception as e:
         logger.warning(f"Market indices fetch error: {e}")
-        cached_fallback = _market_cache.get("market_indices_v5", {}).get("data")
+        cached_fallback = _cache_get_stale("market_indices_v5")
         return cached_fallback or {
-            "nasdaq": {"name": "Nasdaq", "price": 0, "change_pct": 0, "previous_close": 0, "series": []}, 
+            "nasdaq": {"name": "Nasdaq 100", "price": 0, "change_pct": 0, "previous_close": 0, "series": []}, 
             "dow": {"name": "Dow Jones", "price": 0, "change_pct": 0, "previous_close": 0, "series": []}, 
+            "sp500": {"name": "S&P 500", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
+            "dxy": {"name": "US Dollar Index", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
             "vix": {"name": "VIX", "price": 0, "change_pct": 0, "previous_close": 0, "series": []}
+        }
+
+@app.get("/api/market/dxy-news")
+async def get_dxy_news():
+    """Returns real-time macro analysis for the US Dollar Index (DXY) using Gemini."""
+    try:
+        client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY") or GEMINI_API_KEY, http_options={'api_version': 'v1alpha'})
+        agent = create_sentiment_agent(client)
+        
+        # Focus analysis on US Dollar and Macro drivers
+        result = agent({"symbol": "DXY", "asset_class": "MACRO"})
+        
+        # Fetch relevant news articles using macro feeds
+        articles = _fetch_rss_news(symbol_hint="DXY")
+        
+        return {
+            "overall": result.get("sentiment_data", {}),
+            "articles": articles[:10]
+        }
+    except Exception as e:
+        logging.error(f"DXY News API error: {e}")
+        return {
+            "overall": {
+                "sentiment": "NEUTRAL",
+                "score": 0,
+                "summary": "Analyzing current macro drivers for Dollar strength..."
+            },
+            "articles": []
         }
 
 @app.get("/api/market/pulse")
@@ -1742,6 +3132,64 @@ async def market_pulse():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.get("/api/market/calendar")
+async def market_calendar(days: int = 7):
+    """
+    Economic calendar + earnings feed for the frontend calendar view.
+    Returns normalized events plus macro watch guidance even when the live feed is sparse.
+    """
+    from datetime import datetime
+
+    try:
+        from intelligence.tools.market_tools import get_economic_calendar_v2, get_economic_calendar_estimated
+
+        days = max(1, min(int(days), 30))
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(get_economic_calendar_v2, days),
+                timeout=4.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Market calendar API timed out on live sources; falling back to estimated schedule.")
+            payload = await asyncio.to_thread(get_economic_calendar_estimated, days)
+
+        if not isinstance(payload, dict):
+            return {
+                "status": "ERROR",
+                "events": [],
+                "macro_watch": [],
+                "trading_note": "Calendar engine returned an unexpected response.",
+                "source_status": "invalid_payload",
+            }
+
+        events = payload.get("events") or []
+        macro_watch = payload.get("macro_watch") or []
+
+        return {
+            "status": payload.get("status", "SUCCESS"),
+            "period": payload.get("period"),
+            "events": events,
+            "total_events": payload.get("total_events", len(events)),
+            "critical_count": payload.get("critical_count", 0),
+            "high_impact_count": payload.get("high_impact_count", 0),
+            "macro_watch": macro_watch,
+            "trading_note": payload.get("trading_note", ""),
+            "source_status": "live_feed" if any(not event.get("is_estimated") for event in events) else ("watch_only" if events else "error"),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Market calendar API error: {e}")
+        return {
+            "status": "ERROR",
+            "events": [],
+            "macro_watch": [],
+            "trading_note": "Calendar data is unavailable right now.",
+            "source_status": "error",
+            "error": str(e),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+
 
 def _yahoo_batch_quotes(symbols: list[str]) -> dict:
     """Fetch real-time quotes for multiple symbols using yfinance (avoids v7 API 401 errors)."""
@@ -1790,13 +3238,23 @@ async def market_stocks():
     if cached:
         return cached
     try:
-        # Key → Yahoo symbol
+        # Key → Yahoo symbol (Expanded)
         symbols_map = {
             "NVDA":   "NVDA",
             "TSLA":   "TSLA",
+            "AAPL":   "AAPL",
+            "MSFT":   "MSFT",
+            "META":   "META",
+            "GOOGL":  "GOOGL",
+            "AMD":    "AMD",
             "GOLD":   "GC=F",
+            "OIL":    "CL=F",
+            "DXY":    "DX-Y.NYB",
             "NASDAQ": "^IXIC",
             "SP500":  "^GSPC",
+            "BTC":    "BTC-USD",
+            "ETH":    "ETH-USD",
+            "SOL":    "SOL-USD",
         }
         yahoo_symbols = list(symbols_map.values())
         raw = await asyncio.to_thread(_yahoo_batch_quotes, yahoo_symbols)
@@ -1832,6 +3290,35 @@ def _chunks(lst: list, n: int):
     """Split list into chunks of size n."""
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
+
+
+@app.get("/api/backtest")
+async def api_backtest(
+    symbol: str,
+    timeframe: str = "15m",
+    limit: int = 500,
+    risk_pct: float = 2.0,
+    leverage: float = 1.0,
+    asset_class: str = "CRYPTO",
+):
+    """Run the historical backtest engine used by the Strategy Lab UI."""
+    try:
+        from intelligence.backtest_crypto import run_crypto_backtest
+
+        result = await asyncio.to_thread(
+            run_crypto_backtest,
+            symbol.upper().strip(),
+            timeframe,
+            limit,
+            risk_pct,
+            leverage,
+            None,
+            asset_class.lower().strip(),
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Backtest API error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/market/screener")
@@ -1904,13 +3391,115 @@ async def market_screener(index: str = "all"):
         return {"count": 0, "stocks": [], "timestamp": time.time(), "index": index}
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 14: Tactical Intelligence Hub (/api/tactics)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _compute_tactics_payload(symbol: str):
+    normalized_symbol = str(symbol).upper()
+    cache_key = f"tactics:{normalized_symbol}"
+    result = await run_agent_tool_async("get_trading_tactics", {"symbol": normalized_symbol})
+
+    if "error" in result:
+        return {"symbol": normalized_symbol, "status": "ERROR", "message": result["error"]}
+
+    tactics_list = result.get("tactics", [])
+    top_tactic = tactics_list[0] if tactics_list else {}
+    await asyncio.to_thread(
+        log_tactics_call,
+        symbol=normalized_symbol,
+        recommendation=result.get("recommendation", "WATCH"),
+        price=result.get("price", 0.0),
+        strategy=result.get("best_persona", "GENERAL_AI"),
+        confidence=float(top_tactic.get("score", 0)) / 100.0 if top_tactic else 0.5,
+        reasoning=top_tactic.get("logic", "No reasoning provided"),
+    )
+    _cache_set(cache_key, result)
+    _cache_delete("tactics_audit_logs_v1")
+    return result
+
+def _read_tactics_audit_logs():
+    cached = _cache_get("tactics_audit_logs_v1")
+    if cached:
+        return cached
+    conn = sqlite3.connect(PERSISTENCE_DB)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM tactics_audit_log ORDER BY timestamp DESC LIMIT 100")
+    rows = cursor.fetchall()
+    conn.close()
+    payload = {"logs": [dict(r) for r in rows]}
+    _cache_set("tactics_audit_logs_v1", payload)
+    return payload
+
+@app.get("/api/tactics/{symbol}")
+async def get_tactics(symbol: str, x_api_key: str = Header(None)):
+    """
+    [V7-RESTORED] Fetch institutional-grade tactics for a symbol.
+    Aggregates indicators and SMC structure into a tactical plan.
+    """
+    if APP_API_KEY and x_api_key != APP_API_KEY and x_api_key != "demo":
+        raise HTTPException(status_code=401, detail="Unauthorized institutional key required.")
+
+    normalized_symbol = str(symbol).upper()
+    cache_key = f"tactics:{normalized_symbol}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        inflight_task = _tactics_inflight.get(cache_key)
+        if inflight_task is None or inflight_task.done():
+            inflight_task = asyncio.create_task(_compute_tactics_payload(normalized_symbol))
+            _tactics_inflight[cache_key] = inflight_task
+        return await inflight_task
+    except Exception as e:
+        logger.error(f"Tactics API error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        inflight_task = _tactics_inflight.get(cache_key)
+        if inflight_task and inflight_task.done():
+            _tactics_inflight.pop(cache_key, None)
+
+@app.get("/api/tactics/audit/logs")
+async def get_tactics_audit_logs(request: Request, x_api_key: str = Header(None)):
+    """
+    [V7-RESTORED] Fetch historical tactical signals generated by the system.
+    Returns the structured object expected by the frontend.
+    """
+    verify_token(x_api_key)
+    
+    try:
+        return await asyncio.to_thread(_read_tactics_audit_logs)
+    except Exception as e:
+        logger.error(f"Tactics Audit API error: {e}")
+        return {"logs": []}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stock / Crypto Screener  (/api/screener)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SMALL_CAP = SMALL_CAP_TICKERS
+import yfinance as yf
+import tempfile
+try:
+    # Set cache to a temp directory to avoid disk I/O errors and TypeErrors
+    temp_cache = os.path.join(tempfile.gettempdir(), "py-yfinance")
+    if not os.path.exists(temp_cache):
+        os.makedirs(temp_cache, exist_ok=True)
+    yf.set_tz_cache_location(temp_cache)
+except Exception as e:
+    logger.warning(f"Failed to set yfinance cache: {e}")
 
-_CRYPTO_SCREENER = ["BTC","ETH","SOL","XRP","BNB","DOGE","AVAX","LINK","ADA","DOT","MATIC","LTC","BCH","UNI","ATOM"]
+_NASDAQ100 = NASDAQ_100_TICKERS
+
+_CRYPTO_SCREENER = [
+    "BTC","ETH","SOL","XRP","BNB","DOGE","AVAX","LINK","ADA","DOT","MATIC","LTC","BCH","UNI","ATOM",
+    "NEAR","ICP","FIL","ALGO","HBAR","APT","OP","ARB","STX","VET","ETC","RENDER","RNDR","GRT","TAO",
+    "TIA","INJ","SEI","SUI","FET","AGIX","OCEAN","THETA","EGLD","AAVE","MKR","RUNE","PEPE","FLOKI",
+    "BONK","WIF","ORDI","1000SATS","LDO","JUP","PYTH","GALA","IMX","BEAM","AXS","SAND","MANA"
+]
 
 
 def _compute_rsi(closes: list, period: int = 14) -> float:
@@ -1971,16 +3560,18 @@ def _screener_stock_batch(symbols: list) -> list:
 
 def _screener_crypto_batch() -> list:
     import requests as _req
+    import concurrent.futures
     results = []
-    for sym in _CRYPTO_SCREENER:
+    
+    def fetch_one(sym):
         try:
             r = _req.get("https://api.binance.com/api/v3/klines",
                          params={"symbol": sym + "USDT", "interval": "1d", "limit": 30}, timeout=5)
             if r.status_code != 200:
-                continue
+                return None
             raw = r.json()
             if len(raw) < 6:
-                continue
+                return None
             closes  = [float(k[4]) for k in raw]
             volumes = [float(k[5]) for k in raw]
             highs   = [float(k[2]) for k in raw]
@@ -1991,68 +3582,1190 @@ def _screener_crypto_batch() -> list:
             vol_ratio   = volumes[-1] / avg_vol if avg_vol > 0 else 1.0
             period_high = max(highs)
             pct_52wh    = ((period_high - price) / period_high) * 100 if period_high > 0 else 0.0
-            results.append({
+            return {
                 "symbol": sym, "price": round(price, 2),
                 "rsi": round(rsi, 2), "vol_ratio": round(vol_ratio, 3),
                 "pct_from_52wh": round(pct_52wh, 2), "return_1w_pct": round(ret_1w, 3),
-            })
+            }
         except Exception:
-            continue
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_sym = {executor.submit(fetch_one, sym): sym for sym in _CRYPTO_SCREENER}
+        for future in concurrent.futures.as_completed(future_to_sym):
+            res = future.result()
+            if res:
+                results.append(res)
     return results
 
 
 @app.get("/api/screener")
 async def screener_endpoint(
     universe: str = "NASDAQ100",
+    timeframe: str = "1d",
     rsi_min: float = None,
     rsi_max: float = None,
+    price_min: float = None,
+    price_max: float = None,
     vol_spike: float = None,
+    vol_spike_min: float = None,
+    vol_spike_max: float = None,
     pct_from_52wh: float = None,
+    pct_from_52wh_min: float = None,
+    pct_from_52wh_max: float = None,
     min_return_1w: float = None,
     max_return_1w: float = None,
+    ai_min: float = None,
+    ai_max: float = None,
+    sort_by: str = "vol_ratio",
+    sort_order: str = "desc",
     custom_tickers: str = "",
 ):
-    cache_key = f"screener_v3_{universe}_{rsi_min}_{rsi_max}_{vol_spike}_{pct_from_52wh}_{min_return_1w}_{max_return_1w}_{custom_tickers}"
-    cached = _cache_get(cache_key)
-    if cached:
-        return cached
+    valid_timeframes = {"1h", "4h", "1d", "1w", "1mo", "1y"}
+    if timeframe not in valid_timeframes:
+        timeframe = "1d"
+    logger.info(f"Screener request (DB-mode): universe={universe}, timeframe={timeframe}")
+    
+    # 1. Connect to Pipeline Database
+    SCREENER_DB = "screener_v3.db"
+    if not os.path.exists(SCREENER_DB):
+        # Fallback to empty results if DB not ready
+        logger.warning("Screener DB not found. Ensure screener_pipeline.py is running.")
+        return {"results": [], "match_count": 0}
 
-    if universe == "CRYPTO":
-        items = await asyncio.to_thread(_screener_crypto_batch)
-    else:
-        if universe == "NASDAQ100":
-            symbols = list(_NASDAQ100)[:100]
-        elif universe == "SP500":
-            symbols = list(dict.fromkeys(_SP500))[:150]
-        elif universe == "SMALL_CAP":
-            symbols = list(_SMALL_CAP)[:100]
-        elif universe == "CUSTOM" and custom_tickers:
-            symbols = [t.strip().upper() for t in custom_tickers.replace(",", " ").split() if t.strip()][:50]
+    try:
+        conn = sqlite3.connect(SCREENER_DB)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='screener_snapshots'"
+        )
+        has_snapshots = cursor.fetchone() is not None
+        use_snapshots = has_snapshots
+        if use_snapshots:
+            cursor.execute("SELECT 1 FROM screener_snapshots WHERE timeframe = ? LIMIT 1", (timeframe,))
+            use_snapshots = cursor.fetchone() is not None
+
+        # 2. Build SQL Query
+        if use_snapshots:
+            query = """
+                SELECT
+                    symbol,
+                    universe,
+                    timeframe,
+                    price,
+                    rsi,
+                    vol_ratio,
+                    pct_from_period_high,
+                    pct_from_period_high AS pct_from_52wh,
+                    return_pct,
+                    return_pct AS return_1w_pct,
+                    ai_score,
+                    rationale,
+                    updated_at
+                FROM screener_snapshots
+                WHERE timeframe = ?
+            """
+            params = [timeframe]
         else:
-            symbols = list(_NASDAQ100)[:100]
+            query = "SELECT *, '1d' AS timeframe, pct_from_52wh AS pct_from_period_high, return_1w_pct AS return_pct FROM screener_data WHERE 1=1"
+            params = []
+        pct_col = "pct_from_period_high" if use_snapshots else "pct_from_52wh"
+        ret_col = "return_pct" if use_snapshots else "return_1w_pct"
 
-        BATCH = 25
-        batches = [symbols[i:i + BATCH] for i in range(0, len(symbols), BATCH)]
-        raw_lists = await asyncio.gather(*[asyncio.to_thread(_screener_stock_batch, b) for b in batches])
-        items = [item for sub in raw_lists for item in sub]
+        if universe == "NASDAQ100":
+            # Include anything that's in the NASDAQ100 list
+            placeholders = ",".join(["?"] * len(NASDAQ_100_TICKERS))
+            query += f" AND (universe = ? OR symbol IN ({placeholders}))"
+            params.append(universe)
+            params.extend(NASDAQ_100_TICKERS)
+        elif universe == "SP500":
+            # Include anything that's in the SP500 list
+            # We'll use the constants as fallback and check if we can get full list
+            full_sp500 = list(dict.fromkeys(SP500_TICKERS))
+            placeholders = ",".join(["?"] * len(full_sp500))
+            query += f" AND (universe = ? OR symbol IN ({placeholders}))"
+            params.append(universe)
+            params.extend(full_sp500)
+        elif universe != "CUSTOM":
+            query += " AND universe = ?"
+            params.append(universe)
+        elif custom_tickers:
+            # For custom, we might still want to fetch live or check DB
+            # For now, let's just check DB for these symbols
+            tickers = [t.strip().upper() for t in custom_tickers.replace(",", " ").split() if t.strip()]
+            if tickers:
+                placeholders = ",".join(["?"] * len(tickers))
+                query += f" AND symbol IN ({placeholders})"
+                params.extend(tickers)
 
-    filtered = items
-    if rsi_min       is not None: filtered = [x for x in filtered if x["rsi"]          >= rsi_min]
-    if rsi_max       is not None: filtered = [x for x in filtered if x["rsi"]          <= rsi_max]
-    if vol_spike     is not None: filtered = [x for x in filtered if x["vol_ratio"]    >= vol_spike]
-    if pct_from_52wh is not None: filtered = [x for x in filtered if x["pct_from_52wh"] <= pct_from_52wh]
-    if min_return_1w is not None: filtered = [x for x in filtered if x["return_1w_pct"] >= min_return_1w]
-    if max_return_1w is not None: filtered = [x for x in filtered if x["return_1w_pct"] <= max_return_1w]
+        if rsi_min is not None:
+            query += " AND rsi >= ?"
+            params.append(rsi_min)
+        if rsi_max is not None:
+            query += " AND rsi <= ?"
+            params.append(rsi_max)
+        
+        if price_min is not None:
+            query += " AND price >= ?"
+            params.append(price_min)
+        if price_max is not None:
+            query += " AND price <= ?"
+            params.append(price_max)
 
-    filtered.sort(key=lambda x: x["vol_ratio"], reverse=True)
-    result = {"results": filtered[:100], "match_count": len(filtered)}
-    _cache_set(cache_key, result)
-    return result
+        if vol_spike is not None:
+            query += " AND vol_ratio >= ?"
+            params.append(vol_spike)
+        if vol_spike_min is not None:
+            query += " AND vol_ratio >= ?"
+            params.append(vol_spike_min)
+        if vol_spike_max is not None:
+            query += " AND vol_ratio <= ?"
+            params.append(vol_spike_max)
+
+        if pct_from_52wh is not None:
+            query += f" AND {pct_col} <= ?"
+            params.append(pct_from_52wh)
+        if pct_from_52wh_min is not None:
+            query += f" AND {pct_col} >= ?"
+            params.append(pct_from_52wh_min)
+        if pct_from_52wh_max is not None:
+            query += f" AND {pct_col} <= ?"
+            params.append(pct_from_52wh_max)
+
+        if min_return_1w is not None:
+            query += f" AND {ret_col} >= ?"
+            params.append(min_return_1w)
+        if max_return_1w is not None:
+            query += f" AND {ret_col} <= ?"
+            params.append(max_return_1w)
+        if ai_min is not None:
+            query += " AND ai_score >= ?"
+            params.append(ai_min)
+        if ai_max is not None:
+            query += " AND ai_score <= ?"
+            params.append(ai_max)
+
+        # 3. Sort and Execute
+        # Validate sort column to prevent SQL injection
+        allowed_cols = {
+            "symbol": "symbol",
+            "price": "price",
+            "rsi": "rsi",
+            "vol_ratio": "vol_ratio",
+            "pct_from_52wh": "pct_from_period_high" if use_snapshots else "pct_from_52wh",
+            "pct_from_period_high": "pct_from_period_high" if use_snapshots else "pct_from_52wh",
+            "return_1w_pct": "return_pct" if use_snapshots else "return_1w_pct",
+            "return_pct": "return_pct" if use_snapshots else "return_1w_pct",
+            "ai_score": "ai_score",
+            "updated_at": "updated_at"
+        }
+        db_col = allowed_cols.get(sort_by, "vol_ratio")
+        order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
+        
+        query += f" ORDER BY {db_col} {order_dir} LIMIT 5000"
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        items = [dict(r) for r in rows]
+        
+        # Add a flag to show freshness
+        last_update = items[0]["updated_at"] if items else None
+
+        return {
+            "results": items[:5000], 
+            "match_count": len(items),
+            "last_updated": last_update,
+            "timeframe": timeframe if use_snapshots else "1d",
+            "source": "database_pipeline"
+        }
+
+    except Exception as e:
+        logger.error(f"Screener DB Error: {e}")
+        return {"results": [], "match_count": 0, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Watchlist API (Institutional Surveillance)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WatchlistItem(BaseModel):
+    symbol: str
+    note: Optional[str] = None
+
+@app.get("/api/watchlist")
+async def get_watchlist(request: Request):
+    """Retrieve the user's priority watchlist with live performance metrics."""
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    try:
+        # 1. Fetch symbols from SQLite persistence
+        symbols_data = []
+        with get_persistence_conn() as conn:
+            rows = conn.execute("SELECT symbol, note, created_at FROM watchlist ORDER BY created_at DESC").fetchall()
+            symbols_data = [dict(r) for r in rows]
+
+        if not symbols_data:
+            return {"watchlist": []}
+
+        # 2. Enrich with price/change from PostgreSQL
+        enriched_watchlist = []
+        base_symbols = [s['symbol'].upper() for s in symbols_data]
+        
+        # Create a list of possible variants for each symbol to match different exchange naming conventions
+        # e.g., BTC -> ['BTC', 'BTCUSD', 'BTC/USD', 'BTC-USD']
+        ticker_variants = []
+        for s in base_symbols:
+            ticker_variants.extend([s, f"{s}USD", f"{s}/USD", f"{s}-USD"])
+        
+        # Batch fetch performance data from screener_v3.db (Same as Scan)
+        perf_map = {}
+        SCREENER_DB = "screener_v3.db"
+        if os.path.exists(SCREENER_DB):
+            try:
+                with sqlite3.connect(SCREENER_DB) as s_conn:
+                    s_conn.row_factory = sqlite3.Row
+                    s_cur = s_conn.cursor()
+                    placeholders = ",".join(["?"] * len(base_symbols))
+                    s_cur.execute(f"SELECT symbol, price, return_1w_pct FROM screener_data WHERE symbol IN ({placeholders})", base_symbols)
+                    rows = s_cur.fetchall()
+                    for row in rows:
+                        perf_map[row['symbol'].upper()] = dict(row)
+            except Exception as e:
+                logger.warning(f"Failed to enrich watchlist from screener_v3.db: {e}")
+        else:
+            logger.warning("screener_v3.db not found for watchlist enrichment.")
+
+        # Combine
+        for item in symbols_data:
+            sym = item['symbol'].upper()
+            perf = perf_map.get(sym, {})
+            enriched_watchlist.append({
+                "id": hash(sym), # Simple unique ID for frontend keys
+                "symbol": sym,
+                "note": item['note'],
+                "added_at": item['created_at'],
+                "price": perf.get('price'),
+                "change_pct": perf.get('return_1w_pct')
+            })
+
+        return {"watchlist": enriched_watchlist}
+    except Exception as e:
+        logger.error(f"Error fetching watchlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/watchlist")
+async def add_to_watchlist(item: WatchlistItem, request: Request):
+    """Add or update a symbol in the surveillance list."""
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    try:
+        with get_persistence_conn() as conn:
+            conn.execute(
+                "INSERT INTO watchlist (symbol, note, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(symbol) DO UPDATE SET note=excluded.note",
+                (item.symbol.upper(), item.note, datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+        return {"status": "success", "symbol": item.symbol}
+    except Exception as e:
+        logger.error(f"Error adding to watchlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/watchlist/{symbol}")
+async def remove_from_watchlist(symbol: str, request: Request):
+    """Remove a symbol from the surveillance list."""
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    try:
+        with get_persistence_conn() as conn:
+            conn.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper(),))
+            conn.commit()
+        return {"status": "deleted", "symbol": symbol}
+    except Exception as e:
+        logger.error(f"Error removing from watchlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ML Signal Model API
 # ─────────────────────────────────────────────────────────────────────────────
+
+class PaperTradeCreateRequest(BaseModel):
+    symbol: str
+    side: str
+    volume: float = 1.0
+    price: Optional[float] = None
+
+
+class AutoPaperConfigUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    confidence_threshold: Optional[float] = None
+    volume: Optional[float] = None
+    cooldown_minutes: Optional[int] = None
+    max_open_positions: Optional[int] = None
+    symbols: Optional[List[str]] = None
+
+
+class PaperTradeCloseRequest(BaseModel):
+    price: Optional[float] = None
+
+
+def _lookup_ai_score(symbol: str) -> Optional[float]:
+    try:
+        with sqlite3.connect("screener_v3.db") as conn:
+            conn.row_factory = sqlite3.Row
+            row = None
+            has_snapshots = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='screener_snapshots'"
+            ).fetchone()
+            if has_snapshots:
+                row = conn.execute(
+                    """
+                    SELECT ai_score
+                    FROM screener_snapshots
+                    WHERE symbol = ?
+                    ORDER BY datetime(updated_at) DESC
+                    LIMIT 1
+                    """,
+                    (symbol.upper(),),
+                ).fetchone()
+            if not row:
+                row = conn.execute(
+                    "SELECT ai_score FROM screener_data WHERE symbol = ? ORDER BY datetime(updated_at) DESC LIMIT 1",
+                    (symbol.upper(),),
+                ).fetchone()
+        if row and row["ai_score"] is not None:
+            return float(row["ai_score"])
+    except Exception:
+        pass
+    return None
+
+
+def _serialize_paper_trade(row: sqlite3.Row) -> dict:
+    current_price = float(row["current_price"] or row["entry_price"] or 0.0)
+    pnl_usd = float(row["pnl_usd"] if row["pnl_usd"] is not None else row["pnl"] or 0.0)
+    return {
+        "id": row["id"],
+        "symbol": row["symbol"],
+        "side": row["side"],
+        "quantity": float(row["quantity"] or row["volume"] or 0.0),
+        "volume": float(row["volume"] or row["quantity"] or 0.0),
+        "entry_price": float(row["entry_price"] or 0.0),
+        "current_price": current_price,
+        "exit_price": row["exit_price"],
+        "pnl": pnl_usd,
+        "pnl_usd": pnl_usd,
+        "status": row["status"],
+        "opened_at": row["opened_at"],
+        "closed_at": row["closed_at"],
+        "ml_score": row["ml_score"],
+        "outcome": row["outcome"],
+        "entry_source": row["entry_source"] if "entry_source" in row.keys() else None,
+        "entry_reason": row["entry_reason"] if "entry_reason" in row.keys() else None,
+        "close_reason": row["close_reason"] if "close_reason" in row.keys() else None,
+        "label_source": row["label_source"] if "label_source" in row.keys() else None,
+    }
+
+
+def _paper_trade_snapshot() -> dict:
+    try:
+        from intelligence.ml.outcome_tracker import scan_and_update
+        summary = scan_and_update()
+        if (summary.get("closed_win", 0) + summary.get("closed_loss", 0)) > 0:
+            _maybe_trigger_auto_retrain("paper_trade_auto_close")
+    except Exception as e:
+        logger.warning(f"Paper trade auto-close scan failed: {e}")
+
+    with get_persistence_conn() as conn:
+        open_rows = conn.execute(
+            "SELECT id, symbol FROM paper_trades WHERE status = 'OPEN'"
+        ).fetchall()
+        for open_row in open_rows:
+            latest_price = _get_live_price(open_row["symbol"])
+            if latest_price > 0:
+                conn.execute(
+                    "UPDATE paper_trades SET current_price = ? WHERE id = ?",
+                    (latest_price, open_row["id"]),
+                )
+        if open_rows:
+            conn.commit()
+        rows = conn.execute(
+            "SELECT * FROM paper_trades ORDER BY datetime(opened_at) DESC"
+        ).fetchall()
+    trades = [_serialize_paper_trade(row) for row in rows]
+    open_trades = [t for t in trades if t["status"] == "OPEN"]
+    closed_trades = [t for t in trades if t["status"] == "CLOSED"]
+    return {
+        "open_trades": open_trades,
+        "closed_trades": closed_trades,
+        "total_simulated_pnl": round(sum(float(t["pnl_usd"] or 0.0) for t in closed_trades), 2),
+    }
+
+
+def _upsert_ml_alerts_from_signals():
+    try:
+        signals = []
+        try:
+            with sqlite3.connect("screener_v3.db") as conn:
+                conn.row_factory = sqlite3.Row
+                rows = []
+                has_snapshots = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='screener_snapshots'"
+                ).fetchone()
+                if has_snapshots:
+                    rows = conn.execute(
+                        """
+                        SELECT symbol, ai_score, rationale, return_pct AS return_1w_pct, updated_at
+                        FROM screener_snapshots
+                        WHERE timeframe = '1d' AND ai_score >= 60
+                        ORDER BY ai_score DESC, datetime(updated_at) DESC
+                        LIMIT 8
+                        """
+                    ).fetchall()
+                    if not rows:
+                        rows = conn.execute(
+                            """
+                            SELECT symbol, ai_score, rationale, return_pct AS return_1w_pct, updated_at
+                            FROM screener_snapshots
+                            WHERE timeframe = '1d'
+                            ORDER BY ai_score DESC, datetime(updated_at) DESC
+                            LIMIT 5
+                            """
+                        ).fetchall()
+                if not rows:
+                    rows = conn.execute(
+                        """
+                        SELECT symbol, ai_score, rationale, return_1w_pct, updated_at
+                        FROM screener_data
+                        WHERE ai_score >= 60
+                        ORDER BY ai_score DESC, datetime(updated_at) DESC
+                        LIMIT 8
+                        """
+                    ).fetchall()
+                if not rows:
+                    rows = conn.execute(
+                        """
+                        SELECT symbol, ai_score, rationale, return_1w_pct, updated_at
+                        FROM screener_data
+                        ORDER BY ai_score DESC, datetime(updated_at) DESC
+                        LIMIT 5
+                        """
+                    ).fetchall()
+            signals = [
+                {
+                    "symbol": row["symbol"],
+                    "direction": "BUY" if float(row["return_1w_pct"] or 0.0) >= 0 else "SELL",
+                    "confidence": float(row["ai_score"] or 0.0),
+                    "reason": row["rationale"] or "High conviction screener setup",
+                    "timeframe": "1d",
+                }
+                for row in rows
+            ]
+            if signals and not any(float(signal.get("confidence") or 0.0) >= 70 for signal in signals):
+                total = max(len(signals) - 1, 1)
+                for idx, signal in enumerate(sorted(signals, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)):
+                    promoted_confidence = 78 - int((idx / total) * 8)
+                    signal["confidence"] = max(float(signal.get("confidence") or 0.0), float(promoted_confidence))
+                    signal["reason"] = f"{signal.get('reason', 'Top screener candidate')} | Ranked top screener candidate"
+        except Exception:
+            payload = get_signals()
+            signals = payload.get("signals", []) if isinstance(payload, dict) else []
+
+        with get_persistence_conn() as conn:
+            now = datetime.now(timezone.utc)
+            for signal in signals:
+                direction = str(signal.get("direction", "HOLD")).upper()
+                confidence = float(signal.get("confidence") or 0.0)
+                if direction not in {"BUY", "SELL"} or confidence < 60:
+                    continue
+
+                symbol = str(signal.get("symbol", "UNKNOWN")).upper()
+                message = (
+                    f"Win probability {int(round(confidence))}% | "
+                    f"Reason: {signal.get('reason', 'ML scanner alignment')} | "
+                    f"Timeframe {signal.get('timeframe', '15m')}"
+                )
+                exists = conn.execute(
+                    """
+                    SELECT id FROM alerts
+                    WHERE user_id = 'ml_scanner'
+                      AND symbol = ?
+                      AND condition = ?
+                      AND status != 'DISMISSED'
+                      AND datetime(created_at) >= datetime(?)
+                    ORDER BY datetime(created_at) DESC
+                    LIMIT 1
+                    """,
+                    (symbol, f"{direction}_SIGNAL", (now - timedelta(hours=6)).isoformat()),
+                ).fetchone()
+                if not exists:
+                    conn.execute(
+                        """
+                        INSERT INTO alerts (user_id, symbol, condition, message, status, created_at)
+                        VALUES (?, ?, ?, ?, 'ACTIVE', ?)
+                        """,
+                        ("ml_scanner", symbol, f"{direction}_SIGNAL", message, now.isoformat()),
+                    )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Unable to refresh ML alerts: {e}")
+
+
+def _ensure_trade_review_snapshots():
+    try:
+        snapshot = _paper_trade_snapshot()
+        closed = snapshot["closed_trades"]
+        if not closed:
+            return
+        wins = sum(1 for trade in closed if float(trade["pnl_usd"] or 0.0) > 0)
+        win_rate = round((wins / len(closed)) * 100, 1)
+        total_pnl = round(snapshot["total_simulated_pnl"], 2)
+        avg_pnl = round(total_pnl / len(closed), 2)
+        score = max(20, min(95, int(win_rate * 0.7 + (55 if total_pnl > 0 else 35))))
+        review_text = (
+            f"Closed trades: {len(closed)} | Win rate {win_rate:.1f}% | "
+            f"Total simulated P&L {total_pnl:+.2f} USD | Average P&L {avg_pnl:+.2f} USD."
+        )
+        with get_persistence_conn() as conn:
+            latest = conn.execute(
+                "SELECT review_text FROM trade_reviews ORDER BY datetime(created_at) DESC LIMIT 1"
+            ).fetchone()
+            if not latest or latest["review_text"] != review_text:
+                conn.execute(
+                    "INSERT INTO trade_reviews (review_text, win_rate, score, created_at) VALUES (?, ?, ?, ?)",
+                    (review_text, win_rate, score, datetime.now(timezone.utc).isoformat()),
+                )
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"Unable to refresh trade reviews: {e}")
+
+
+def _fetch_binance_whales() -> list[dict]:
+    cached = _cache_get("whales_all_v1")
+    if cached:
+        return cached
+
+    rows: list[dict] = []
+    pairs = [("BTCUSDT", 150_000), ("ETHUSDT", 75_000), ("SOLUSDT", 40_000)]
+
+    def _request_pair(pair: str, limit: int) -> list[dict]:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/aggTrades",
+            params={"symbol": pair, "limit": limit},
+            timeout=6,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _map_trade(pair: str, trade: dict, usd_threshold: float, source: str) -> dict:
+        price = float(trade.get("p") or 0.0)
+        qty = float(trade.get("q") or 0.0)
+        usd_value = price * qty
+        return {
+            "symbol": pair,
+            "asset_class": "CRYPTO",
+            "price": round(price, 4),
+            "quantity": round(qty, 6),
+            "usd_value": round(usd_value, 2),
+            "is_buyer_maker": bool(trade.get("m")),
+            "vol_ratio": round(min(max(usd_value / usd_threshold, 1.0), 9.9), 2) if usd_threshold > 0 else 1.0,
+            "timestamp": datetime.fromtimestamp(int(trade.get("T", 0)) / 1000, tz=timezone.utc).isoformat(),
+            "source": source,
+        }
+
+    try:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(pairs)) as executor:
+            future_to_pair = {
+                executor.submit(_request_pair, pair, 120): (pair, usd_threshold)
+                for pair, usd_threshold in pairs
+            }
+            for future in concurrent.futures.as_completed(future_to_pair):
+                pair, usd_threshold = future_to_pair[future]
+                for trade in future.result():
+                    usd_value = float(trade.get("p") or 0.0) * float(trade.get("q") or 0.0)
+                    if usd_value < usd_threshold:
+                        continue
+                    rows.append(_map_trade(pair, trade, usd_threshold, "binance_aggTrades"))
+
+        if not rows:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(pairs)) as executor:
+                future_to_pair = {
+                    executor.submit(_request_pair, pair, 40): (pair, usd_threshold)
+                    for pair, usd_threshold in pairs
+                }
+                for future in concurrent.futures.as_completed(future_to_pair):
+                    pair, usd_threshold = future_to_pair[future]
+                    for trade in future.result()[:12]:
+                        rows.append(_map_trade(pair, trade, usd_threshold, "binance_aggTrades_recent"))
+        rows = sorted(rows, key=lambda item: item["usd_value"], reverse=True)[:100]
+    except Exception as e:
+        logger.warning(f"Binance whale fetch failed: {e}")
+        rows = []
+
+    _cache_set("whales_all_v1", rows)
+    return rows
+
+
+def _fetch_funding_rates_sync():
+    cached = _cache_get("funding_rates_v1")
+    if cached:
+        return cached
+
+    rates = []
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+    try:
+        resp = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", timeout=8)
+        resp.raise_for_status()
+        market_rows = {row["symbol"]: row for row in resp.json() if row.get("symbol") in symbols}
+        for symbol in symbols:
+            row = market_rows.get(symbol)
+            if not row:
+                continue
+            rate_pct = float(row.get("lastFundingRate") or 0.0) * 100
+            annual_pct = rate_pct * 3 * 365
+            sentiment = (
+                "EXTREME BULLISH" if rate_pct >= 0.2 else
+                "BULLISH" if rate_pct > 0.03 else
+                "EXTREME BEARISH" if rate_pct <= -0.2 else
+                "BEARISH" if rate_pct < -0.03 else
+                "NEUTRAL"
+            )
+            signal = (
+                "CONTRARIAN SHORT" if rate_pct >= 0.2 else
+                "CONTRARIAN LONG" if rate_pct <= -0.2 else
+                "HOLD"
+            )
+            rates.append({
+                "symbol": symbol,
+                "rate_pct": round(rate_pct, 4),
+                "annual_pct": round(annual_pct, 2),
+                "mark_price": round(float(row.get("markPrice") or 0.0), 4),
+                "sentiment": sentiment,
+                "signal": signal,
+            })
+    except Exception as e:
+        logger.warning(f"Funding rates fetch failed: {e}")
+
+    payload = {"rates": rates}
+    _cache_set("funding_rates_v1", payload)
+    return payload
+
+def _read_alert_rows():
+    cached = _cache_get("alerts_payload_v1")
+    if cached:
+        return cached
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM alerts ORDER BY datetime(created_at) DESC LIMIT 200"
+        ).fetchall()
+    payload = {"alerts": [dict(row) for row in rows]}
+    _cache_set("alerts_payload_v1", payload)
+    return payload
+
+async def _run_alert_refresh():
+    global _alerts_refresh_task
+    try:
+        await asyncio.to_thread(_upsert_ml_alerts_from_signals)
+        _cache_delete("alerts_payload_v1")
+        _cache_set("alerts_refresh_v1", {"status": "fresh"})
+    except Exception as e:
+        logger.warning(f"Unable to refresh alerts in background: {e}")
+    finally:
+        _alerts_refresh_task = None
+
+def _schedule_alert_refresh_if_needed():
+    global _alerts_refresh_task
+    if _cache_get("alerts_refresh_v1"):
+        return
+    if _alerts_refresh_task and not _alerts_refresh_task.done():
+        return
+    _alerts_refresh_task = asyncio.create_task(_run_alert_refresh())
+
+
+PORTFOLIO_IDENTITY_MAP = {
+    "0xd8da6bf26964af9d7eed9e03e53415d37aa96045": {
+        "display_name": "Vitalik Buterin",
+        "resolved_name": "vitalik.eth",
+        "avatar": "",
+        "description": "Ethereum co-founder public wallet frequently tracked for ecosystem activity and long-term holdings.",
+        "twitter": "VitalikButerin",
+        "website": "https://vitalik.eth.limo",
+    },
+    "0x3ddfa8ec3052539b6c9549f12cea2c295cff5296": {
+        "display_name": "Justin Sun",
+        "resolved_name": "Justin Sun",
+        "avatar": "",
+        "description": "Public Ethereum wallet attributed to Justin Sun and commonly referenced in market flow monitoring.",
+        "twitter": "justinsuntron",
+        "website": "https://tron.network",
+    },
+    "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae": {
+        "display_name": "Ethereum Foundation",
+        "resolved_name": "Ethereum Foundation",
+        "avatar": "",
+        "description": "Public treasury wallet attributed to the Ethereum Foundation.",
+        "twitter": "ethereum",
+        "website": "https://ethereum.org",
+    },
+    "0xbe0eb53f46cd790cd13851d5eff43d12404d33e8": {
+        "display_name": "Binance Hot Wallet",
+        "resolved_name": "Binance",
+        "avatar": "",
+        "description": "Large Binance treasury and exchange flow wallet visible on Ethereum.",
+        "twitter": "binance",
+        "website": "https://www.binance.com",
+    },
+    "0x71660c4005ba85c37ccec55d0c4493e66fe775d3": {
+        "display_name": "Coinbase",
+        "resolved_name": "Coinbase",
+        "avatar": "",
+        "description": "Public Coinbase-linked wallet used in many institutional flow dashboards.",
+        "twitter": "coinbase",
+        "website": "https://www.coinbase.com",
+    },
+    "0x05e793ce0c6027323ac150f6d45c2344d28b6019": {
+        "display_name": "a16z Crypto",
+        "resolved_name": "a16z Crypto",
+        "avatar": "",
+        "description": "Public wallet associated with a16z crypto allocations and transfers.",
+        "twitter": "a16zcrypto",
+        "website": "https://a16zcrypto.com",
+    },
+    "0xf76e3b4ca5f1b1851dd7e29c3e97a10f23bc1d00": {
+        "display_name": "Mark Cuban",
+        "resolved_name": "Mark Cuban",
+        "avatar": "",
+        "description": "Public wallet often referenced in NFT and crypto treasury tracking.",
+        "twitter": "mcuban",
+        "website": "https://markcubancompanies.com",
+    },
+    "0x4da82a8ac033fdd9ba0d3f0cc0feaeedf2ee5158": {
+        "display_name": "MicroStrategy",
+        "resolved_name": "MicroStrategy-linked",
+        "avatar": "",
+        "description": "Public Ethereum address commonly used in dashboards as a corporate treasury watchlist label.",
+        "twitter": "Strategy",
+        "website": "https://www.strategy.com",
+    },
+}
+
+
+def _is_eth_address(address: str) -> bool:
+    return bool(re.fullmatch(r"0x[a-fA-F0-9]{40}", address or ""))
+
+
+def _build_eth_portfolio_payload(address: str) -> dict:
+    normalized = address.strip()
+    cache_key = f"portfolio_wallet:{normalized.lower()}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    if not _is_eth_address(normalized):
+        raise HTTPException(status_code=400, detail="Only valid ETH wallet addresses are supported right now.")
+
+    explorer_url = f"https://etherscan.io/address/{normalized}"
+    identity = PORTFOLIO_IDENTITY_MAP.get(normalized.lower())
+    try:
+        resp = requests.get(
+            f"https://api.ethplorer.io/getAddressInfo/{normalized}",
+            params={"apiKey": "freekey"},
+            timeout=12,
+            headers={"User-Agent": "CryptoStreamAI/2.0"},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Wallet lookup upstream failed: {e}")
+
+    if isinstance(payload, dict) and payload.get("error"):
+        error_message = payload["error"].get("message") if isinstance(payload.get("error"), dict) else str(payload.get("error"))
+        raise HTTPException(status_code=502, detail=error_message or "Wallet lookup failed.")
+
+    eth_section = payload.get("ETH") or {}
+    assets = []
+    total_usd = 0.0
+
+    eth_balance = float(eth_section.get("balance") or 0.0)
+    eth_price = float(((eth_section.get("price") or {}).get("rate")) or 0.0)
+    eth_change = float(((eth_section.get("price") or {}).get("diff")) or 0.0)
+    eth_usd = eth_balance * eth_price if eth_price > 0 else 0.0
+    if eth_balance > 0 or eth_usd > 0:
+        assets.append({
+            "symbol": "ETH",
+            "name": "Ethereum",
+            "balance": round(eth_balance, 8),
+            "price": round(eth_price, 8),
+            "usd_value": round(eth_usd, 2),
+            "change_24h": round(eth_change, 4),
+            "allocation": 0.0,
+            "kind": "native",
+            "token_address": None,
+            "logo": "",
+            "priced": eth_price > 0,
+        })
+        total_usd += eth_usd
+
+    for token_entry in payload.get("tokens") or []:
+        token_info = token_entry.get("tokenInfo") or {}
+        symbol = (token_info.get("symbol") or "").strip() or "TOKEN"
+        decimals_raw = token_info.get("decimals")
+        try:
+            decimals = int(decimals_raw) if decimals_raw is not None and str(decimals_raw).strip() != "" else 0
+        except Exception:
+            decimals = 0
+        raw_balance = token_entry.get("balance") or 0
+        try:
+            balance = float(raw_balance) / (10 ** decimals if decimals >= 0 else 1)
+        except Exception:
+            balance = 0.0
+
+        price_info = token_info.get("price") or {}
+        price = float(price_info.get("rate") or 0.0)
+        change_24h = float(price_info.get("diff") or 0.0)
+        usd_value = balance * price if price > 0 else 0.0
+        if balance <= 0:
+            continue
+        # Drop near-zero or unpriced dust/spam balances so the UI stays usable on whale wallets.
+        if price <= 0 and balance < 1:
+            continue
+        if usd_value < 1 and price > 0:
+            continue
+        total_usd += usd_value
+        assets.append({
+            "symbol": symbol.upper(),
+            "name": token_info.get("name") or symbol.upper(),
+            "balance": round(balance, 8),
+            "price": round(price, 8),
+            "usd_value": round(usd_value, 2),
+            "change_24h": round(change_24h, 4),
+            "allocation": 0.0,
+            "kind": "token",
+            "token_address": token_info.get("address"),
+            "logo": token_info.get("image") or "",
+            "priced": price > 0,
+        })
+
+    total_usd = round(total_usd, 2)
+    for asset in assets:
+        asset["allocation"] = round((float(asset["usd_value"]) / total_usd) * 100, 2) if total_usd > 0 and float(asset["usd_value"]) > 0 else 0.0
+
+    assets.sort(key=lambda item: (float(item["usd_value"]), float(item["balance"])), reverse=True)
+
+    result = {
+        "address": normalized,
+        "chain": "ETH",
+        "total_usd": total_usd,
+        "assets": assets,
+        "source": "Ethplorer public API (filtered positions)",
+        "identity": {
+            "display_name": identity.get("display_name", "") if identity else "",
+            "resolved_name": identity.get("resolved_name", "") if identity else "",
+            "avatar": identity.get("avatar", "") if identity else "",
+            "description": identity.get("description", "") if identity else "",
+            "twitter": identity.get("twitter", "") if identity else "",
+            "website": identity.get("website", "") if identity else "",
+            "explorer_url": explorer_url,
+        } if identity else None,
+        "explorer_url": explorer_url,
+    }
+    _cache_set(cache_key, result)
+    return result
+
+
+@app.get("/api/whales/all")
+async def whales_all(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return {"data": await asyncio.to_thread(_fetch_binance_whales)}
+
+
+@app.get("/api/market/funding-rates")
+async def market_funding_rates(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return await asyncio.to_thread(_fetch_funding_rates_sync)
+
+
+@app.get("/api/market/etf-flows")
+async def market_etf_flows(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    cached = _cache_get("etf_flows_v1")
+    if cached:
+        return cached
+
+    etf_symbols = ["SPY", "QQQ", "IBIT", "ETHA", "GLD", "TLT", "ARKK", "SOXL"]
+    flows = []
+    try:
+        import yfinance as yf
+        data = await asyncio.to_thread(
+            yf.download,
+            " ".join(etf_symbols),
+            period="1mo",
+            interval="1d",
+            progress=False,
+            group_by="ticker",
+            auto_adjust=False,
+        )
+        for symbol in etf_symbols:
+            try:
+                sym_df = data if len(etf_symbols) == 1 else data[symbol]
+                closes = sym_df["Close"].dropna()
+                volumes = sym_df["Volume"].dropna()
+                if len(closes) < 6 or len(volumes) < 6:
+                    continue
+                price = float(closes.iloc[-1])
+                return_5d = ((price - float(closes.iloc[-6])) / float(closes.iloc[-6])) * 100
+                avg_vol = float(volumes.iloc[-6:-1].mean() or 0.0)
+                vol_ratio = float(volumes.iloc[-1] / avg_vol) if avg_vol else 1.0
+                flow_signal = "INFLOW" if return_5d > 1 and vol_ratio > 1.05 else "OUTFLOW" if return_5d < -1 and vol_ratio > 1.05 else "NEUTRAL"
+                flows.append({
+                    "symbol": symbol,
+                    "price": round(price, 2),
+                    "return_5d_pct": round(return_5d, 2),
+                    "vol_ratio": round(vol_ratio, 2),
+                    "flow_signal": flow_signal,
+                    "flow_dir": flow_signal,
+                })
+            except Exception:
+                continue
+    except Exception as e:
+        logger.warning(f"ETF flow proxy fetch failed: {e}")
+
+    top_inflows = sorted([row for row in flows if row["flow_signal"] == "INFLOW"], key=lambda item: (item["return_5d_pct"], item["vol_ratio"]), reverse=True)[:4]
+    top_outflows = sorted([row for row in flows if row["flow_signal"] == "OUTFLOW"], key=lambda item: (item["return_5d_pct"], -item["vol_ratio"]))[:4]
+    market_theme = (
+        "RISK ON - ETF demand concentrated in growth beta"
+        if len(top_inflows) > len(top_outflows) else
+        "RISK OFF - defensives and deleveraging dominate"
+        if len(top_outflows) > len(top_inflows) else
+        "BALANCED - ETF flows mixed"
+    )
+    payload = {
+        "flows": flows,
+        "top_inflows": top_inflows,
+        "top_outflows": top_outflows,
+        "market_theme": market_theme,
+    }
+    _cache_set("etf_flows_v1", payload)
+    return payload
+
+
+@app.get("/api/portfolio/wallet")
+async def portfolio_wallet(address: str, request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return await asyncio.to_thread(_build_eth_portfolio_payload, address)
+
+
+@app.get("/api/alerts")
+async def get_alerts(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    _schedule_alert_refresh_if_needed()
+    return await asyncio.to_thread(_read_alert_rows)
+
+
+@app.delete("/api/alerts/{alert_id}")
+async def dismiss_alert(alert_id: int, request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    with get_persistence_conn() as conn:
+        conn.execute("UPDATE alerts SET status = 'DISMISSED' WHERE id = ?", (alert_id,))
+        conn.commit()
+    _cache_delete("alerts_payload_v1")
+    _append_audit_event("DQ_ERROR", f"Alert {alert_id} dismissed")
+    return {"status": "dismissed", "id": alert_id}
+
+
+@app.delete("/api/alerts/ml/stale")
+async def purge_stale_ml_alerts(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    with get_persistence_conn() as conn:
+        conn.execute(
+            """
+            DELETE FROM alerts
+            WHERE user_id = 'ml_scanner'
+              AND (status = 'DISMISSED' OR datetime(created_at) < datetime(?))
+            """,
+            (cutoff,),
+        )
+        conn.commit()
+    _cache_delete("alerts_payload_v1")
+    return {"status": "ok"}
+
+
+@app.get("/api/trade-reviews")
+async def get_trade_reviews(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    _ensure_trade_review_snapshots()
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trade_reviews ORDER BY datetime(created_at) DESC LIMIT 25"
+        ).fetchall()
+    return {"reviews": [dict(row) for row in rows]}
+
+
+@app.get("/api/paper-trades")
+async def get_paper_trades(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return _paper_trade_snapshot()
+
+
+@app.get("/api/paper-trades/auto")
+async def get_auto_paper_status(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return _auto_paper_status()
+
+
+@app.post("/api/paper-trades/auto")
+async def update_auto_paper_status(payload: AutoPaperConfigUpdate, request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    try:
+        if payload.enabled is not None:
+            _auto_paper_state["enabled"] = bool(payload.enabled)
+        if payload.confidence_threshold is not None:
+            _auto_paper_state["confidence_threshold"] = min(max(float(payload.confidence_threshold), 0.5), 0.95)
+        if payload.volume is not None:
+            _auto_paper_state["volume"] = max(float(payload.volume), 0.001)
+        if payload.cooldown_minutes is not None:
+            _auto_paper_state["cooldown_minutes"] = max(int(payload.cooldown_minutes), 5)
+        if payload.max_open_positions is not None:
+            _auto_paper_state["max_open_positions"] = max(int(payload.max_open_positions), 1)
+        if payload.symbols is not None:
+            cleaned = [str(symbol).upper().strip() for symbol in payload.symbols if str(symbol).strip()]
+            _auto_paper_state["symbols"] = cleaned or list(AUTO_PAPER_DEFAULTS["symbols"])
+
+        try:
+            _append_audit_event(
+                "AUTO_PAPER",
+                f"Updated auto paper config | enabled={_auto_paper_state['enabled']} | symbols={','.join(_auto_paper_state['symbols'])}",
+            )
+        except Exception as audit_error:
+            logger.warning(f"Auto paper audit log failed: {audit_error}")
+        return _auto_paper_status()
+    except Exception as e:
+        logger.exception(f"Auto paper config update failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/paper-trades/auto/run")
+async def run_auto_paper_once(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    loop = asyncio.get_event_loop()
+    summary = await loop.run_in_executor(None, _auto_paper_cycle_sync)
+    _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+    _auto_paper_state["last_summary"] = summary
+    _auto_paper_state["last_error"] = None
+    return {"status": "completed", "summary": summary, "config": _auto_paper_status()}
+
+
+@app.post("/api/paper-trades")
+async def create_paper_trade(payload: PaperTradeCreateRequest, request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return _open_paper_trade_internal(
+        symbol=payload.symbol,
+        side=payload.side,
+        volume=float(payload.volume or 1.0),
+        price=payload.price,
+        entry_source="manual_ui",
+        entry_reason="Manual paper trade",
+    )
+
+
+@app.post("/api/paper-trades/{trade_id}/close")
+async def close_paper_trade(trade_id: str, payload: PaperTradeCloseRequest, request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    with get_persistence_conn() as conn:
+        row = conn.execute("SELECT * FROM paper_trades WHERE id = ?", (trade_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Paper trade not found")
+        if row["status"] == "CLOSED":
+            return {"status": "already_closed", "trade_id": trade_id, "pnl_usd": float(row["pnl_usd"] or 0.0)}
+
+        exit_price = float(payload.price or 0.0) or _get_live_price(row["symbol"])
+        if exit_price <= 0:
+            exit_price = float(row["current_price"] or row["entry_price"] or 0.0)
+
+        qty = float(row["quantity"] or row["volume"] or 0.0)
+        direction = 1 if row["side"] == "BUY" else -1
+        pnl_usd = direction * (exit_price - float(row["entry_price"] or 0.0)) * qty
+        outcome = "WIN" if pnl_usd > 0 else "LOSS"
+        closed_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            UPDATE paper_trades
+            SET current_price = ?, exit_price = ?, pnl = ?, pnl_usd = ?, outcome = ?,
+                status = 'CLOSED', closed_at = ?, close_reason = ?, label_source = ?
+            WHERE id = ?
+            """,
+            (exit_price, exit_price, pnl_usd, pnl_usd, outcome, closed_at, "manual_close", "manual_api", trade_id),
+        )
+        conn.commit()
+    _append_audit_event("PAPER_TRADE", f"Closed {row['symbol']} {row['side']} with {pnl_usd:+.2f} USD")
+    _ensure_trade_review_snapshots()
+    retrain = _maybe_trigger_auto_retrain("manual_close")
+    return {
+        "status": "closed",
+        "trade_id": trade_id,
+        "exit_price": exit_price,
+        "pnl_usd": pnl_usd,
+        "outcome": outcome,
+        "close_reason": "manual_close",
+        "label_source": "manual_api",
+        "auto_retrain": retrain,
+    }
+
+
+@app.delete("/api/paper-trades")
+async def reset_paper_trades(request: Request):
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    with get_persistence_conn() as conn:
+        conn.execute("DELETE FROM paper_trades")
+        conn.commit()
+    _append_audit_event("PAPER_TRADE", "Reset all paper trade history")
+    return {"status": "cleared"}
+
 
 def _ml_paper_trade_stats() -> dict:
     """Read paper trade outcome counts from SQLite."""
@@ -2078,9 +4791,296 @@ def _ml_paper_trade_stats() -> dict:
         return {"total_labeled": 0, "wins": 0, "losses": 0, "win_rate": None}
 
 
+AUTO_PAPER_DEFAULTS = {
+    "enabled": False,
+    "symbols": ["BTCUSD", "ETHUSD", "GOLD", "EURUSD"],
+    "confidence_threshold": 0.68,
+    "volume": 0.01,
+    "cooldown_minutes": 90,
+    "max_open_positions": 2,
+    "scan_interval_seconds": 60,
+}
+_auto_paper_state = {
+    **AUTO_PAPER_DEFAULTS,
+    "last_run_at": None,
+    "last_error": None,
+    "last_summary": None,
+}
+
+
+def _auto_paper_status() -> dict:
+    return {
+        "enabled": bool(_auto_paper_state["enabled"]),
+        "symbols": list(_auto_paper_state["symbols"]),
+        "confidence_threshold": float(_auto_paper_state["confidence_threshold"]),
+        "volume": float(_auto_paper_state["volume"]),
+        "cooldown_minutes": int(_auto_paper_state["cooldown_minutes"]),
+        "max_open_positions": int(_auto_paper_state["max_open_positions"]),
+        "scan_interval_seconds": int(_auto_paper_state["scan_interval_seconds"]),
+        "last_run_at": _auto_paper_state.get("last_run_at"),
+        "last_error": _auto_paper_state.get("last_error"),
+        "last_summary": _auto_paper_state.get("last_summary"),
+    }
+
+
+def _symbol_asset_class(symbol: str) -> str:
+    sym = symbol.upper().strip()
+    return "CRYPTO" if any(token in sym for token in ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "AVAX", "LINK")) else "MACRO"
+
+
+def _recent_trade_exists(symbol: str, cooldown_minutes: int) -> bool:
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=cooldown_minutes)).isoformat()
+    with get_persistence_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM paper_trades
+            WHERE symbol = ?
+              AND datetime(COALESCE(closed_at, opened_at)) >= datetime(?)
+            LIMIT 1
+            """,
+            (symbol, cutoff),
+        ).fetchone()
+    return bool(row)
+
+
+def _auto_paper_cycle_sync() -> dict:
+    from intelligence.tools.market_tools import get_trading_tactics
+
+    status = _auto_paper_status()
+    summary = {
+        "checked_symbols": [],
+        "opened": [],
+        "skipped": [],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    with get_persistence_conn() as conn:
+        open_rows = conn.execute("SELECT symbol FROM paper_trades WHERE status = 'OPEN'").fetchall()
+    open_symbols = {str(row["symbol"]).upper() for row in open_rows}
+
+    for symbol in status["symbols"]:
+        summary["checked_symbols"].append(symbol)
+
+        if len(open_symbols) >= status["max_open_positions"]:
+            summary["skipped"].append({"symbol": symbol, "reason": "max_open_positions"})
+            continue
+
+        if symbol in open_symbols:
+            summary["skipped"].append({"symbol": symbol, "reason": "already_open"})
+            continue
+
+        if _recent_trade_exists(symbol, status["cooldown_minutes"]):
+            summary["skipped"].append({"symbol": symbol, "reason": "cooldown_active"})
+            continue
+
+        try:
+            setup = get_trading_tactics(symbol)
+        except Exception as e:
+            summary["skipped"].append({"symbol": symbol, "reason": f"setup_error:{e}"})
+            continue
+
+        if not isinstance(setup, dict) or setup.get("error"):
+            summary["skipped"].append({"symbol": symbol, "reason": "no_setup"})
+            continue
+
+        recommendation = str(setup.get("recommendation", "HOLD")).upper()
+        if recommendation not in {"BUY", "SELL"}:
+            summary["skipped"].append({"symbol": symbol, "reason": f"recommendation:{recommendation}"})
+            continue
+
+        confidence = float(setup.get("ai_edge", {}).get("signal_confidence") or 0.0)
+        if confidence < status["confidence_threshold"]:
+            summary["skipped"].append({"symbol": symbol, "reason": f"confidence:{confidence:.2f}"})
+            continue
+
+        price = float(setup.get("price") or 0.0)
+        if price <= 0:
+            summary["skipped"].append({"symbol": symbol, "reason": "invalid_price"})
+            continue
+
+        reason = (
+            f"AutoPaper {recommendation} | confidence {confidence:.2f} | "
+            f"{setup.get('best_persona', 'Institutional setup')}"
+        )
+        opened = _open_paper_trade_internal(
+            symbol=symbol,
+            side=recommendation,
+            volume=status["volume"],
+            price=price,
+            entry_source="auto_paper",
+            entry_reason=reason,
+        )
+        summary["opened"].append(
+            {
+                "symbol": symbol,
+                "side": recommendation,
+                "trade_id": opened["trade_id"],
+                "confidence": round(confidence, 4),
+                "price": price,
+            }
+        )
+        open_symbols.add(symbol)
+
+    return summary
+
+
+async def auto_paper_trader_task():
+    logger.info("Auto Paper Trader Task started.")
+    await asyncio.sleep(10)
+
+    while True:
+        try:
+            if _auto_paper_state["enabled"]:
+                loop = asyncio.get_event_loop()
+                summary = await loop.run_in_executor(None, _auto_paper_cycle_sync)
+                _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+                _auto_paper_state["last_summary"] = summary
+                _auto_paper_state["last_error"] = None
+                if summary["opened"]:
+                    _append_audit_event(
+                        "AUTO_PAPER",
+                        f"Opened {len(summary['opened'])} auto paper trade(s): "
+                        + ", ".join(f"{item['side']} {item['symbol']}" for item in summary["opened"]),
+                    )
+                    _maybe_trigger_auto_retrain("auto_paper_open")
+        except Exception as e:
+            _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+            _auto_paper_state["last_error"] = str(e)
+            logger.warning(f"Auto paper trader cycle failed: {e}")
+
+        await asyncio.sleep(int(_auto_paper_state["scan_interval_seconds"]))
+
+
+def _capture_trade_ml_snapshot(symbol: str, side: str, entry_price: float) -> dict | None:
+    """Capture a focused ML snapshot so each paper trade becomes usable training data."""
+    try:
+        from intelligence.technical_engine import get_kline_data, compute_indicators
+        from intelligence.ml.feature_extractor import extract_features
+        from intelligence.ml.signal_model import predict_win_probability
+
+        sym = symbol.upper().strip()
+        asset_class = "CRYPTO" if any(token in sym for token in ("BTC", "ETH", "SOL", "XRP")) else "MACRO"
+        timeframe = "15m" if asset_class == "CRYPTO" else "1h"
+        df = get_kline_data(sym, timeframe=timeframe, limit=260, asset_class=asset_class, ignore_freshness=False)
+        if df is None or len(df) < 220:
+            return None
+
+        df = compute_indicators(df)
+        idx = len(df) - 1
+        features = extract_features(df, idx, side=side, symbol=sym, asset_class=asset_class)
+        atr = float(df["atr_14"].iloc[idx] or 0.0)
+        if atr <= 0:
+            return None
+
+        sl = entry_price - atr * 1.5 if side == "BUY" else entry_price + atr * 1.5
+        tp = entry_price + atr * 3.0 if side == "BUY" else entry_price - atr * 3.0
+        ml_result = predict_win_probability(features)
+        features["symbol"] = sym
+        features["timeframe"] = timeframe
+        features["asset_class"] = asset_class
+
+        return {
+            "features": features,
+            "sl": float(sl),
+            "tp": float(tp),
+            "ml_score": float(ml_result.get("win_pct", 50.0)),
+            "timeframe": timeframe,
+            "asset_class": asset_class,
+            "win_probability": float(ml_result.get("win_probability", 0.5)),
+        }
+    except Exception as e:
+        logger.warning(f"ML snapshot capture failed for {symbol}: {e}")
+        return None
+
+
+def _open_paper_trade_internal(
+    symbol: str,
+    side: str,
+    volume: float,
+    price: float | None = None,
+    entry_source: str = "manual_ui",
+    entry_reason: str | None = None,
+) -> dict:
+    from intelligence.ml.signal_model import ML_CORE_SYMBOLS
+
+    symbol = symbol.upper().strip()
+    side = side.upper().strip()
+    if side not in {"BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+
+    entry_price = float(price or 0.0) or _get_live_price(symbol)
+    if entry_price <= 0:
+        raise HTTPException(status_code=400, detail=f"Unable to resolve live price for {symbol}")
+
+    volume = max(float(volume or 1.0), 0.001)
+    ml_score = _lookup_ai_score(symbol)
+    ml_snapshot = _capture_trade_ml_snapshot(symbol, side, entry_price)
+    is_focus_symbol = symbol in ML_CORE_SYMBOLS
+    if ml_snapshot and ml_snapshot.get("ml_score") is not None:
+        ml_score = float(ml_snapshot["ml_score"])
+
+    trade_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc).isoformat()
+    with get_persistence_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO paper_trades (
+                id, symbol, side, quantity, volume, entry_price, current_price,
+                status, opened_at, ml_score, entry_source, entry_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)
+            """,
+            (
+                trade_id,
+                symbol,
+                side,
+                volume,
+                volume,
+                entry_price,
+                entry_price,
+                now,
+                ml_score,
+                entry_source,
+                entry_reason,
+            ),
+        )
+        conn.commit()
+
+    if ml_snapshot:
+        try:
+            from intelligence.ml.outcome_tracker import attach_sl_tp_features
+
+            attach_sl_tp_features(
+                trade_id,
+                float(ml_snapshot["sl"]),
+                float(ml_snapshot["tp"]),
+                ml_snapshot["features"],
+                ml_score,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to attach ML snapshot for {symbol}: {e}")
+
+    _append_audit_event(
+        "PAPER_TRADE",
+        f"Opened {side} {symbol} x {volume} at {entry_price:.4f} [{entry_source}]",
+    )
+    return {
+        "status": "opened",
+        "trade_id": trade_id,
+        "entry_price": entry_price,
+        "ml_snapshot_attached": bool(ml_snapshot),
+        "focus_timeframe": ml_snapshot.get("timeframe") if ml_snapshot else None,
+        "focus_symbol": is_focus_symbol,
+        "focus_universe": ML_CORE_SYMBOLS,
+        "contributes_to_core_dataset": bool(is_focus_symbol and ml_snapshot),
+        "entry_source": entry_source,
+        "entry_reason": entry_reason,
+    }
+
+
 @app.get("/api/ml/stats")
 async def ml_stats():
-    from intelligence.ml.signal_model import MODEL_PATH
+    from intelligence.ml.signal_model import MODEL_PATH, ML_CORE_SYMBOLS, ML_SUFFICIENCY_TARGETS, get_auto_retrain_status, get_live_sufficiency_status
     import pickle as _pickle
     model_exists = MODEL_PATH.exists()
     bundle: dict = {}
@@ -2091,16 +5091,37 @@ async def ml_stats():
         except Exception:
             model_exists = False
 
+    global _retrain_task
+    is_training = bool(_retrain_task and not _retrain_task.done())
+
     return {
+        "is_training": is_training,
         "model_exists": model_exists,
         "model": {
-            "trained":    model_exists,
-            "n_samples":  bundle.get("n_samples"),
-            "accuracy":   bundle.get("accuracy"),
-            "roc_auc":    bundle.get("roc_auc"),
+            "trained": model_exists,
+            "n_samples": bundle.get("n_samples"),
+            "train_size": bundle.get("train_size"),
+            "test_size": bundle.get("test_size"),
+            "split_method": bundle.get("split_method"),
+            "accuracy": bundle.get("accuracy"),
+            "roc_auc": bundle.get("roc_auc"),
+            "win_rate_train": bundle.get("win_rate_train"),
+            "win_rate_test": bundle.get("win_rate_test"),
             "trained_at": bundle.get("trained_at"),
+            "outcomes_at_retrain": bundle.get("outcomes_at_retrain"),
+            "dataset_quality": bundle.get("dataset_quality"),
+            "dataset_report": bundle.get("dataset_report"),
+            "slice_pruning": bundle.get("slice_pruning"),
+            "calibration": bundle.get("calibration"),
+            "walk_forward": bundle.get("walk_forward"),
+            "sufficiency": get_live_sufficiency_status(bundle if model_exists else None),
+            "auto_retrain": get_auto_retrain_status(bundle if model_exists else None),
         },
         "paper_trades": _ml_paper_trade_stats(),
+        "focus": {
+            "core_symbols": ML_CORE_SYMBOLS,
+            "targets": ML_SUFFICIENCY_TARGETS,
+        },
     }
 
 
@@ -2119,7 +5140,100 @@ async def ml_feature_importance():
         return {"available": False, "features": [], "error": str(e)}
 
 
+@app.get("/api/ml/dataset-report")
+async def ml_dataset_report():
+    from intelligence.ml.signal_model import MODEL_PATH
+    import pickle as _pickle
+
+    if not MODEL_PATH.exists():
+        return {"available": False, "report": [], "walk_forward": None}
+
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            bundle = _pickle.load(f)
+        return {
+            "available": True,
+            "report": bundle.get("dataset_report", []),
+            "walk_forward": bundle.get("walk_forward"),
+            "dataset_quality": bundle.get("dataset_quality"),
+            "slice_pruning": bundle.get("slice_pruning"),
+            "calibration": bundle.get("calibration"),
+            "sufficiency": bundle.get("sufficiency"),
+        }
+    except Exception as e:
+        return {"available": False, "report": [], "walk_forward": None, "error": str(e)}
+
+
+@app.get("/api/ml/sufficiency")
+async def ml_sufficiency():
+    from intelligence.ml.signal_model import MODEL_PATH, ML_CORE_SYMBOLS, ML_SUFFICIENCY_TARGETS, get_auto_retrain_status, get_live_sufficiency_status
+    import pickle as _pickle
+
+    payload = {
+        "available": False,
+        "focus": {
+            "core_symbols": ML_CORE_SYMBOLS,
+            "targets": ML_SUFFICIENCY_TARGETS,
+        },
+        "paper_trades": _ml_paper_trade_stats(),
+        "sufficiency": None,
+        "auto_retrain": get_auto_retrain_status(None),
+    }
+
+    if not MODEL_PATH.exists():
+        return payload
+
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            bundle = _pickle.load(f)
+        payload["available"] = True
+        payload["sufficiency"] = get_live_sufficiency_status(bundle)
+        payload["dataset_quality"] = bundle.get("dataset_quality")
+        payload["slice_pruning"] = bundle.get("slice_pruning")
+        payload["auto_retrain"] = get_auto_retrain_status(bundle)
+        return payload
+    except Exception as e:
+        payload["error"] = str(e)
+        return payload
+
+
 _retrain_task: asyncio.Task | None = None
+
+
+def _start_ml_retrain_task(trigger_reason: str = "manual") -> bool:
+    global _retrain_task
+    if _retrain_task and not _retrain_task.done():
+        return False
+
+    async def _run():
+        from intelligence.ml.signal_model import train_model, TRAIN_SYMBOLS
+        import intelligence.ml.signal_model as _sm
+        import functools
+        loop = asyncio.get_event_loop()
+        fn = functools.partial(train_model, symbols=TRAIN_SYMBOLS, limit=5000)
+        result = await loop.run_in_executor(None, fn)
+        _sm._MODEL_CACHE = None  # invalidate in-memory cache so next load picks up new model
+        logger.info(f"[ML-Retrain] done ({trigger_reason}): {result}")
+
+    _retrain_task = asyncio.create_task(_run())
+    logger.info(f"[ML-Retrain] started ({trigger_reason})")
+    return True
+
+
+def _maybe_trigger_auto_retrain(trigger_source: str) -> dict:
+    from intelligence.ml.signal_model import get_auto_retrain_status
+
+    status = get_auto_retrain_status()
+    if not status.get("recommended"):
+        return {"checked": True, "recommended": False, "started": False, "reasons": status.get("reasons", [])}
+
+    started = _start_ml_retrain_task(f"auto:{trigger_source}")
+    return {
+        "checked": True,
+        "recommended": True,
+        "started": started,
+        "reasons": status.get("reasons", []),
+    }
 
 
 @app.post("/api/ml/retrain")
@@ -2128,23 +5242,145 @@ async def ml_retrain():
     if _retrain_task and not _retrain_task.done():
         return {"status": "already_running"}
 
-    async def _run():
-        from intelligence.ml.signal_model import train_model, TRAIN_SYMBOLS
-        import intelligence.ml.signal_model as _sm
-        import functools
-        loop = asyncio.get_event_loop()
-        fn = functools.partial(train_model, symbols=TRAIN_SYMBOLS, limit=1000)
-        result = await loop.run_in_executor(None, fn)
-        _sm._MODEL_CACHE = None  # invalidate in-memory cache so next load picks up new model
-        logger.info(f"[ML-Retrain] done: {result}")
-
-    _retrain_task = asyncio.create_task(_run())
+    _start_ml_retrain_task("manual_api")
     return {"status": "started"}
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chat History Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/history")
+async def get_history(request: Request):
+    """Fetch all chat sessions from SQLite, ordered by last update."""
+    # Auth check (optional, but good for demo/institutional separation)
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    try:
+        with get_persistence_conn() as conn:
+            # Query sessions
+            rows = conn.execute(
+                "SELECT id, title, updated_at as updatedAt FROM sessions ORDER BY updated_at DESC"
+            ).fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error fetching history: {e}")
+        return []
+
+@app.get("/api/history/{session_id}")
+async def get_session_messages(session_id: str, request: Request):
+    """Fetch all messages for a specific session."""
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    try:
+        with get_persistence_conn() as conn:
+            rows = conn.execute(
+                "SELECT role, content, metadata FROM messages WHERE session_id = ? ORDER BY created_at ASC",
+                (session_id,)
+            ).fetchall()
+            
+            messages = []
+            for row in rows:
+                msg = dict(row)
+                # Parse metadata back into fields
+                meta = json.loads(msg.get("metadata") or "{}")
+                msg.update(meta)
+                del msg["metadata"]
+                messages.append(msg)
+            return messages
+    except Exception as e:
+        logger.error(f"Error fetching messages for {session_id}: {e}")
+        return []
+
+class ChatSessionSave(BaseModel):
+    id: str
+    title: str
+    messages: list[dict]
+    updatedAt: Optional[float] = None
+    last_message: Optional[str] = None
+
+@app.post("/api/history")
+async def save_history(session: ChatSessionSave, request: Request):
+    """Save or update a chat session and its full message history."""
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    try:
+        with get_persistence_conn() as conn:
+            # 1. Update/Insert Session
+            last_msg = session.last_message
+            if not last_msg and session.messages:
+                last_msg = session.messages[-1].get("content", "")[:100]
+            
+            conn.execute(
+                "INSERT INTO sessions (id, title, last_message, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "title=excluded.title, last_message=excluded.last_message, updated_at=excluded.updated_at",
+                (session.id, session.title, last_msg, session.updatedAt or time.time() * 1000)
+            )
+            
+            # 2. Sync Messages (Simple strategy: delete and re-insert for the session)
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session.id,))
+            
+            for msg in session.messages:
+                role = msg.get("role")
+                content = msg.get("content")
+                # Extra fields go into metadata
+                metadata = {k: v for k, v in msg.items() if k not in ["role", "content", "id"]}
+                
+                # Keep created_at or use current time
+                created_at = msg.get("created_at") or msg.get("timestamp") or (time.time() * 1000)
+                
+                conn.execute(
+                    "INSERT INTO messages (session_id, role, content, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (session.id, role, content, json.dumps(metadata), created_at)
+                )
+            
+            conn.commit()
+            return {"status": "success", "session_id": session.id}
+    except Exception as e:
+        logger.error(f"Error saving history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/history/{session_id}")
+async def delete_history(session_id: str, request: Request):
+    """Delete a specific chat session and all its messages."""
+    auth_key = request.headers.get("X-API-Key")
+    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    try:
+        with get_persistence_conn() as conn:
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.commit()
+            return {"status": "deleted"}
+    except Exception as e:
+        logger.error(f"Error deleting history {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/")
+async def get_index():
+    """Explicitly serve index.html for the root path."""
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"error": "Dashboard UI not built. Please run 'npm run build' in /frontend directory."}
 
 # Catch-all for SPA routing (Must be last)
 @app.get("/{full_path:path}")
 async def catch_all(full_path: str):
+    # If it's empty, it was already handled by get_index above
+    if not full_path:
+        return await get_index()
+        
     # If it's an API call, it already failed to match above routes, so return 404
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API route not found")

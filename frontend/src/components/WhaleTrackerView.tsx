@@ -34,21 +34,21 @@ const getTier = (usdValue: number): WhaleTier => {
   return 'krill';
 };
 
-const tierConfig: Record<WhaleTier, { label: string; threshold: string; color: string; glow: string }> = {
-  krill:   { label: 'KRILL',      threshold: '< $200k',  color: 'text-slate-400',   glow: '' },
-  dolphin: { label: 'DOLPHIN',    threshold: '> $200k',  color: 'text-blue-400',    glow: 'shadow-[0_0_8px_rgba(59,130,246,0.25)]' },
-  whale:   { label: 'WHALE',      threshold: '> $1M',    color: 'text-emerald-400', glow: 'shadow-[0_0_12px_rgba(16,185,129,0.3)]' },
-  mega:    { label: 'MEGA-WHALE', threshold: '> $5M',    color: 'text-yellow-400',  glow: 'shadow-[0_0_20px_rgba(251,191,36,0.4)]' },
-};
+const getTierConfig = (theme: 'light' | 'dark'): Record<WhaleTier, { label: string; threshold: string; color: string; glow: string }> => ({
+  krill:   { label: 'KRILL',      threshold: '< $200k',  color: theme === 'dark' ? 'text-slate-400' : 'text-slate-500',   glow: '' },
+  dolphin: { label: 'DOLPHIN',    threshold: '> $200k',  color: theme === 'dark' ? 'text-blue-400' : 'text-blue-600',    glow: theme === 'dark' ? 'shadow-[0_0_8px_rgba(59,130,246,0.25)]' : 'shadow-sm' },
+  whale:   { label: 'WHALE',      threshold: '> $1M',    color: theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600', glow: theme === 'dark' ? 'shadow-[0_0_12px_rgba(16,185,129,0.3)]' : 'shadow-sm' },
+  mega:    { label: 'MEGA-WHALE', threshold: '> $5M',    color: theme === 'dark' ? 'text-yellow-400' : 'text-amber-600',  glow: theme === 'dark' ? 'shadow-[0_0_20px_rgba(251,191,36,0.4)]' : 'shadow-md' },
+});
 
-const assetClassConfig: Record<string, { color: string; bg: string; border: string; emoji: string }> = {
-  CRYPTO: { color: 'text-violet-300', bg: 'bg-violet-500/10', border: 'border-violet-500/20', emoji: '₿' },
-  STOCK:  { color: 'text-blue-300',   bg: 'bg-blue-500/10',   border: 'border-blue-500/20',   emoji: '📈' },
-  GOLD:   { color: 'text-yellow-300', bg: 'bg-yellow-500/10', border: 'border-yellow-500/20', emoji: '🥇' },
-  OIL:    { color: 'text-orange-300', bg: 'bg-orange-500/10', border: 'border-orange-500/20', emoji: '🛢' },
-  FX:     { color: 'text-cyan-300',   bg: 'bg-cyan-500/10',   border: 'border-cyan-500/20',   emoji: '💱' },
-  INDEX:  { color: 'text-pink-300',   bg: 'bg-pink-500/10',   border: 'border-pink-500/20',   emoji: '📊' },
-};
+const getAssetClassConfig = (theme: 'light' | 'dark'): Record<string, { color: string; bg: string; border: string; emoji: string }> => ({
+  CRYPTO: { color: theme === 'dark' ? 'text-violet-300' : 'text-violet-700', bg: theme === 'dark' ? 'bg-violet-500/10' : 'bg-violet-50', border: theme === 'dark' ? 'border-violet-500/20' : 'border-violet-200', emoji: '₿' },
+  STOCK:  { color: theme === 'dark' ? 'text-blue-300' : 'text-blue-700',   bg: theme === 'dark' ? 'bg-blue-500/10' : 'bg-blue-50',   border: theme === 'dark' ? 'border-blue-500/20' : 'border-blue-200',   emoji: '📈' },
+  GOLD:   { color: theme === 'dark' ? 'text-yellow-300' : 'text-amber-700', bg: theme === 'dark' ? 'bg-yellow-500/10' : 'bg-amber-50', border: theme === 'dark' ? 'border-yellow-500/20' : 'border-amber-200', emoji: '🥇' },
+  OIL:    { color: theme === 'dark' ? 'text-orange-300' : 'text-orange-700', bg: theme === 'dark' ? 'bg-orange-500/10' : 'bg-orange-50', border: theme === 'dark' ? 'border-orange-500/20' : 'border-orange-200', emoji: '🛢' },
+  FX:     { color: theme === 'dark' ? 'text-cyan-300' : 'text-cyan-700',   bg: theme === 'dark' ? 'bg-cyan-500/10' : 'bg-cyan-50',   border: theme === 'dark' ? 'border-cyan-500/20' : 'border-cyan-200',   emoji: '💱' },
+  INDEX:  { color: theme === 'dark' ? 'text-pink-300' : 'text-pink-700',   bg: theme === 'dark' ? 'bg-pink-500/10' : 'bg-pink-50',   border: theme === 'dark' ? 'border-pink-500/20' : 'border-pink-200',   emoji: '📊' },
+});
 
 const fmtUSD = (v: number) => {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
@@ -58,6 +58,7 @@ const fmtUSD = (v: number) => {
 
 export const WhaleTrackerView = () => {
   const { t } = useLanguage();
+  const { theme, isRetail } = useMode();
   const [whales, setWhales]             = useState<WhaleEntry[]>([]);
   const [loading, setLoading]           = useState(true);
   const [filterTier, setFilterTier]     = useState<WhaleTier | 'all'>('all');
@@ -65,7 +66,6 @@ export const WhaleTrackerView = () => {
   const [filterAsset, setFilterAsset]   = useState<AssetClass>('ALL');
   const [sortOrder,  setSortOrder]      = useState<'desc' | 'asc'>('desc');
   const { isConnected, lastMessage, latency } = useWebSocket();
-  const { isRetail } = useMode();
 
   const fetchWhales = async () => {
     setLoading(true);
@@ -136,7 +136,9 @@ export const WhaleTrackerView = () => {
     whales[0] || { price: '0', quantity: '0', usd_value: 0 } as WhaleEntry
   );
 
-  // Asset class breakdown for mini-stats
+  const tierConfig = getTierConfig(theme);
+  const assetClassConfig = getAssetClassConfig(theme);
+
   const byClass = whales.reduce<Record<string, number>>((acc, w) => {
     const cls = w.asset_class || 'CRYPTO';
     acc[cls] = (acc[cls] || 0) + 1;
@@ -168,37 +170,49 @@ export const WhaleTrackerView = () => {
   const ASSET_CLASSES: AssetClass[] = ['ALL', 'CRYPTO', 'STOCK', 'GOLD', 'OIL', 'FX', 'INDEX'];
 
   return (
-    <div className="flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar">
+    <div className={`flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar transition-all duration-700 ${
+      theme === 'dark' ? 'bg-slate-950/20' : 'bg-slate-50'
+    }`}>
       {/* Header */}
-      <header className="flex justify-between items-center border-b border-white/5 pb-8">
+      <header className={`flex justify-between items-center border-b pb-8 transition-colors duration-500 ${
+        theme === 'dark' ? 'border-white/5' : 'border-slate-200'
+      }`}>
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-emerald-500 font-bold text-xs uppercase tracking-[0.2em]">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] status-breath" />
             {t('whale.badge')}
           </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">{t('whale.title')}</h2>
-          <p className="text-slate-500 text-sm font-medium">
+          <h2 className={`text-3xl font-black tracking-tight transition-colors duration-500 uppercase italic ${
+            theme === 'dark' ? 'text-white' : 'text-slate-900'
+          }`}>{t('whale.title')}</h2>
+          <p className={`text-sm font-medium transition-colors duration-500 ${
+            theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+          }`}>
             {t('whale.subtitle')}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold tracking-widest uppercase transition-all ${
             isConnected
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-              : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+              ? (theme === 'dark' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-50 border-emerald-200 text-emerald-600')
+              : (theme === 'dark' ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : 'bg-rose-50 border-rose-200 text-rose-600')
           }`}>
             <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
             {isConnected ? `${t('whale.live')} · ${latency ?? '--'}ms` : t('whale.syncing')}
           </div>
           {!isRetail && (
             <button onClick={exportCSV}
-              className="group flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-blue-500/50 rounded-xl text-slate-300 transition-all font-bold text-xs">
+              className={`group flex items-center gap-2 px-4 py-2 border rounded-xl transition-all font-bold text-xs ${
+                theme === 'dark' ? 'bg-slate-900 border-white/10 text-slate-300 hover:border-blue-500/50 hover:text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-blue-500/30 hover:bg-slate-50 shadow-sm'
+              }`}>
               <Download className="w-3.5 h-3.5 group-hover:-translate-y-0.5 transition-transform" />
               {t('whale.csv')}
             </button>
           )}
           <button onClick={fetchWhales}
-            className="group flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-emerald-500/50 rounded-xl text-slate-300 transition-all font-bold text-xs">
+            className={`group flex items-center gap-2 px-4 py-2 border rounded-xl transition-all font-bold text-xs ${
+              theme === 'dark' ? 'bg-slate-900 border-white/10 text-slate-300 hover:border-emerald-500/50 hover:text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-500/30 hover:bg-slate-50 shadow-sm'
+            }`}>
             <RefreshCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
             {t('whale.sync')}
           </button>
@@ -206,28 +220,37 @@ export const WhaleTrackerView = () => {
       </header>
 
       {/* What is Whale Data? */}
-      <div className="flex items-start gap-3 p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
+      <div className={`flex items-start gap-3 p-4 border rounded-2xl transition-all duration-500 ${
+        theme === 'dark' ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-emerald-50/50 border-emerald-100'
+      }`}>
         <TrendingUp className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
         <div className="space-y-1">
-          <p className="text-xs font-black text-emerald-400 uppercase tracking-widest">{t('whale.how_to_read')}</p>
-          <p className="text-sm text-slate-400">{t('whale.explanation')}</p>
+          <p className="text-xs font-black text-emerald-500 uppercase tracking-widest">{t('whale.how_to_read')}</p>
+          <p className={`text-sm transition-colors duration-500 ${
+            theme === 'dark' ? 'text-slate-400' : 'text-slate-600'
+          }`}>{t('whale.explanation')}</p>
         </div>
       </div>
 
       {/* Aggregate Stats */}
       <div className="grid grid-cols-4 gap-4">
         {[
-          { label: t('whale.buy_pressure'),   value: fmtUSD(totalBuyUSD),                                          color: 'text-emerald-400' },
-          { label: t('whale.sell_pressure'),  value: fmtUSD(totalSellUSD),                                         color: 'text-rose-400'    },
-          { label: t('whale.flow_imbalance'), value: `${flowImbalance > 0 ? '+' : ''}${flowImbalance.toFixed(1)}%`,color: flowImbalance > 0 ? 'text-emerald-400' : 'text-rose-400' },
-          { label: t('whale.largest_trade'),  value: largest ? fmtUSD(getUSDValue(largest)) : '—',                 color: 'text-yellow-400'  },
+          { label: t('whale.buy_pressure'),   value: fmtUSD(totalBuyUSD),                                          color: theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600' },
+          { label: t('whale.sell_pressure'),  value: fmtUSD(totalSellUSD),                                         color: theme === 'dark' ? 'text-rose-400' : 'text-rose-600'    },
+          { label: t('whale.flow_imbalance'), value: `${flowImbalance > 0 ? '+' : ''}${flowImbalance.toFixed(1)}%`,color: flowImbalance > 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600') },
+          { label: t('whale.largest_trade'),  value: largest ? fmtUSD(getUSDValue(largest)) : '—',                 color: theme === 'dark' ? 'text-yellow-400' : 'text-amber-600'  },
         ].map((s, i) => (
-          <div key={i} className="p-4 bg-slate-900/40 border border-white/5 rounded-2xl">
-            <p className="text-[11px] font-black text-slate-600 uppercase tracking-widest mb-1">{s.label}</p>
+          <div key={i} className={`p-4 border rounded-2xl transition-all duration-500 ${
+            theme === 'dark' ? 'bg-slate-900/40 border-white/5' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+          }`}>
+            <p className={`text-[11px] font-black uppercase tracking-widest mb-1 ${
+              theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+            }`}>{s.label}</p>
             <p className={`text-base font-black font-mono ${s.color}`}>{s.value}</p>
           </div>
         ))}
       </div>
+
 
       {/* Asset class breakdown pill row */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -237,7 +260,7 @@ export const WhaleTrackerView = () => {
           const cfg = assetClassConfig[cls] || assetClassConfig['CRYPTO'];
           return (
             <span key={cls}
-              className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${cfg.bg} ${cfg.border} ${cfg.color}`}>
+              className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest border shadow-sm ${cfg.bg} ${cfg.border} ${cfg.color}`}>
               {cfg.emoji} {cls} ({count})
             </span>
           );
@@ -249,7 +272,9 @@ export const WhaleTrackerView = () => {
         {/* Asset Class filter */}
         <div className="flex items-center gap-2 flex-wrap">
           <Filter className="w-3.5 h-3.5 text-slate-500" />
-          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">{t('whale.asset')}</span>
+          <span className={`text-[11px] font-black uppercase tracking-widest ${
+            theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+          }`}>{t('whale.asset')}</span>
           {ASSET_CLASSES.map(cls => {
             const cfg = assetClassConfig[cls];
             const activeClass = cls === 'ALL'
@@ -259,8 +284,8 @@ export const WhaleTrackerView = () => {
               <button key={cls} onClick={() => setFilterAsset(cls)}
                 className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
                   filterAsset === cls
-                    ? activeClass
-                    : 'bg-transparent border-white/10 text-slate-500 hover:text-white'
+                    ? (theme === 'light' ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-500/20' : activeClass)
+                    : (theme === 'dark' ? 'bg-transparent border-white/10 text-slate-500 hover:text-white' : 'bg-white border-slate-200 text-slate-400 hover:text-slate-700 shadow-sm')
                 }`}>
                 {cls === 'ALL' ? t('whale.all') : `${cfg?.emoji ?? ''} ${cls}`}
               </button>
@@ -270,26 +295,30 @@ export const WhaleTrackerView = () => {
 
         {/* Tier + Direction filter */}
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">{t('whale.tier')}</span>
+          <span className={`text-[11px] font-black uppercase tracking-widest ${
+            theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+          }`}>{t('whale.tier')}</span>
           {(['all', 'krill', 'dolphin', 'whale', 'mega'] as const).map(tier => (
             <button key={tier} onClick={() => setFilterTier(tier)}
               className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
                 filterTier === tier
-                  ? 'bg-blue-600/20 border-blue-500/40 text-blue-400'
-                  : 'bg-transparent border-white/10 text-slate-500 hover:text-white'
+                  ? (theme === 'light' ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-500/20' : 'bg-blue-600/20 border-blue-500/40 text-blue-400')
+                  : (theme === 'dark' ? 'bg-transparent border-white/10 text-slate-500 hover:text-white' : 'bg-white border-slate-200 text-slate-400 hover:text-slate-700 shadow-sm')
               }`}>
               {tier === 'all' ? t('whale.all') : tierConfig[tier].label}
             </button>
           ))}
-          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-4">{t('whale.side')}</span>
+          <span className={`text-[11px] font-black uppercase tracking-widest ml-4 ${
+            theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+          }`}>{t('whale.side')}</span>
           {(['all', 'buy', 'sell'] as const).map(d => (
             <button key={d} onClick={() => setFilterDir(d)}
               className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
                 filterDir === d
-                  ? d === 'buy'  ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400'
-                  : d === 'sell' ? 'bg-rose-600/20    border-rose-500/40    text-rose-400'
-                                 : 'bg-blue-600/20    border-blue-500/40    text-blue-400'
-                  : 'bg-transparent border-white/10 text-slate-500 hover:text-white'
+                  ? d === 'buy'  ? (theme === 'dark' ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400' : 'bg-emerald-600 border-emerald-600 text-white shadow-lg shadow-emerald-500/20')
+                  : d === 'sell' ? (theme === 'dark' ? 'bg-rose-600/20    border-rose-500/40    text-rose-400'    : 'bg-rose-600    border-rose-600    text-white shadow-lg shadow-rose-500/20')
+                                 : (theme === 'dark' ? 'bg-blue-600/20    border-blue-500/40    text-blue-400'    : 'bg-blue-600    border-blue-600    text-white shadow-lg shadow-blue-500/20')
+                  : (theme === 'dark' ? 'bg-transparent border-white/10 text-slate-500 hover:text-white' : 'bg-white border-slate-200 text-slate-400 hover:text-slate-700 shadow-sm')
               }`}>
               {d.toUpperCase()}
             </button>
@@ -299,13 +328,15 @@ export const WhaleTrackerView = () => {
         {/* Sort order */}
         <div className="flex items-center gap-2">
           <ArrowDownUp className="w-3.5 h-3.5 text-slate-500" />
-          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">{t('whale.sort')}</span>
+          <span className={`text-[11px] font-black uppercase tracking-widest ${
+            theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+          }`}>{t('whale.sort')}</span>
           {([['desc', t('whale.sort_high')], ['asc', t('whale.sort_low')]] as const).map(([val, label]) => (
             <button key={val} onClick={() => setSortOrder(val)}
               className={`px-3 py-1 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
                 sortOrder === val
                   ? 'bg-amber-600/20 border-amber-500/40 text-amber-400'
-                  : 'bg-transparent border-white/10 text-slate-500 hover:text-white'
+                  : (theme === 'dark' ? 'bg-transparent border-white/10 text-slate-500 hover:text-white' : 'bg-white border-slate-200 text-slate-400 hover:text-slate-700 shadow-sm')
               }`}>
               {label}
             </button>
@@ -314,11 +345,17 @@ export const WhaleTrackerView = () => {
       </div>
 
       {/* Table */}
-      <div className="bg-slate-900/40 backdrop-blur-xl border border-white/5 rounded-[2rem] overflow-hidden shadow-2xl relative">
-        <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/5 blur-[100px] pointer-events-none" />
+      <div className={`backdrop-blur-xl border rounded-[2.5rem] overflow-hidden relative transition-all duration-500 ${
+        theme === 'dark' ? 'bg-[#0a0f1d]/50 border-white/5 shadow-2xl' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+      }`}>
+        <div className={`absolute top-0 right-0 w-64 h-64 blur-[100px] pointer-events-none ${
+          theme === 'dark' ? 'bg-emerald-500/5' : 'bg-emerald-400/5'
+        }`} />
         <table className="w-full text-left border-collapse relative z-10">
           <thead>
-            <tr className="bg-slate-900/80 border-b border-white/5">
+            <tr className={`border-b transition-colors duration-500 ${
+              theme === 'dark' ? 'bg-slate-900/80 border-white/5' : 'bg-slate-50/80 border-slate-200'
+            }`}>
               <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.time')}</th>
               <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.tier_col')}</th>
               <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{t('whale.asset_col')}</th>
@@ -329,13 +366,17 @@ export const WhaleTrackerView = () => {
               <th className="px-5 py-5 text-xs font-bold text-slate-500 uppercase tracking-[0.2em] text-right" title="Volume ratio vs. average — higher = unusual activity">{t('whale.vol_spike')}</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/5">
+          <tbody className={`divide-y transition-colors duration-500 ${
+            theme === 'dark' ? 'divide-white/5' : 'divide-slate-100'
+          }`}>
             <AnimatePresence mode="popLayout">
               {loading
                 ? [1,2,3,4,5].map(i => (
                     <tr key={i} className="animate-pulse">
                       <td colSpan={8} className="px-5 py-6">
-                        <div className="h-4 bg-slate-800/50 rounded-full w-full" />
+                        <div className={`h-4 rounded-full w-full ${
+                          theme === 'dark' ? 'bg-slate-800/50' : 'bg-slate-100'
+                        }`} />
                       </td>
                     </tr>
                   ))
@@ -361,11 +402,17 @@ export const WhaleTrackerView = () => {
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: Math.min(i * 0.02, 0.5) }}
-                        className={`hover:bg-white/[0.02] transition-colors ${isMega ? 'bg-yellow-500/[0.02]' : ''}`}
+                        className={`transition-colors ${
+                          theme === 'dark' 
+                            ? `hover:bg-white/[0.02] ${isMega ? 'bg-yellow-500/[0.02]' : ''}` 
+                            : `hover:bg-slate-50 ${isMega ? 'bg-yellow-50/30' : ''}`
+                        }`}
                       >
                         {/* Time */}
                         <td className="px-5 py-4 whitespace-nowrap">
-                          <div className="flex items-center gap-2 text-slate-500 font-mono text-[11px] font-bold">
+                          <div className={`flex items-center gap-2 font-mono text-[11px] font-bold transition-colors ${
+                            theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                          }`}>
                             <Clock className="w-3 h-3 opacity-50" />
                             {timeStr}
                           </div>
@@ -380,57 +427,68 @@ export const WhaleTrackerView = () => {
 
                         {/* Symbol */}
                         <td className="px-5 py-4">
-                          <span className="font-black text-slate-100 tracking-tight">{whale.symbol}</span>
+                          <span className={`font-black tracking-tight transition-colors ${
+                            theme === 'dark' ? 'text-slate-100' : 'text-slate-900'
+                          }`}>{whale.symbol}</span>
                         </td>
 
-                        {/* Asset Class badge */}
+                        {/* Asset Class */}
                         <td className="px-5 py-4">
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-widest border ${aCfg.bg} ${aCfg.border} ${aCfg.color}`}>
+                          <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-black uppercase tracking-widest shadow-sm ${aCfg.bg} ${aCfg.border} ${aCfg.color}`}>
                             {aCfg.emoji} {aClass}
-                          </span>
-                        </td>
-
-                        {/* Direction */}
-                        <td className="px-5 py-4">
-                          <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-xl text-xs font-black tracking-wider border ${
-                            whale.is_buyer_maker
-                              ? 'bg-rose-500/5 text-rose-400 border-rose-500/20'
-                              : 'bg-emerald-500/5 text-emerald-400 border-emerald-500/20'
-                          }`}>
-                            {whale.is_buyer_maker
-                              ? <ArrowDownRight className="w-3 h-3" />
-                              : <ArrowUpRight   className="w-3 h-3" />}
-                            {whale.is_buyer_maker ? 'SELL' : 'BUY'}
                           </div>
                         </td>
 
+                        {/* Side */}
+                        <td className="px-5 py-4">
+                          <div className={`inline-flex items-center gap-1.5 font-black text-[10px] uppercase tracking-widest ${!whale.is_buyer_maker ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                            {!whale.is_buyer_maker ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
+                            {!whale.is_buyer_maker ? 'BUY' : 'SELL'}
+                          </div>
+                        </td>
+
+
                         {/* USD Value */}
                         <td className="px-5 py-4 text-right">
-                          <span className={`text-base font-black font-mono ${tierCfg.color}`}>
-                            {fmtUSD(usdVal)}
-                          </span>
+                          <div className={`font-mono text-xs font-black tabular-nums transition-colors ${
+                            theme === 'dark' ? 'text-white' : 'text-slate-900'
+                          }`}>{fmtUSD(usdVal)}</div>
                         </td>
 
                         {/* Price */}
                         <td className="px-5 py-4 text-right">
-                          <span className="text-sm text-slate-400 font-black font-mono">
-                            ${parseFloat(String(whale.price)).toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                          </span>
+                          <div className={`font-mono text-[11px] font-bold transition-colors ${
+                            theme === 'dark' ? 'text-slate-400' : 'text-slate-600'
+                          }`}>
+                            ${parseFloat(String(whale.price)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}
+                          </div>
                         </td>
 
-                        {/* Vol Ratio (only for poller data) */}
+                        {/* Volume Spike */}
                         <td className="px-5 py-4 text-right">
-                          {whale.vol_ratio != null
-                            ? (
-                              <span className={`text-[11px] font-black font-mono ${
-                                whale.vol_ratio >= 5 ? 'text-yellow-400' :
-                                whale.vol_ratio >= 3 ? 'text-emerald-400' : 'text-slate-500'
-                              }`}>
-                                {whale.vol_ratio.toFixed(1)}×
-                              </span>
-                            )
-                            : <span className="text-slate-700 text-[11px]">—</span>
-                          }
+                          <div className="flex items-center justify-end gap-2">
+                            {whale.vol_ratio != null ? (
+                              <>
+                                <div className={`w-12 h-1.5 rounded-full overflow-hidden transition-colors ${
+                                  theme === 'dark' ? 'bg-slate-800' : 'bg-slate-200'
+                                }`}>
+                                  <div 
+                                    className={`h-full rounded-full ${whale.vol_ratio > 3 ? 'bg-amber-500' : 'bg-blue-500'}`}
+                                    style={{ width: `${Math.min(whale.vol_ratio * 10, 100)}%` }}
+                                  />
+                                </div>
+                                <span className={`font-mono text-[10px] font-black transition-colors ${
+                                  whale.vol_ratio > 2 
+                                    ? (theme === 'dark' ? 'text-amber-400' : 'text-amber-600') 
+                                    : (theme === 'dark' ? 'text-slate-500' : 'text-slate-400')
+                                }`}>
+                                  {whale.vol_ratio.toFixed(1)}x
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-slate-700 text-[11px]">—</span>
+                            )}
+                          </div>
                         </td>
                       </motion.tr>
                     );
@@ -439,16 +497,25 @@ export const WhaleTrackerView = () => {
             </AnimatePresence>
           </tbody>
         </table>
-
+        
+        {/* Empty state */}
         {!loading && filtered.length === 0 && (
-          <div className="p-24 text-center space-y-4">
-            <div className="w-16 h-16 bg-slate-800/40 rounded-full flex items-center justify-center mx-auto border border-white/5">
-              <Zap className="w-8 h-8 text-slate-600" />
+          <div className="py-20 flex flex-col items-center justify-center text-center px-6">
+            <div className={`w-16 h-16 rounded-3xl flex items-center justify-center mb-4 transition-colors ${
+              theme === 'dark' ? 'bg-white/5 text-slate-600' : 'bg-slate-100 text-slate-400'
+            }`}>
+              <Filter className="w-8 h-8" />
             </div>
-            <p className="text-slate-400 font-bold text-base">{t('whale.no_results')}</p>
-            <p className="text-slate-600 text-sm">
-              {t('whale.no_results_hint')}
-            </p>
+            <h3 className={`text-lg font-black transition-colors ${
+              theme === 'dark' ? 'text-white' : 'text-slate-900'
+            }`}>{t('whale.no_matches')}</h3>
+            <p className="text-slate-500 text-sm mt-1 max-w-xs">{t('whale.no_matches_desc')}</p>
+            <button 
+              onClick={() => { setFilterTier('all'); setFilterDir('all'); setFilterAsset('ALL'); }}
+              className="mt-6 text-blue-400 hover:text-blue-300 text-xs font-black uppercase tracking-widest"
+            >
+              {t('whale.clear_filters')}
+            </button>
           </div>
         )}
       </div>

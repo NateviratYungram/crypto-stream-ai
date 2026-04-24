@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Bot, Save, RotateCcw, CheckCircle } from 'lucide-react';
+import { useMode } from '../contexts/ModeContext';
 
 const API_KEY = () => localStorage.getItem('crypto_terminal_key') || '';
 
@@ -41,6 +42,7 @@ export const PersonaSettings = () => {
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [saved,   setSaved]   = useState(false);
+  const { theme } = useMode();
 
   const load = async () => {
     try {
@@ -66,26 +68,40 @@ export const PersonaSettings = () => {
   };
 
   return (
-    <div className="flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar">
+    <div className={`flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar transition-colors duration-500 ${
+      theme === 'dark' ? 'bg-slate-950' : 'bg-slate-50'
+    }`}>
       {/* Header */}
-      <header className="flex justify-between items-center border-b border-white/5 pb-8">
+      <header className={`flex justify-between items-center border-b pb-8 transition-colors ${
+        theme === 'dark' ? 'border-white/5' : 'border-slate-200'
+      }`}>
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-[0.2em]">
+          <div className={`flex items-center gap-2 font-bold text-xs uppercase tracking-[0.2em] ${
+            theme === 'dark' ? 'text-indigo-400' : 'text-indigo-600'
+          }`}>
             <Bot className="w-3.5 h-3.5" />
             AI Configuration
           </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">AI Persona</h2>
-          <p className="text-slate-500 text-sm">ปรับแต่งบุคลิก AI — เปลี่ยน style การวิเคราะห์และตอบสนอง</p>
+          <h2 className={`text-3xl font-extrabold tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>AI Persona</h2>
+          <p className={`${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'} text-sm font-medium`}>ปรับแต่งบุคลิก AI — เปลี่ยน style การวิเคราะห์และตอบสนอง</p>
         </div>
         <div className="flex gap-3">
           <button onClick={load}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-white/20 rounded-xl text-slate-400 text-xs font-bold transition-all">
+            className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-xs font-bold transition-all ${
+              theme === 'dark' 
+                ? 'bg-slate-900 border-white/10 text-slate-400 hover:border-white/20 hover:text-white' 
+                : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900 shadow-sm'
+            }`}>
             <RotateCcw className="w-3.5 h-3.5" />
             Reload
           </button>
           <button onClick={save} disabled={saving}
-            className="flex items-center gap-2 px-5 py-2 bg-indigo-600/20 border border-indigo-500/30 hover:border-indigo-500/60 rounded-xl text-indigo-400 text-xs font-black transition-all disabled:opacity-50">
-            {saved ? <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> : <Save className="w-3.5 h-3.5" />}
+            className={`flex items-center gap-2 px-5 py-2 border rounded-xl text-xs font-black transition-all disabled:opacity-50 ${
+              theme === 'dark'
+                ? 'bg-indigo-600/20 border-indigo-500/30 text-indigo-400 hover:border-indigo-500/60'
+                : 'bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-600/20 hover:bg-indigo-700'
+            }`}>
+            {saved ? <CheckCircle className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
             {saved ? 'Saved!' : saving ? 'Saving...' : 'Save'}
           </button>
         </div>
@@ -97,9 +113,13 @@ export const PersonaSettings = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.keys(PRESETS).map(name => (
             <button key={name} onClick={() => setText(PRESETS[name])}
-              className="p-3 bg-slate-900/40 border border-white/5 hover:border-indigo-500/30 rounded-2xl text-left transition-all group">
-              <p className="font-black text-slate-300 text-sm group-hover:text-white transition-colors">{name}</p>
-              <p className="text-[11px] text-slate-600 mt-0.5 font-bold line-clamp-2">
+              className={`p-3 border rounded-2xl text-left transition-all group ${
+                theme === 'dark' 
+                  ? 'bg-slate-900/40 border-white/5 hover:border-indigo-500/30' 
+                  : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm hover:shadow-md'
+              }`}>
+              <p className={`font-black text-sm transition-colors ${theme === 'dark' ? 'text-slate-300 group-hover:text-white' : 'text-slate-700 group-hover:text-slate-900'}`}>{name}</p>
+              <p className={`text-[11px] mt-0.5 font-bold line-clamp-2 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
                 {PRESETS[name].split('\n')[1]?.replace('You are ', '') || ''}
               </p>
             </button>
@@ -111,14 +131,18 @@ export const PersonaSettings = () => {
       <div className="space-y-2">
         <p className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Custom Instructions</p>
         {loading
-          ? <div className="h-80 bg-slate-900/40 border border-white/5 rounded-2xl animate-pulse" />
+          ? <div className={`h-80 rounded-2xl animate-pulse border ${theme === 'dark' ? 'bg-slate-900/40 border-white/5' : 'bg-slate-100 border-slate-200'}`} />
           : (
             <motion.textarea
               initial={{ opacity: 0 }} animate={{ opacity: 1 }}
               value={text}
               onChange={e => setText(e.target.value)}
               rows={18}
-              className="w-full px-5 py-4 bg-slate-900/60 border border-white/10 rounded-2xl text-slate-300 text-sm font-mono leading-relaxed resize-none focus:outline-none focus:border-indigo-500/40 transition-all placeholder:text-slate-700"
+              className={`w-full px-5 py-4 border rounded-2xl text-sm font-mono leading-relaxed resize-none focus:outline-none transition-all placeholder:text-slate-500 duration-500 ${
+                theme === 'dark' 
+                  ? 'bg-slate-900/60 border-white/10 text-slate-300 focus:border-indigo-500/40' 
+                  : 'bg-white border-slate-200 text-slate-900 shadow-sm focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-400'
+              }`}
               placeholder="เขียน instructions สำหรับ AI เช่น style การวิเคราะห์, ภาษา, โฟกัส asset class..."
             />
           )

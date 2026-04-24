@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 export type WSMessage = {
-  type: 'TICK' | 'WHALE_ALERT' | 'DQ_ALERT' | 'SYSTEM';
+  type: 'TICK' | 'WHALE_ALERT' | 'DQ_ALERT' | 'SYSTEM' | 'SIGNALS';
   data: any;
 };
 
 const BASE_RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 60000;
 
-export function useWebSocket(url: string = `ws://${window.location.host}/ws`) {
+export function useWebSocket(url: string = `ws://${window.location.hostname}:8888/ws`) {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
   const [lastMessage, setLastMessage] = useState<WSMessage | null>(null);
   const [latency, setLatency] = useState<number | null>(null);

@@ -233,6 +233,7 @@ class CryptoIntelligence:
         signals = []
         for sym in symbols:
             try:
+                # Need at least 2 candles for delta calculation
                 df_raw = get_kline_data(sym, timeframe, limit=30)
                 if df_raw is None or len(df_raw) < 10:
                     continue
@@ -240,28 +241,82 @@ class CryptoIntelligence:
                 df = compute_indicators(df_raw)
                 summary = get_indicator_summary(df, sym)
 
-                rsi   = summary.get("rsi", {}).get("value", 50)
-                macd  = summary.get("macd", {}).get("signal", "")
-                price = summary.get("price", 0)
-                adx   = summary.get("adx", {}).get("value", 0)
+                rsi   = float(summary.get("rsi", {}).get("value", 50))
+                macd_data = summary.get("macd", {})
+                macd_sig  = macd_data.get("signal", "")
+                price = float(summary.get("price", 0))
+                adx   = float(summary.get("adx", {}).get("value", 0))
 
-                # Simple scoring
-                score = 0
-                if rsi < 35:
-                    score += 30
-                elif rsi > 65:
-                    score -= 30
-                if "Bullish" in str(macd):
-                    score += 25
-                elif "Bearish" in str(macd):
-                    score -= 25
-                if adx > 25:
-                    score = score * 1.2  # trend confirmed
+                # ── Calculate Real Delta ──────────────────────────────────────
+                # Compare latest close with previous close
+                cur_close = float(df["Close"].iloc[-1])
+                prev_close = float(df["Close"].iloc[-2]) if len(df) > 1 else cur_close
+                delta_pct = ((cur_close - prev_close) / (prev_close if prev_close != 0 else 1)) * 100
 
-                direction = "BUY" if score > 20 else "SELL" if score < -20 else "HOLD"
-                confidence = min(95, int(abs(score)))
+                # ── Calculate Real Volume Surge ─────────────────────────────────
+                # Ratio of latest bar volume vs 20-period average
+                try:
+                    vol_col = "Volume" if "Volume" in df.columns else "volume"
+                    if vol_col in df.columns and len(df) >= 5:
+                        cur_vol = float(df[vol_col].iloc[-1])
+                        avg_vol = float(df[vol_col].tail(20).mean())
+                        vol_surge = round(cur_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+                    else:
+                        vol_surge = 1.0
+                except Exception:
+                    vol_surge = 1.0
 
-                macro_list = ["GOLD", "SILVER", "OIL", "NASDAQ", "SP500", "DOW"]
+                # ── Apply Trained ML Model (Ensemble + Neural) ────────────────
+                from intelligence.ml.signal_model import predict_with_neural_consensus
+                asset_cls = "MACRO" if sym in ["GOLD", "SILVER", "OIL", "EURUSD", "GBPUSD", "USDJPY"] else "CRYPTO"
+                
+                # We evaluate the probability of a WIN for both LONG and SHORT scenarios
+                idx = len(df) - 1
+                try:
+                    buy_ml  = predict_with_neural_consensus(df, idx, side="BUY", symbol=sym, asset_class=asset_cls)
+                    sell_ml = predict_with_neural_consensus(df, idx, side="SELL", symbol=sym, asset_class=asset_cls)
+                    
+                    if buy_ml.get("available") and sell_ml.get("available"):
+                        b_prob = buy_ml.get("win_probability", 0.5)
+                        s_prob = sell_ml.get("win_probability", 0.5)
+                        
+                        if b_prob >= s_prob:
+                            best_prob = b_prob
+                            best_dir = "BUY"
+                            rationale = buy_ml.get("rationale", [])
+                        else:
+                            best_prob = s_prob
+                            best_dir = "SELL"
+                            rationale = sell_ml.get("rationale", [])
+                            
+                        # Set thresholds: > 52% is considered an actionable edge
+                        if best_prob > 0.52:
+                            direction = best_dir
+                            # Scale confidence from 50%-100% to 0-100% UI meter
+                            confidence = min(98, int((best_prob - 0.50) * 2.0 * 100))
+                        else:
+                            direction = "HOLD"
+                            confidence = min(98, int((best_prob - 0.50) * 2.0 * 100) if best_prob > 0.50 else int((0.50 - best_prob) * 2.0 * 100))
+                            
+                        # Generate reasoning
+                        if rationale:
+                            reason = f"ML Focus: {' ∙ '.join(rationale)} (WinProb: {best_prob*100:.1f}%)"
+                        else:
+                            reason = f"ML WinProb: {best_prob*100:.1f}%"
+                    else:
+                        raise ValueError("Model unavailable")
+                except Exception as ml_err:
+                    import traceback
+                    logger.error(f"ML evaluation failed for {sym}: {ml_err}\n{traceback.format_exc()}")
+                    # Fallback to basic heuristics
+                    rsi_score = ((50 - rsi) / 30.0) * 40
+                    macd_score = 25 if "Bullish" in macd_sig else -25 if "Bearish" in macd_sig else 0
+                    total_raw = (rsi_score + macd_score) * (1.0 + (min(adx, 50) / 100.0)) + (abs(delta_pct) * 5)
+                    direction = "BUY" if total_raw > 15 else "SELL" if total_raw < -15 else "HOLD"
+                    confidence = min(98, max(5, int(abs(total_raw))))
+                    reason = f"RSI={rsi:.1f}, MACD={macd_sig}, ADX={adx:.1f}"
+
+                macro_list = ["GOLD", "SILVER", "OIL", "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD"]
                 display_sym = sym if sym in macro_list else f"{sym}USDT"
 
                 signals.append({
@@ -270,12 +325,12 @@ class CryptoIntelligence:
                     "confidence": confidence,
                     "price": price,
                     "rsi": round(rsi, 1),
-                    "macd_signal": macd,
+                    "macd_signal": macd_sig,
                     "adx": round(adx, 1),
-                    "reason": f"RSI={rsi:.0f}, MACD={macd}, ADX={adx:.0f}",
+                    "reason": reason,
                     "timeframe": timeframe,
-                    "delta_pct": 0.0,
-                    "vol_surge": 1.0,
+                    "delta_pct": round(delta_pct, 4),
+                    "vol_surge": vol_surge,
                 })
             except Exception as e:
                 logger.warning(f"QuickSignal error for {sym}: {e}")

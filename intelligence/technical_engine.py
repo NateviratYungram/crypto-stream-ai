@@ -8,6 +8,8 @@ from typing import Optional
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from intelligence.constants import NASDAQ_100_TICKERS, SP500_TICKERS, MACRO_MAPPING
+from intelligence.mt5_connector import _MT5_AVAILABLE, mt5_get_rates, normalize_broker_symbol
+from intelligence.archiver import archiver
 
 # Configure yfinance cache to avoid disk I/O errors in restricted environments
 try:
@@ -61,22 +63,39 @@ def compute_hurst_exponent(ts: pd.Series, window: int = 100) -> float:
 # ── SQLAlchemy engine factory (singleton, lazy-init) ─────────────────────────
 _pg_engine = None
 
+_last_pg_engine_fail = 0
+
 def _get_pg_engine():
-    """Return a cached SQLAlchemy engine for crypto_stream_db."""
-    global _pg_engine
+    """Return a cached SQLAlchemy engine for crypto_stream_db with failure caching."""
+    global _pg_engine, _last_pg_engine_fail
+    import time
+    
+    if time.time() - _last_pg_engine_fail < 60:
+        return None
+
     if _pg_engine is None:
-        host = os.getenv("DB_HOST", "localhost")
-        port = os.getenv("DB_PORT", "5432")
-        db   = os.getenv("DB_NAME", "crypto_stream_db")
-        user = os.getenv("DB_USER", "user")
-        pw   = os.getenv("DB_PASS", "password")
-        _pg_engine = create_engine(
-            f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}",
-            pool_pre_ping=True,
-            pool_size=3,
-            max_overflow=2,
-            connect_args={"connect_timeout": 3},
-        )
+        try:
+            host = os.getenv("DB_HOST", "localhost")
+            port = os.getenv("DB_PORT", "5432")
+            db   = os.getenv("DB_NAME", "crypto_stream_db")
+            user = os.getenv("DB_USER", "user")
+            pw   = os.getenv("DB_PASS", "password")
+            
+            _pg_engine = create_engine(
+                f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}",
+                pool_pre_ping=True,
+                pool_size=3,
+                max_overflow=2,
+                connect_args={"connect_timeout": 1},
+            )
+            # Test connection once
+            with _pg_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        except Exception:
+            _last_pg_engine_fail = time.time()
+            _pg_engine = None
+            return None
+
     return _pg_engine
 
 # ── DB-first lookup for market_ohlcv (Stocks / Macro) ────────────────────────
@@ -89,16 +108,16 @@ _FRESHNESS_SECONDS = {
     "1d":  43200,  # 12 hours (daily candle)
 }
 
-def _query_market_ohlcv(ticker: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
+def _query_market_ohlcv(ticker: str, timeframe: str, limit: int, ignore_freshness: bool = False) -> Optional[pd.DataFrame]:
     """
     Try to serve OHLCV from the market_ohlcv table.
     Returns a DataFrame ready for compute_indicators(), or None on miss/stale.
     """
     try:
         engine = _get_pg_engine()
-        freshness = _FRESHNESS_SECONDS.get(timeframe, 1200)
-        cutoff = datetime.utcnow() - timedelta(seconds=freshness)
-
+        if engine is None:
+            return None
+            
         sql = text("""
             SELECT ts AS "Datetime", open AS "Open", high AS "High",
                    low AS "Low", close AS "Close", volume AS "Volume"
@@ -111,17 +130,21 @@ def _query_market_ohlcv(ticker: str, timeframe: str, limit: int) -> Optional[pd.
         with engine.connect() as conn:
             df = pd.read_sql(sql, conn, params={"sym": ticker, "tf": timeframe, "lim": limit})
 
-        if df.empty or len(df) < max(5, limit // 2):
+        if df.empty or len(df) < 5:
             return None
 
-        # Check freshness: latest candle must be recent enough
-        df["Datetime"] = pd.to_datetime(df["Datetime"], utc=True).dt.tz_localize(None)
-        latest = df["Datetime"].max()
-        if latest < cutoff:
-            logger.info(f"market_ohlcv cache STALE for {ticker}/{timeframe} (latest={latest})")
-            return None
-
+        # Sort values so indicators work correctly (must be chronological)
         df = df.sort_values("Datetime").reset_index(drop=True)
+        df["Datetime"] = pd.to_datetime(df["Datetime"], utc=True).dt.tz_localize(None)
+
+        if not ignore_freshness:
+            freshness = _FRESHNESS_SECONDS.get(timeframe, 1200)
+            cutoff = datetime.utcnow() - timedelta(seconds=freshness)
+            latest = df["Datetime"].max()
+            if latest < cutoff:
+                logger.info(f"market_ohlcv cache STALE for {ticker}/{timeframe} (latest={latest})")
+                return None
+
         logger.info(f"market_ohlcv cache HIT for {ticker}/{timeframe} ({len(df)} rows)")
         return df[["Datetime", "Open", "High", "Low", "Close", "Volume"]]
 
@@ -136,14 +159,35 @@ def get_kline_data(
     symbol: str,
     timeframe: str = "15m",
     limit: int = 60,
-    asset_class: str = "CRYPTO"
+    asset_class: str = "CRYPTO",
+    ignore_freshness: bool = False
 ) -> Optional[pd.DataFrame]:
     """
     Fetch OHLCV data. Pulls from PostgreSQL if it's a tracked Crypto asset,
     otherwise falls back to yfinance for Macro/Stock data.
     """
     sym = symbol.upper().replace("USDT", "").strip()
-    _sym_crypto = sym  # save pre-alias for Binance/Postgres queries (e.g. "BTC" not "BTC-USD")
+    
+    # ── Choice 0: MT5 Data Bridge (Highest Priority for Real-Time Sync) ──
+    # Check MT5 with the RAW symbol before any alias mappings occur
+    if _MT5_AVAILABLE and not ignore_freshness:
+        try:
+            mt5_rates = mt5_get_rates(sym, timeframe=timeframe, count=limit)
+            if mt5_rates is not None and not mt5_rates.empty:
+                logger.info(f"TechnicalEngine: MT5 sync HIT for {sym}/{timeframe}")
+                mt5_rates.attrs["market_status"] = "OPEN"
+                mt5_rates.attrs["last_update"] = datetime.utcnow().isoformat()
+                return mt5_rates
+        except Exception as e_mt5:
+            logger.warning(f"TechnicalEngine: MT5 raw sync attempt failed for {sym}: {e_mt5}")
+
+    # ── Choice A: PostgreSQL Cache (Macro/Stock/Crypto) ──
+    # Check if we have this in market_ohlcv (Deep History)
+    db_df = _query_market_ohlcv(sym, timeframe, limit, ignore_freshness=ignore_freshness)
+    if db_df is not None:
+        return db_df
+
+    _sym_crypto = sym  # save pre-alias for Binance/Postgres queries
 
     # Apply global alias map first (TSMC→TSM, TSLA stays TSLA, etc.)
     try:
@@ -163,7 +207,7 @@ def get_kline_data(
                     "ARB", "APT", "SUI", "TRX", "TON", "PEPE", "SHIB"}
 
     if sym in GOLD_ALIASES:
-        sym = "GC=F"
+        sym = "GC=F"  # Gold Futures — more reliable on yfinance than XAUUSD=X (Forex spot)
 
     is_macro = (
         asset_class in ("STOCK", "MACRO") or
@@ -179,30 +223,41 @@ def get_kline_data(
     if is_macro:
         ticker = MACRO_MAPPING.get(sym, sym)
         # Ensure ticker is standard for common names
-        if ticker == "GOLD": ticker = "GC=F"
+        if ticker in ("GOLD", "XAUUSD=X"): ticker = "GC=F"
         if ticker == "NASDAQ": ticker = "^IXIC"
         if ticker == "SP500": ticker = "^GSPC"
 
-        # ── DB-first: try market_ohlcv before calling yfinance ────────────────
+
+        # ── Choice 1: Archive SQL (High-Speed Historical Cache) ────────────────
+        try:
+            cached_sql = archiver.get_data(ticker, timeframe, limit=limit)
+            if cached_sql is not None and len(cached_sql) >= limit:
+                logger.info(f"TechnicalEngine: SQL Archive HIT for {ticker}/{timeframe}")
+                return cached_sql
+        except Exception as e_sql:
+            logger.warning(f"TechnicalEngine: SQL Archive fetch failed for {ticker}: {e_sql}")
+
+        # ── Choice 2: DB-first (Original market_ohlcv) ────────────────────────
         cached = _query_market_ohlcv(ticker, timeframe, limit)
         if cached is not None:
             return cached
 
+        logger.info(f"TechnicalEngine: SQL miss — fetching live from yfinance for {ticker}...")
 
-        logger.info(f"TechnicalEngine: DB miss — fetching live from yfinance for {ticker}...")
+        # ... (yfinance fetch logic continues) ...
 
         # Map timeframe to yfinance intervals and appropriate period
-        # yfinance constraints: 1m = max 7d, 5m/15m = max 60d, 1h = max 730d
+        # Institutional speed: Reduced lookback to minimize yfinance latency
         yf_intervals = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}
         interval = yf_intervals.get(timeframe, "1d")
         period_map = {
             "1m":  "5d",
-            "5m":  "30d",
-            "15m": "30d",
+            "5m":  "15d", # Reduced from 30d (was too slow)
+            "15m": "15d", # Reduced from 30d (was too slow)
             "1h":  "60d",
             "1d":  "1y",
         }
-        period = period_map.get(timeframe, "30d")
+        period = period_map.get(timeframe, "15d")
 
         try:
             df_yf = yf.download(
@@ -227,14 +282,18 @@ def get_kline_data(
             
             # ── Fix: Handle MultiIndex / Symbol level extraction ──────────────────
             if isinstance(df_yf.columns, pd.MultiIndex):
-                # If group_by='ticker' (standard for multi or even single sometimes),
-                # data is under the ticker name.
-                if ticker in df_yf.columns.levels[0]:
+                levels = df_yf.columns.get_level_values(0).unique().tolist()
+                # yfinance ≥0.2.x: (Price, Ticker) — flatten to Price level
+                if ticker in df_yf.columns.get_level_values(-1).unique().tolist():
+                    # Ticker is at the LAST level → select it
+                    df_yf = df_yf.xs(ticker, axis=1, level=-1)
+                elif ticker in levels:
                     df_yf = df_yf[ticker]
                 else:
-                    # Fallback: take first level 0 if only one ticker existed
+                    # Just flatten whatever the first level is
                     df_yf.columns = df_yf.columns.get_level_values(0)
-            
+
+
             df_yf = df_yf.tail(limit).reset_index()
             
             # Normalize column names
@@ -264,6 +323,31 @@ def get_kline_data(
                         df_yf["Datetime"] = df_yf["Datetime"].dt.tz_convert(None)
                     except Exception:
                         pass
+            
+            # ── Market Status Detection ───────────────────────────────────────
+            # Logic: If latest candle is > 4x timeframe stale, market is likely closed.
+            try:
+                latest_ts = pd.to_datetime(df_yf["Datetime"].iloc[-1], utc=True)
+                # Ensure UTC for comparison
+                now_ts = datetime.utcnow().replace(tzinfo=latest_ts.tzinfo)
+                diff_mins = (now_ts - latest_ts).total_seconds() / 60
+                
+                tf_mins = TIMEFRAME_SECONDS.get(timeframe, 60) / 60
+                market_status = "OPEN"
+                if diff_mins > (tf_mins * 4): # Stale for 4+ candles
+                    market_status = "CLOSED"
+                
+                df_yf.attrs["market_status"] = market_status
+                df_yf.attrs["last_update"] = latest_ts.isoformat()
+            except Exception:
+                df_yf.attrs["market_status"] = "UNKNOWN"
+
+            # Save to SQL Archive for future millisecond retrieval
+            try:
+                archiver.save_data(ticker, timeframe, df_yf)
+            except Exception as e_save:
+                logger.warning(f"TechnicalEngine: SQL Archiver save failed for {ticker}: {e_save}")
+
             return df_yf[["Datetime", "Open", "High", "Low", "Close", "Volume"]]
         except Exception as e:
             logger.error(f"TechnicalEngine: yfinance error for {ticker}: {e}")
@@ -669,25 +753,38 @@ def analyze_trend_channels(df: pd.DataFrame) -> dict:
         return {"status": "Speculative mode: Trend analysis unavailable"}
 
     try:
-        closes = df['Close'].values
+        import math
+        
+        # Drop NaN values first
+        clean_df = df.dropna(subset=['Close', 'High', 'Low'])
+        if len(clean_df) < 2:
+            return {"status": "Not enough valid data"}
+            
+        closes = clean_df['Close'].values
         x = np.arange(len(closes))
         slope, intercept = np.polyfit(x, closes, 1)
         
         trend = "UP" if slope > 0 else "DOWN"
-        strength = abs(slope) / closes.mean() * 100 # Normalized slope
+        mean_close = closes.mean()
+        strength = abs(slope) / mean_close * 100 if mean_close != 0 else 0
         
         # Support/Resistance based on rolling Min/Max
-        support = df['Low'].tail(20).min()
-        resistance = df['High'].tail(20).max()
+        support = clean_df['Low'].tail(20).min()
+        resistance = clean_df['High'].tail(20).max()
+        
+        def safe_float(v):
+            if v is None or math.isnan(v) or math.isinf(v):
+                return 0.0
+            return round(float(v), 4)
         
         return {
             "primary_trend": trend,
-            "slope_strength": round(strength, 4),
+            "slope_strength": safe_float(strength),
             "levels": {
-                "support": round(support, 4),
-                "resistance": round(resistance, 4)
+                "support": safe_float(support),
+                "resistance": safe_float(resistance)
             },
-            "market_phase": "Trending" if strength > 0.05 else "Consolidating"
+            "market_phase": "Trending" if safe_float(strength) > 0.05 else "Consolidating"
         }
     except Exception as e:
         logger.error(f"Error in analyze_trend_channels: {e}")

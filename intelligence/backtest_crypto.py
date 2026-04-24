@@ -585,6 +585,41 @@ def optimize_backtest(symbol: str, timeframe: str = "15m", limit: int = 1000,
     }
 
 
+def run_v8_validation(symbol: str, timeframe: str = "1h", limit: int = 100000):
+    """
+    V8 Validation: Runs backtest on Big Data with ML filters.
+    Shows the power of 10-year history + Neural filtering.
+    """
+    logger.info(f"📊 Running V8 Validation for {symbol} ({timeframe}) | 10Y Big Data Mode")
+    
+    # 1. Fetch Big Data from PostgreSQL
+    df = get_kline_data(symbol, timeframe=timeframe, limit=limit, ignore_freshness=True)
+    if df is None or len(df) < 500:
+        logger.error(f"❌ V8 Validation: Insufficient data for {symbol}")
+        return
+        
+    # 2. Compute indicators and generate base signals
+    df = compute_indicators(df)
+    df = generate_backtest_signals(df, params={"use_ml_filter": True})
+    
+    # 3. Simulate trades with V8 Sniper Threshold
+    results = simulate_trades(
+        df, 
+        initial_balance=10000.0,
+        risk_pct=2.0,
+        min_ml_edge=0.80  # Sniper Mode Threshold
+    )
+    
+    logger.info(f"🏆 V8 Validation Results for {symbol}:")
+    logger.info(f"   Net Profit  : ${results.get('net_profit', 0):.2f} ({results.get('return_pct', 0):.2f}%)")
+    logger.info(f"   Win Rate    : {results.get('win_rate', 0):.1%}")
+    logger.info(f"   Max Drawdown: {results.get('max_drawdown', 0):.2%}")
+    logger.info(f"   Total Trades: {results.get('total_trades', 0)}")
+    logger.info(f"   Profit Factor: {results.get('profit_factor', 0):.2f}")
+    
+    return results
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Walk-Forward Validation  (ported from QuantAgent walk_forward_backtest)
 # Gold standard: rolling re-optimize then out-of-sample test

@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Bell, Command, Menu, Search, User, TrendingUp, TrendingDown, Brain, CheckCheck } from 'lucide-react';
+import { Bell, Command, Menu, User, TrendingUp, TrendingDown, CheckCheck, Clock, Moon, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useLanguage } from '../../contexts/LanguageContext';
+import { useMode } from '../../contexts/ModeContext';
+import { MarketStatusClock } from './MarketStatusClock';
 
 interface AppNavbarProps {
-  mode: 'institutional' | 'retail';
-  setMode: (mode: 'institutional' | 'retail') => void;
   onOpenCommand: () => void;
   isAuthorized: boolean;
   onLogout: () => void;
@@ -46,9 +46,10 @@ function timeAgo(ts: number, lang: string): string {
 }
 
 export const AppNavbar: React.FC<AppNavbarProps> = ({
-  mode, setMode, onOpenCommand, isAuthorized, onLogout, onMobileMenuClick, onNavigate
+  onOpenCommand, isAuthorized, onLogout, onMobileMenuClick, onNavigate
 }) => {
   const { lang, setLang, t } = useLanguage();
+  const { theme, toggleTheme } = useMode();
   const [notifOpen, setNotifOpen]  = useState(false);
   const [notifs,    setNotifs]     = useState<SignalNotif[]>([]);
   const [lastFetch, setLastFetch]  = useState(0);
@@ -122,180 +123,89 @@ export const AppNavbar: React.FC<AppNavbarProps> = ({
   };
 
   return (
-    <header className="h-16 border-b border-white/5 bg-slate-950/50 backdrop-blur-xl flex items-center justify-between px-4 md:px-6 shrink-0 z-50">
-      <div className="flex items-center gap-3">
-        <button onClick={onMobileMenuClick} className="lg:hidden p-2 rounded-xl hover:bg-white/5 text-slate-400 hover:text-white transition-all active:scale-90" aria-label="Open menu">
+    <header className={`h-16 border-b backdrop-blur-3xl flex items-center justify-between px-4 md:px-6 shrink-0 z-50 transition-all duration-500 relative overflow-hidden ${
+      theme === 'dark' ? 'border-white/5 bg-[#0a0f1d]/80 shadow-2xl' : 'border-slate-200 bg-white shadow-sm'
+    }`}>
+      {/* Dynamic light bar for institutional feel */}
+      <div className={`absolute top-0 left-0 w-full h-[1px] opacity-50 ${
+        theme === 'dark' 
+          ? 'bg-gradient-to-r from-transparent via-blue-500/50 to-transparent' 
+          : 'bg-gradient-to-r from-transparent via-blue-600/30 to-transparent'
+      }`} />
+
+      <div className="flex items-center gap-3 relative z-10">
+        <button onClick={onMobileMenuClick} className={`lg:hidden p-2.5 rounded-2xl transition-all active:scale-90 ${
+          theme === 'dark' ? 'hover:bg-white/5 text-slate-400 hover:text-white' : 'hover:bg-slate-100 text-slate-500 hover:text-slate-900'
+        }`} aria-label="Open menu">
           <Menu className="w-5 h-5" />
         </button>
-        <div className="flex items-center gap-3 cursor-pointer active:scale-95 transition-all" onClick={onLogout}>
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <span className="text-white font-black text-sm">C</span>
+        <div className="flex items-center gap-4 cursor-pointer group" onClick={onLogout}>
+          <div className="relative">
+            <div className="absolute inset-0 bg-blue-600 blur-lg opacity-20 group-hover:opacity-40 transition-opacity" />
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center shadow-lg shadow-blue-500/20 relative z-10 group-hover:scale-105 transition-transform">
+              <span className="text-white font-black text-base italic tracking-tighter">C</span>
+            </div>
           </div>
           <div className="hidden md:block text-left">
-            <h2 className="text-sm font-black text-white tracking-tighter uppercase">CryptoStream</h2>
-            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-[0.2em] -mt-1">{t('navbar.tagline')}</p>
+            <h2 className={`text-base font-black tracking-tighter uppercase transition-colors duration-500 leading-none ${
+              theme === 'dark' ? 'text-white' : 'text-slate-900'
+            }`}>CryptoStream</h2>
+            <p className={`text-[9px] font-black uppercase tracking-[0.3em] mt-0.5 transition-colors duration-500 opacity-60 ${
+              theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+            }`}>{t('navbar.tagline')}</p>
           </div>
         </div>
       </div>
 
-      {/* Search */}
-      <div className="flex-1 max-w-xl px-12 hidden md:block">
-        <button onClick={onOpenCommand} className="w-full h-10 bg-white/5 border border-white/5 rounded-xl px-4 flex items-center justify-between group hover:border-blue-500/30 transition-all shadow-inner active:scale-[0.99]">
-          <div className="flex items-center gap-3">
-            <Search className="w-4 h-4 text-slate-500 group-hover:text-blue-400 transition-colors" />
-            <span className="text-xs font-bold text-slate-500 group-hover:text-slate-300 transition-colors">{t('navbar.search_placeholder')}</span>
-          </div>
-          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/5 border border-white/10">
-            <Command className="w-3 h-3 text-slate-600" />
-            <span className="text-[10px] font-black text-slate-300">K</span>
-          </div>
-        </button>
+      {/* Market Status Bar (Dedicated Slot) */}
+      <div className="flex-1 flex justify-center px-4 relative z-10">
+        <MarketStatusClock />
       </div>
 
       {/* Controls */}
-      <div className="flex items-center gap-2">
-        {/* Mode Toggle */}
+      <div className="flex items-center gap-3 relative z-10">
+        {/* Theme Toggle */}
         <button
-          onClick={() => setMode(mode === 'institutional' ? 'retail' : 'institutional')}
-          className={`flex items-center gap-2 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all shadow-lg active:scale-95 ${
-            mode === 'retail'
-              ? 'bg-blue-600/10 border-blue-500/20 text-blue-400'
-              : 'bg-emerald-600/10 border-emerald-500/20 text-emerald-500'
+          onClick={toggleTheme}
+          className={`p-2.5 rounded-2xl border transition-all active:scale-90 shadow-sm group ${
+            theme === 'dark' 
+              ? 'bg-white/5 border-white/10 text-slate-500 hover:text-white hover:border-blue-500/30' 
+              : 'bg-white border-slate-200 text-slate-500 hover:text-slate-900 hover:border-blue-500/50 hover:shadow-md'
           }`}
+          title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
         >
-          <div className={`w-1.5 h-1.5 rounded-full ${mode === 'retail' ? 'bg-blue-400' : 'bg-emerald-400'} animate-pulse`} />
-          {mode === 'retail' ? t('navbar.mode_retail') : t('navbar.mode_institutional')}
+          {theme === 'dark' ? <Sun className="w-4 h-4 group-hover:rotate-45 transition-transform" /> : <Moon className="w-4 h-4 group-hover:-rotate-12 transition-transform" />}
         </button>
 
-        <div className="w-px h-6 bg-white/5" />
+        <div className={`w-px h-6 opacity-30 ${theme === 'dark' ? 'bg-white/20' : 'bg-slate-400'}`} />
 
         {/* Language Toggle */}
         <button
-          onClick={() => setLang(lang === 'th' ? 'en' : 'th')}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black border border-white/10 hover:border-white/20 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white transition-all active:scale-95"
-          title={lang === 'th' ? 'Switch to English' : 'เปลี่ยนเป็นภาษาไทย'}
+          onClick={() => setLang(lang === 'en' ? 'th' : 'en')}
+          className={`px-3 py-2 rounded-2xl border transition-all active:scale-95 text-[10px] font-black uppercase tracking-widest shadow-sm ${
+            theme === 'dark' 
+              ? 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-blue-500/30' 
+              : 'bg-white border-slate-200 text-slate-500 hover:text-slate-900 hover:border-blue-500/50 hover:shadow-md'
+          }`}
+          title={lang === 'en' ? 'Switch to Thai' : 'Switch to English'}
         >
-          <span className="text-base leading-none">{lang === 'th' ? '🇹🇭' : '🇬🇧'}</span>
-          <span className="hidden sm:block">{lang === 'th' ? 'TH' : 'EN'}</span>
+          {lang === 'en' ? 'TH' : 'EN'}
         </button>
 
-        <div className="w-px h-6 bg-white/5" />
+        <div className={`w-px h-6 opacity-30 ${theme === 'dark' ? 'bg-white/20' : 'bg-slate-400'}`} />
 
-        {/* Bell */}
-        <div className="relative" ref={dropRef}>
-          <button
-            onClick={() => setNotifOpen(o => !o)}
-            className="p-2.5 rounded-xl hover:bg-white/5 text-slate-500 hover:text-white transition-all relative active:scale-90"
-          >
-            <Bell className={`w-5 h-5 transition-colors ${notifOpen ? 'text-blue-400' : ''}`} />
-            {unread > 0 && (
-              <motion.span
-                key={unread}
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-blue-500 text-white text-[10px] font-black rounded-full flex items-center justify-center border-2 border-slate-950 tabular-nums"
-              >
-                {unread > 99 ? '99+' : unread}
-              </motion.span>
-            )}
-          </button>
-
-          <AnimatePresence>
-            {notifOpen && (
-              <motion.div
-                initial={{ opacity: 0, y: -8, scale: 0.97 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.97 }}
-                transition={{ duration: 0.15 }}
-                className="absolute right-0 top-full mt-2 w-80 bg-slate-900/95 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden z-[200]"
-              >
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-                  <div className="flex items-center gap-2">
-                    <Brain className="w-4 h-4 text-blue-400" />
-                    <span className="text-xs font-black text-white uppercase tracking-widest">{t('navbar.intelligence_center')}</span>
-                    {unread > 0 && (
-                      <span className="px-1.5 py-0.5 bg-blue-500/20 border border-blue-500/30 rounded-full text-[10px] font-black text-blue-400">
-                        {unread} {t('navbar.new_badge')}
-                      </span>
-                    )}
-                  </div>
-                  {unread > 0 && (
-                    <button onClick={markAllRead} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-blue-400 transition-colors font-bold">
-                      <CheckCheck className="w-3.5 h-3.5" />
-                      {t('navbar.mark_all_read')}
-                    </button>
-                  )}
-                </div>
-
-                <div className="max-h-80 overflow-y-auto custom-scrollbar">
-                  {notifs.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-10 text-center">
-                      {lastFetch === 0 ? (
-                        <>
-                          <div className="w-5 h-5 border-2 border-blue-500/40 border-t-blue-400 rounded-full animate-spin mb-3" />
-                          <p className="text-xs text-slate-500">{t('navbar.loading_signals')}</p>
-                        </>
-                      ) : (
-                        <>
-                          <Bell className="w-8 h-8 text-slate-700 mb-3" />
-                          <p className="text-xs font-bold text-slate-500">{t('navbar.no_signals')}</p>
-                        </>
-                      )}
-                    </div>
-                  ) : (
-                    notifs.map((n, i) => (
-                      <motion.button
-                        key={n.id}
-                        initial={{ opacity: 0, x: -6 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: i * 0.03 }}
-                        onClick={() => handleNotifClick(n)}
-                        className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-white/5 border-b border-white/[0.03] last:border-0 ${!n.read ? 'bg-blue-500/[0.04]' : ''}`}
-                      >
-                        <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${n.direction === 'BUY' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'}`}>
-                          {n.direction === 'BUY' ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-sm font-black text-white">{n.symbol}</span>
-                              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${n.direction === 'BUY' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'}`}>
-                                {n.direction}
-                              </span>
-                              {n.timeframe && <span className="text-[10px] text-slate-600 font-mono">{n.timeframe}</span>}
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span className={`text-[10px] font-black tabular-nums ${n.confidence >= 80 ? 'text-emerald-400' : n.confidence >= 65 ? 'text-amber-400' : 'text-slate-500'}`}>
-                                {n.confidence.toFixed(0)}%
-                              </span>
-                              {!n.read && <span className="w-1.5 h-1.5 bg-blue-400 rounded-full" />}
-                            </div>
-                          </div>
-                          {n.reason && <p className="text-[11px] text-slate-500 mt-0.5 truncate">{n.reason}</p>}
-                          <p className="text-[10px] text-slate-600 mt-0.5">{timeAgo(n.ts, lang)}</p>
-                        </div>
-                      </motion.button>
-                    ))
-                  )}
-                </div>
-
-                <button
-                  onClick={handleViewAll}
-                  className="w-full px-4 py-3 text-[11px] font-black text-blue-400 hover:text-blue-300 uppercase tracking-widest border-t border-white/5 hover:bg-white/5 transition-colors flex items-center justify-center gap-2"
-                >
-                  <Brain className="w-3.5 h-3.5" />
-                  {t('navbar.view_all_intelligence')}
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        <button onClick={onLogout} className="flex items-center gap-2 p-1 pr-3 rounded-2xl bg-white/10 hover:bg-white/20 transition-all text-slate-200 hover:text-white border border-white/20 active:scale-95 shadow-xl">
-          <div className="w-8 h-8 rounded-xl bg-slate-900 border border-white/10 flex items-center justify-center overflow-hidden">
+        {/* Auth/User */}
+        <button onClick={onLogout} className={`flex items-center gap-2.5 p-1 pr-4 rounded-2xl border transition-all active:scale-95 shadow-xl group ${
+          theme === 'dark' 
+            ? 'bg-white/10 hover:bg-white/20 text-slate-200 hover:text-white border-white/20' 
+            : 'bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 border-slate-200 hover:shadow-2xl'
+        }`}>
+          <div className={`w-9 h-9 rounded-xl border flex items-center justify-center overflow-hidden transition-all duration-500 group-hover:scale-105 ${
+            theme === 'dark' ? 'bg-slate-900 border-white/10 shadow-inner' : 'bg-slate-100 border-slate-200'
+          }`}>
             <User className="w-5 h-5" />
           </div>
-          <span className="text-[10px] font-black uppercase tracking-widest hidden md:block">{t('navbar.signout')}</span>
+          <span className="text-[10px] font-black uppercase tracking-[0.2em] hidden md:block">{t('navbar.signout')}</span>
         </button>
       </div>
     </header>

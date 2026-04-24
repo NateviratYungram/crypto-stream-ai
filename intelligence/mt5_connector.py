@@ -46,9 +46,57 @@ def get_mt5_account_info() -> Dict[str, Any]:
     
     return account_info._asdict()
 
+def get_mt5_positions() -> List[Dict[str, Any]]:
+    """Fetch all open positions from MT5."""
+    if not _MT5_AVAILABLE:
+        return []
+    if not initialize_mt5():
+        return []
+    
+    positions = mt5.positions_get()
+    if positions is None:
+        return []
+    
+    return [p._asdict() for p in positions]
+
+def get_mt5_quote(symbol: str) -> Dict[str, Any]:
+    """Fetch current MT5 bid/ask and basic symbol trading metadata."""
+    if not _MT5_AVAILABLE:
+        return {"error": "MetaTrader5 not installed. Install it to enable live trading."}
+    if not initialize_mt5():
+        return {"error": "Failed to connect to MT5"}
+
+    if not mt5.symbol_select(symbol, True):
+        return {"error": f"Failed to select symbol {symbol}"}
+
+    info = mt5.symbol_info(symbol)
+    tick = mt5.symbol_info_tick(symbol)
+    if info is None or tick is None:
+        return {"error": f"Quote unavailable for {symbol}", "last_error": mt5.last_error()}
+
+    return {
+        "symbol": symbol,
+        "bid": tick.bid,
+        "ask": tick.ask,
+        "last": tick.last,
+        "spread": (tick.ask - tick.bid) if tick.ask and tick.bid else 0.0,
+        "time": tick.time,
+        "digits": info.digits,
+        "point": info.point,
+        "volume_min": info.volume_min,
+        "volume_max": info.volume_max,
+        "volume_step": info.volume_step,
+        "trade_mode": info.trade_mode,
+        "trade_contract_size": info.trade_contract_size,
+    }
+
 def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[float] = None,
                       sl: Optional[float] = None, tp: Optional[float] = None,
-                      comment: str = "CryptoStream AI Trade") -> Dict[str, Any]:
+                      comment: str = "CryptoStream AI Trade",
+                      order_kind: str = "MARKET",
+                      filling_policy: str = "IOC",
+                      deviation: int = 20,
+                      expiration: Optional[int] = None) -> Dict[str, Any]:
     """
     Execute a trade on MT5.
     action: 'BUY', 'SELL'
@@ -91,27 +139,59 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
         if not mt5.symbol_select(symbol, True):
             return {"error": f"Failed to select symbol {symbol}"}
 
-    # Define order type
-    order_type = mt5.ORDER_TYPE_BUY if action.upper() == "BUY" else mt5.ORDER_TYPE_SELL
+    action_upper = action.upper()
+    order_kind_upper = order_kind.upper()
+    filling_upper = filling_policy.upper()
+
+    order_type_map = {
+        "BUY": mt5.ORDER_TYPE_BUY,
+        "SELL": mt5.ORDER_TYPE_SELL,
+        "BUY_LIMIT": mt5.ORDER_TYPE_BUY_LIMIT,
+        "SELL_LIMIT": mt5.ORDER_TYPE_SELL_LIMIT,
+        "BUY_STOP": mt5.ORDER_TYPE_BUY_STOP,
+        "SELL_STOP": mt5.ORDER_TYPE_SELL_STOP,
+        "BUY_STOP_LIMIT": mt5.ORDER_TYPE_BUY_STOP_LIMIT,
+        "SELL_STOP_LIMIT": mt5.ORDER_TYPE_SELL_STOP_LIMIT,
+    }
+    filling_map = {
+        "FOK": mt5.ORDER_FILLING_FOK,
+        "IOC": mt5.ORDER_FILLING_IOC,
+        "RETURN": mt5.ORDER_FILLING_RETURN,
+    }
+
+    if order_kind_upper == "MARKET":
+        order_type = mt5.ORDER_TYPE_BUY if action_upper == "BUY" else mt5.ORDER_TYPE_SELL
+        trade_action = mt5.TRADE_ACTION_DEAL
+    else:
+        order_type = order_type_map.get(action_upper)
+        if order_type is None:
+            return {"error": f"Unsupported pending order type: {action}"}
+        if price is None or price <= 0:
+            return {"error": "Pending orders require a valid entry price"}
+        trade_action = mt5.TRADE_ACTION_PENDING
     
     # Get current price if not provided
-    if price is None:
+    if order_kind_upper == "MARKET" and price is None:
         tick = mt5.symbol_info_tick(symbol)
         price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
 
     request = {
-        "action": mt5.TRADE_ACTION_DEAL,
+        "action": trade_action,
         "symbol": symbol,
         "volume": volume,
         "type": order_type,
         "price": price,
         "sl": sl if sl else 0.0,
         "tp": tp if tp else 0.0,
+        "deviation": int(deviation),
         "magic": 123456,
-        "comment": comment,
+        "comment": comment[:31] if comment else "",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": filling_map.get(filling_upper, mt5.ORDER_FILLING_IOC),
     }
+    if expiration:
+        request["type_time"] = mt5.ORDER_TIME_SPECIFIED
+        request["expiration"] = int(expiration)
 
     # Send order
     result = mt5.order_send(request)
@@ -130,7 +210,8 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
         "deal_id": result.deal,
         "price": result.price,
         "volume": result.volume,
-        "comment": result.comment
+        "comment": result.comment,
+        "request": request,
     }
 
 def mt5_close_position(ticket: int) -> Dict[str, Any]:
@@ -211,6 +292,63 @@ def mt5_modify_position(ticket: int, sl: float, tp: float = 0.0) -> Dict[str, An
         "sl": result.request.sl,
         "tp": result.request.tp
     }
+
+def mt5_get_rates(symbol: str, timeframe: str = "15m", count: int = 100) -> Optional[Any]:
+    """
+    Fetch OHLCV data directly from MetaTrader 5.
+    Returns bars as a pandas-ready format or None if failed.
+    """
+    if not _MT5_AVAILABLE:
+        return None
+    if not initialize_mt5():
+        return None
+
+    # Map timeframes
+    tf_map = {
+        "1m":  mt5.TIMEFRAME_M1,
+        "5m":  mt5.TIMEFRAME_M5,
+        "15m": mt5.TIMEFRAME_M15,
+        "30m": mt5.TIMEFRAME_M30,
+        "1h":  mt5.TIMEFRAME_H1,
+        "4h":  mt5.TIMEFRAME_H4,
+        "1d":  mt5.TIMEFRAME_D1,
+    }
+    mt5_tf = tf_map.get(timeframe, mt5.TIMEFRAME_M15)
+
+    # Normalize symbol for broker (e.g. XM)
+    candidates = normalize_broker_symbol(symbol)
+    resolved_sym = None
+    for sym in candidates:
+        if mt5.symbol_select(sym, True):
+            resolved_sym = sym
+            break
+    
+    if not resolved_sym:
+        logger.warning(f"MT5: Symbol {symbol} not found in Market Watch (checked: {candidates})")
+        return None
+
+    # Fetch rates (from current position back 'count' bars)
+    rates = mt5.copy_rates_from_pos(resolved_sym, mt5_tf, 0, count)
+    if rates is None or len(rates) == 0:
+        logger.error(f"MT5: Failed to fetch rates for {resolved_sym}, error: {mt5.last_error()}")
+        return None
+
+    import pandas as pd
+    df = pd.DataFrame(rates)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    
+    # Standardize to our engine's format
+    df = df.rename(columns={
+        'time': 'Datetime',
+        'open': 'Open',
+        'high': 'High',
+        'low': 'Low',
+        'close': 'Close',
+        'tick_volume': 'Volume'
+    })
+    
+    logger.info(f"MT5: Successfully fetched {len(df)} bars for {resolved_sym} ({timeframe})")
+    return df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']]
 
 def normalize_broker_symbol(symbol: str) -> List[str]:
     """

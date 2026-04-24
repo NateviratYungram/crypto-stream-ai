@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useMode } from '../contexts/ModeContext';
 import {
   AlertCircle,
   ArrowUpRight,
@@ -11,6 +12,14 @@ import {
   Search,
   Wallet,
   X,
+  Activity,
+  TrendingUp,
+  Globe,
+  Shield,
+  PieChart,
+  Filter,
+  History,
+  ArrowDownRight,
 } from 'lucide-react';
 
 type Chain = 'ETH' | 'SOL';
@@ -159,6 +168,8 @@ function fmtTotal(v: number) {
 type SortKey = 'usd_value' | 'balance' | 'change_24h' | 'symbol';
 
 export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioCenterProps) => {
+  const { theme } = useMode();
+  const [activeTab, setActiveTab] = useState<'overview' | 'assets' | 'history'>('overview');
   const [address, setAddress]       = useState('');
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState('');
@@ -243,78 +254,106 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
       : <ChevronDown className="h-3 w-3 opacity-30" />;
 
   return (
-    <div className="flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar">
-      {/* Header — same pattern as WhaleTrackerView */}
-      <header className="flex justify-between items-center border-b border-white/5 pb-8">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-[0.2em]">
-            <Landmark className="w-3.5 h-3.5" />
-            Wallet Explorer
+    <div className={`flex-1 overflow-y-auto p-4 lg:p-6 space-y-4 scrollbar-hide transition-all duration-700 ${
+      theme === 'dark' ? 'bg-slate-950 text-slate-200' : 'bg-slate-50 text-slate-900'
+    }`}>
+      {/* Header Section */}
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-3">
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center border transition-all ${
+              theme === 'dark' ? 'bg-indigo-600/20 border-indigo-500/30 shadow-lg shadow-indigo-500/10' : 'bg-indigo-600 border-indigo-600 shadow-lg shadow-indigo-500/20'
+            }`}>
+              <Wallet className={`w-4 h-4 ${theme === 'dark' ? 'text-indigo-400' : 'text-white'}`} />
+            </div>
+            <div>
+              <h1 className={`text-xl lg:text-2xl font-black tracking-tighter transition-colors ${
+                theme === 'dark' ? 'text-white' : 'text-slate-900'
+              }`}>Portfolio Center</h1>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-md border ${
+                  theme === 'dark' ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400' : 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                }`}>Institutional Wallet</span>
+                <span className="text-slate-500 text-[9px] font-bold">Updated just now</span>
+              </div>
+            </div>
           </div>
-          <h2 className="text-3xl font-extrabold text-white tracking-tight">On-Chain Holdings</h2>
-          <p className="text-slate-500 text-sm font-medium">
-            Paste any public ETH or SOL address · see every token, balance, and USD value
-          </p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold tracking-widest uppercase transition-all ${
-            liveMode
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-              : 'bg-slate-800/40 border-slate-700/30 text-slate-500'
+
+        <div className="flex items-center gap-2">
+          <div className={`flex p-1 border rounded-xl transition-all ${
+            theme === 'dark' ? 'bg-slate-900/50 border-white/5' : 'bg-white border-slate-200 shadow-sm'
           }`}>
-            <div className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
-            {liveMode ? 'Live Wallet' : 'Ready'}
+            {(['overview', 'assets', 'history'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+                  activeTab === tab
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
+                    : (theme === 'dark' ? 'text-slate-500 hover:text-slate-300' : 'text-slate-500 hover:text-slate-800')
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
           </div>
-          {liveMode && (
-            <button onClick={handleReset}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-white/10 hover:border-rose-500/40 rounded-xl text-slate-300 transition-all font-bold text-xs">
-              <X className="w-3.5 h-3.5" />
-              Clear
-            </button>
-          )}
+          <button className={`p-2 rounded-xl border transition-all ${
+            theme === 'dark' ? 'bg-slate-900/50 border-white/5 text-slate-400 hover:text-white' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-900 shadow-sm'
+          }`}>
+            <RefreshCcw className="w-4 h-4" />
+          </button>
         </div>
-      </header>
+      </div>
 
       <div className="flex flex-col gap-5">
         {/* Search Panel */}
-        <div className="rounded-[1.75rem] border border-white/8 bg-slate-900/60 p-5">
-          <form onSubmit={handleSubmit} className="flex gap-3">
+        <div className={`rounded-[1.25rem] border p-4 transition-all duration-500 ${
+          theme === 'dark' ? 'bg-slate-900/60 border-white/10' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+        }`}>
+          <form onSubmit={handleSubmit} className="flex gap-2">
             <label className="relative flex-1">
-              <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <Search className="pointer-events-none absolute left-4 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
               <input
                 type="text"
                 value={address}
                 onChange={e => setAddress(e.target.value)}
                 placeholder="Paste ETH (0x...) or SOL address..."
-                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 py-3 pl-11 pr-4 text-sm font-semibold text-white outline-none placeholder:text-slate-600 focus:border-indigo-400/50 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                className={`w-full rounded-xl border py-2.5 pl-10 pr-4 text-xs font-semibold outline-none transition-all ${
+                  theme === 'dark' 
+                    ? 'bg-slate-950/70 border-white/10 text-white placeholder:text-slate-600 focus:border-indigo-400/50' 
+                    : 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-indigo-500/50'
+                } focus:ring-2 focus:ring-indigo-500/20`}
               />
             </label>
             <button type="submit" disabled={!address.trim() || loading}
-              className="inline-flex min-w-[110px] items-center justify-center gap-2 rounded-2xl bg-indigo-500 px-5 py-3 text-sm font-black uppercase tracking-[0.16em] text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40 transition-colors">
-              {loading ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
-              {loading ? 'Loading' : 'Inspect'}
+              className="inline-flex min-w-[90px] items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-black uppercase tracking-[0.16em] text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40 transition-colors shadow-lg shadow-indigo-600/20">
+              {loading ? <RefreshCcw className="h-3.5 w-3.5 animate-spin" /> : <Wallet className="h-3.5 w-3.5" />}
+              {loading ? 'Wait' : 'Inspect'}
             </button>
             {liveMode && (
               <button type="button" onClick={handleReset}
-                className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-black uppercase tracking-[0.16em] text-slate-300 hover:border-white/20 hover:text-white transition-colors">
+                className={`rounded-xl border px-3 py-2.5 text-xs font-black uppercase tracking-[0.16em] transition-colors ${
+                  theme === 'dark' ? 'border-white/10 text-slate-300 hover:border-white/20 hover:text-white' : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50'
+                }`}>
                 Clear
               </button>
             )}
           </form>
 
           {/* Famous wallets */}
-          <div className="mt-4 space-y-2">
-            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-600">Quick load — notable public wallets</p>
-            <div className="flex flex-wrap gap-2">
+          <div className="mt-3 space-y-2">
+            <p className="text-[9px] font-black uppercase tracking-[0.22em] text-slate-600">Quick load — notable public wallets</p>
+            <div className="flex flex-wrap gap-1.5">
               {FAMOUS_WALLETS.map(w => (
                 <button key={w.address} type="button" onClick={() => handleQuickLoad(w)} disabled={loading}
-                  className={`rounded-xl border px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.12em] transition-all disabled:opacity-50 ${
+                  className={`rounded-lg border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] transition-all disabled:opacity-50 ${
                     walletData?.address === w.address
-                      ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200'
-                      : 'border-white/10 bg-white/[0.03] text-slate-300 hover:border-indigo-400/30 hover:text-white'
+                      ? (theme === 'dark' ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200' : 'border-indigo-300 bg-indigo-50 text-indigo-700')
+                      : (theme === 'dark' ? 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-indigo-400/30 hover:text-white' : 'border-slate-200 bg-slate-50 text-slate-500 hover:border-slate-300 hover:text-slate-800')
                   }`}>
                   {w.name}
-                  <span className="ml-1.5 font-semibold normal-case text-slate-600">· {w.title}</span>
+                  <span className={`ml-1 font-semibold normal-case ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>· {w.title}</span>
                 </button>
               ))}
             </div>
@@ -323,11 +362,13 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
 
         {/* Error */}
         {error && (
-          <div className="flex items-start gap-3 rounded-[1.5rem] border border-rose-500/20 bg-rose-500/10 p-4">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-300" />
+          <div className={`flex items-start gap-3 rounded-[1.5rem] border p-4 ${
+            theme === 'dark' ? 'border-rose-500/20 bg-rose-500/10' : 'border-rose-200 bg-rose-50'
+          }`}>
+            <AlertCircle className={`mt-0.5 h-4 w-4 shrink-0 ${theme === 'dark' ? 'text-rose-300' : 'text-rose-600'}`} />
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.18em] text-rose-100">Lookup error</p>
-              <p className="mt-1 text-sm font-semibold text-rose-200/90">{error}</p>
+              <p className={`text-sm font-black uppercase tracking-[0.18em] ${theme === 'dark' ? 'text-rose-100' : 'text-rose-700'}`}>Lookup error</p>
+              <p className={`mt-1 text-sm font-semibold ${theme === 'dark' ? 'text-rose-200/90' : 'text-rose-600/90'}`}>{error}</p>
             </div>
           </div>
         )}
@@ -337,52 +378,66 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
           {liveMode && walletData && (
             <motion.div key="identity"
               initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-              className="rounded-[1.75rem] border border-white/8 bg-slate-900/60 p-5">
-              <div className="flex items-start justify-between gap-4">
+              className={`rounded-[1.25rem] border p-5 transition-all duration-500 ${
+                theme === 'dark' ? 'bg-slate-900/60 border-white/10' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+              }`}>
+              <div className={`flex items-start justify-between gap-4 relative z-10`}>
                 <div className="flex items-start gap-4">
                   {walletData.identity?.avatar ? (
                     <img src={walletData.identity.avatar} alt={walletName}
-                      className="h-14 w-14 rounded-2xl border border-white/10 object-cover shrink-0" />
+                      className={`h-12 w-12 rounded-xl border object-cover shrink-0 shadow-xl ${theme === 'dark' ? 'border-white/10' : 'border-slate-200'}`} />
                   ) : (
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-indigo-500/10 text-xl font-black text-indigo-100">
+                    <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border text-xl font-black ${
+                      theme === 'dark' ? 'border-white/10 bg-indigo-500/10 text-indigo-100' : 'border-indigo-200 bg-indigo-600 text-white shadow-xl shadow-indigo-500/10'
+                    }`}>
                       {(walletName || 'W').slice(0, 1).toUpperCase()}
                     </div>
                   )}
                   <div className="space-y-1.5 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-lg font-black uppercase tracking-tight text-white">{walletName || shortenHash(walletData.address, 8, 6)}</p>
+                      <p className={`text-base font-black uppercase tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{walletName || shortenHash(walletData.address, 8, 6)}</p>
                       {walletData.identity?.resolved_name && (
-                        <span className="rounded-full border border-indigo-400/20 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-indigo-200">
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] ${
+                          theme === 'dark' ? 'border-indigo-400/20 bg-indigo-500/10 text-indigo-200' : 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                        }`}>
                           {walletData.identity.resolved_name}
                         </span>
                       )}
-                      <span className="rounded-full border border-white/8 bg-white/5 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                      <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] ${
+                        theme === 'dark' ? 'border-white/8 bg-white/5 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-500'
+                      }`}>
                         {walletData.chain}
                       </span>
                     </div>
                     <p className="font-mono text-xs text-slate-500">{walletData.address}</p>
                     {walletData.identity?.description && (
-                      <p className="text-sm text-slate-400 leading-6 max-w-2xl">{walletData.identity.description}</p>
+                      <p className={`text-sm leading-6 max-w-2xl ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>{walletData.identity.description}</p>
                     )}
                     <div className="flex flex-wrap gap-2 pt-1">
                       {walletData.identity?.twitter && (
-                        <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-sky-300">
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.16em] ${
+                          theme === 'dark' ? 'border-sky-500/20 bg-sky-500/10 text-sky-300' : 'border-sky-200 bg-sky-50 text-sky-600'
+                        }`}>
                           @{walletData.identity.twitter}
                         </span>
                       )}
                       {walletData.identity?.website && (
-                        <span className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.16em] ${
+                          theme === 'dark' ? 'border-white/10 text-slate-400' : 'border-slate-200 text-slate-500'
+                        }`}>
                           {walletData.identity.website.replace(/^https?:\/\//i, '')}
                         </span>
                       )}
                     </div>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2 relative z-10">
                   {walletData.explorer_url && (
                     <a href={walletData.explorer_url} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-400/20 bg-indigo-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-indigo-200 hover:bg-indigo-500/20 transition-colors">
-                      Etherscan <ExternalLink className="h-3 w-3" />
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] transition-all shadow-sm ${
+                        theme === 'dark' ? 'border-indigo-400/20 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/20' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-indigo-500/30'
+                      }`}>
+                      View on Explorer <ExternalLink className="h-2.5 w-2.5" />
                     </a>
                   )}
                 </div>
@@ -403,10 +458,12 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
                 { label: 'Largest Position', value: assets[0]?.symbol || '—', sub: assets[0] ? fmt(assets[0].usd_value) : '—' },
                 { label: 'Price Coverage', value: `${assets.length ? Math.round(pricedCount / assets.length * 100) : 0}%`, sub: `${pricedCount}/${assets.length} priced` },
               ].map(s => (
-                <div key={s.label} className="rounded-[1.5rem] border border-white/8 bg-slate-900/60 p-5">
-                  <p className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">{s.label}</p>
-                  <p className="mt-2 text-3xl font-black text-white">{s.value}</p>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">{s.sub}</p>
+                <div key={s.label} className={`rounded-[1.25rem] border p-4 transition-all duration-500 ${
+                  theme === 'dark' ? 'bg-slate-900/60 border-white/10' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+                }`}>
+                  <p className="text-[9px] font-black uppercase tracking-[0.24em] text-slate-500">{s.label}</p>
+                  <p className={`mt-1.5 text-2xl font-black transition-colors ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{s.value}</p>
+                  <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{s.sub}</p>
                 </div>
               ))}
             </motion.div>
@@ -418,26 +475,30 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
           {liveMode && walletData && (
             <motion.div key="table"
               initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-              className="rounded-[1.75rem] border border-white/8 bg-slate-900/60 overflow-hidden">
+              className={`rounded-[1.25rem] border overflow-hidden transition-all duration-500 ${
+                theme === 'dark' ? 'bg-slate-900/60 border-white/10 shadow-2xl' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+              }`}>
 
               {/* Table toolbar */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
-                <div className="flex items-center gap-3">
-                  <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">
+              <div className={`flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 ${
+                theme === 'dark' ? 'border-white/5' : 'border-slate-100 bg-slate-50/50'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <p className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">
                     {displayAssets.length} assets
                   </p>
                   <span className="text-slate-700">·</span>
-                  <p className="text-[11px] font-semibold text-slate-500">{walletData.source}</p>
+                  <p className="text-[10px] font-semibold text-slate-500">{walletData.source}</p>
                 </div>
                 <button onClick={() => { setFilterPriced(p => !p); setPage(0); }}
                   title={filterPriced ? 'Show all assets' : `Filter to ${pricedCount} assets that have a USD price`}
-                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${
+                  className={`inline-flex items-center gap-2 rounded-lg border px-2 py-1 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${
                     filterPriced
-                      ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-200'
-                      : 'border-white/10 bg-white/[0.02] text-slate-500 hover:border-white/20 hover:text-slate-300'
+                      ? (theme === 'dark' ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-200' : 'border-emerald-300 bg-emerald-50 text-emerald-700')
+                      : (theme === 'dark' ? 'border-white/10 bg-white/[0.02] text-slate-500 hover:border-white/20 hover:text-slate-300' : 'border-slate-200 bg-slate-50 text-slate-500 hover:border-slate-300 hover:text-slate-700')
                   }`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${filterPriced ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                  {filterPriced ? `Priced only · ${pricedCount}` : `All · ${assets.length}`}
+                  <span className={`h-1 w-1 rounded-full ${filterPriced ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                  {filterPriced ? `Priced · ${pricedCount}` : `All · ${assets.length}`}
                 </button>
               </div>
 
@@ -445,7 +506,7 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-white/5 text-left">
+                    <tr className={`border-b text-left ${theme === 'dark' ? 'border-white/5' : 'border-slate-100'}`}>
                       {[
                         { key: 'symbol' as SortKey, label: 'Asset', cls: 'pl-5 w-[220px]' },
                         { key: 'balance' as SortKey, label: 'Balance', cls: 'text-right' },
@@ -475,21 +536,25 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
                         <motion.tr key={`${asset.symbol}-${asset.token_address ?? i}`}
                           initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                           transition={{ delay: i * 0.015 }}
-                          className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
+                          className={`border-b transition-colors ${
+                            theme === 'dark' ? 'border-white/[0.04] hover:bg-white/[0.02]' : 'border-slate-50 hover:bg-slate-50'
+                          }`}>
                           {/* Asset */}
                           <td className="py-3 pl-5 pr-4">
                             <div className="flex items-center gap-3">
                               {asset.logo ? (
                                 <img src={asset.logo} alt={asset.symbol}
-                                  className="h-8 w-8 rounded-xl border border-white/10 object-cover shrink-0"
+                                  className={`h-8 w-8 rounded-xl border object-cover shrink-0 ${theme === 'dark' ? 'border-white/10' : 'border-slate-200'}`}
                                   onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
                               ) : (
-                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-[10px] font-black text-white">
+                                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border font-black ${
+                                  theme === 'dark' ? 'border-white/10 bg-white/[0.04] text-white' : 'border-slate-200 bg-slate-50 text-slate-900'
+                                } text-[10px]`}>
                                   {asset.symbol.slice(0, 3)}
                                 </div>
                               )}
                               <div className="min-w-0">
-                                <p className="truncate font-black uppercase tracking-[0.1em] text-white">
+                                <p className={`truncate font-black uppercase tracking-[0.1em] ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
                                   {asset.symbol}
                                 </p>
                                 <p className="truncate text-xs text-slate-500">{asset.name || '—'}</p>
@@ -497,16 +562,20 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
                             </div>
                           </td>
                           {/* Balance */}
-                          <td className="py-3 pr-4 text-right font-semibold text-slate-300">
+                          <td className={`py-3 pr-4 text-right font-semibold ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
                             {fmtBal(asset.balance)}
                           </td>
                           {/* USD Value */}
-                          <td className="py-3 pr-4 text-right font-black text-white">
+                          <td className={`py-3 pr-4 text-right font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
                             {asset.usd_value > 0 ? fmt(asset.usd_value) : <span className="text-slate-600">—</span>}
                           </td>
                           {/* 24h */}
                           <td className={`py-3 pr-4 text-right font-black ${
-                            asset.price > 0 ? (pos ? 'text-emerald-300' : 'text-rose-300') : 'text-slate-700'
+                            asset.price > 0 
+                              ? (pos 
+                                  ? (theme === 'dark' ? 'text-emerald-300' : 'text-emerald-600') 
+                                  : (theme === 'dark' ? 'text-rose-300' : 'text-rose-600')) 
+                              : 'text-slate-700'
                           }`}>
                             {asset.price > 0
                               ? `${pos ? '+' : ''}${asset.change_24h.toFixed(2)}%`
@@ -518,8 +587,8 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
                               <span className="text-xs font-bold text-slate-500 w-10 text-right">
                                 {asset.allocation > 0 ? `${asset.allocation.toFixed(1)}%` : '—'}
                               </span>
-                              <div className="h-1.5 w-16 overflow-hidden rounded-full bg-white/5">
-                                <div className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-cyan-300"
+                              <div className={`h-1.5 w-16 overflow-hidden rounded-full ${theme === 'dark' ? 'bg-white/5' : 'bg-slate-100'}`}>
+                                <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400"
                                   style={{ width: `${Math.min(asset.allocation, 100)}%` }} />
                               </div>
                             </div>
@@ -528,7 +597,9 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
                           <td className="py-3 pr-5">
                             {explorerHref && (
                               <a href={explorerHref} target="_blank" rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center rounded-lg border border-white/10 p-1.5 text-slate-500 hover:border-white/20 hover:text-slate-200 transition-colors">
+                                className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition-colors ${
+                                  theme === 'dark' ? 'border-white/10 text-slate-500 hover:border-white/20 hover:text-slate-200' : 'border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-700'
+                                }`}>
                                 <ArrowUpRight className="h-3.5 w-3.5" />
                               </a>
                             )}
@@ -542,20 +613,24 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
 
               {/* Pagination */}
               {totalPages > 1 && (
-                <div className="flex items-center justify-between border-t border-white/5 px-5 py-3">
+                <div className={`flex items-center justify-between border-t px-5 py-3 ${theme === 'dark' ? 'border-white/5' : 'border-slate-100'}`}>
                   <p className="text-[11px] font-semibold text-slate-500">
                     Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, displayAssets.length)} of {displayAssets.length}
                   </p>
                   <div className="flex gap-2">
                     <button onClick={() => setPage(p => p - 1)} disabled={page === 0}
-                      className="rounded-xl border border-white/10 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.18em] text-slate-300 hover:border-white/20 hover:text-white disabled:opacity-30 transition-colors">
+                      className={`rounded-xl border px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.18em] transition-all disabled:opacity-30 ${
+                        theme === 'dark' ? 'border-white/10 text-slate-300 hover:border-white/20 hover:text-white' : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                      }`}>
                       Prev
                     </button>
                     <span className="self-center text-[11px] font-bold text-slate-600">
                       {page + 1} / {totalPages}
                     </span>
                     <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1}
-                      className="rounded-xl border border-white/10 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.18em] text-slate-300 hover:border-white/20 hover:text-white disabled:opacity-30 transition-colors">
+                      className={`rounded-xl border px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.18em] transition-all disabled:opacity-30 ${
+                        theme === 'dark' ? 'border-white/10 text-slate-300 hover:border-white/20 hover:text-white' : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                      }`}>
                       Next
                     </button>
                   </div>
@@ -567,17 +642,21 @@ export const PortfolioCenter = ({ tickerPrices: _tickerPrices = {} }: PortfolioC
 
         {/* Empty state */}
         {!liveMode && !loading && !error && (
-          <div className="flex flex-col items-center justify-center gap-4 rounded-[1.75rem] border border-dashed border-white/8 py-20 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-indigo-500/20 bg-indigo-500/10">
-              <Wallet className="h-7 w-7 text-indigo-300" />
+          <div className={`flex flex-col items-center justify-center gap-4 rounded-[1.75rem] border border-dashed py-20 text-center transition-all duration-500 ${
+            theme === 'dark' ? 'border-white/10 bg-slate-900/20' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40'
+          }`}>
+            <div className={`flex h-16 w-16 items-center justify-center rounded-3xl border transition-all ${
+              theme === 'dark' ? 'border-indigo-500/20 bg-indigo-500/10' : 'border-indigo-100 bg-indigo-50'
+            }`}>
+              <Wallet className={`h-7 w-7 ${theme === 'dark' ? 'text-indigo-300' : 'text-indigo-600'}`} />
             </div>
             <div className="space-y-1">
-              <p className="text-lg font-black uppercase tracking-[0.12em] text-white">No wallet loaded</p>
+              <p className={`text-lg font-black uppercase tracking-[0.12em] ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>No wallet loaded</p>
               <p className="text-sm font-semibold text-slate-500">
                 Paste any ETH or SOL address above, or pick a quick-load example.
               </p>
             </div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-700">
+            <p className={`text-xs font-bold uppercase tracking-[0.2em] ${theme === 'dark' ? 'text-slate-700' : 'text-slate-300'}`}>
               Public on-chain data only · no private keys required
             </p>
           </div>

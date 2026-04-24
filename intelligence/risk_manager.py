@@ -18,26 +18,41 @@ class RiskManager:
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_correlation = max_correlation
 
-    def calculate_kelly_size(self, win_prob: float, rr_ratio: float, balance: float, leverage: float = 1.0) -> float:
+    def calculate_kelly_size(self, win_prob: float, rr_ratio: float, balance: float, leverage: float = 1.0, is_v8_sniper: bool = False) -> float:
         """
-        Calculates position size using the Kelly Criterion.
+        Calculates position size using the Kelly Criterion with Macro Shield protection.
         formula: f = (p * (b + 1) - 1) / b
         where p = win_prob, b = RR ratio (net odds)
         We use a fractional Kelly (0.5) to maintain institutional safety.
         """
         if rr_ratio <= 0: return 0.01 # Fallback to 1%
         
-        # Kelly %
+        # Kelly % calculation
         k_pct = (win_prob * (rr_ratio + 1) - 1) / rr_ratio
         
-        # Fractional Kelly (Institutional Standard is 0.25 to 0.5)
-        safe_k = max(0, k_pct * 0.5) 
+        # ── V8 Sniper Hardening ──────────────────────────────────────────────
+        # If V8 Sniper is active (win_prob >= 0.85), we can afford a slightly 
+        # higher fractional Kelly, otherwise we stay conservative.
+        fractional_mult = 0.5 if is_v8_sniper else 0.25
+        safe_k = max(0, k_pct * fractional_mult) 
         
-        # Cap at 5% per trade for hard safety
-        final_risk_pct = min(safe_k, 0.05)
+        # ── Macro Shield Integration ──────────────────────────────────────────
+        try:
+            from intelligence.tools.macro_tools import get_macro_risk_data
+            macro = get_macro_risk_data()
+            multiplier = macro.get("risk_multiplier", 1.0)
+            
+            if multiplier < 1.0:
+                logger.info(f"🛡️ Macro Shield Active: Scaling risk by {multiplier:.2f} due to {macro.get('regime')} (VIX: {macro.get('vix')})")
+                safe_k *= multiplier
+        except Exception as e:
+            logger.warning(f"RiskManager: Macro Shield check failed: {e}")
+            
+        # Hard cap at 5% per trade for V8 Sniper, 2% for normal signals
+        risk_cap = 0.05 if is_v8_sniper else 0.02
+        final_risk_pct = min(safe_k, risk_cap)
         
-        # Convert risk % to volume (simplified, should ideally account for SL distance)
-        # For now, return the risk percentage to be used by the caller
+        logger.info(f"RiskManager: Calculated {final_risk_pct:.2%}, V8_Sniper={is_v8_sniper}, WinProb={win_prob:.1%}")
         return final_risk_pct
 
     def check_correlation_risk(self, symbol: str, lookback_days: int = 30) -> Dict[str, Any]:
@@ -107,4 +122,35 @@ class RiskManager:
             
         return {"status": "SAFE", "current_dd": round(dd_pct, 2)}
 
+    def check_news_shield(self, symbol: str) -> Dict[str, Any]:
+        """
+        Checks if there are High Impact Macro events pending for the symbol's base currencies.
+        """
+        try:
+            from intelligence.tools.calendar_tools import calendar_engine
+            # Extract currencies from symbol (e.g., XAUUSD -> ["USD"], EURUSD -> ["EUR", "USD"])
+            currencies = []
+            if "USD" in symbol or symbol in ["GOLD", "XAU", "BTC", "ETH", "SOL", "NAS100", "SPX", "US30", "USOIL"]:
+                currencies.append("USD")
+            if "EUR" in symbol: currencies.append("EUR")
+            if "GBP" in symbol: currencies.append("GBP")
+            if "JPY" in symbol: currencies.append("JPY")
+            
+            if not currencies:
+                currencies = ["USD"] # Default safe assumption
+                
+            high_impact_events = calendar_engine.get_upcoming_high_impact(currencies)
+            if high_impact_events:
+                # Return the most critical event
+                ev = high_impact_events[0]
+                return {
+                    "status": "BLOCKED",
+                    "reason": f"HIGH_IMPACT_NEWS: {ev['title']} ({ev['time']}) for {ev['country']}"
+                }
+            return {"status": "SAFE", "reason": "No upcoming high impact news."}
+        except Exception as e:
+            logger.error(f"RiskManager: News Shield check failed: {e}")
+            return {"status": "SAFE", "reason": "News shield failed to fetch."}
+
 risk_manager = RiskManager()
+

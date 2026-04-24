@@ -5,49 +5,67 @@
 ---
 
 ## 🏗️ 1. ลำดับการเริ่มใช้งาน (Boot Sequence)
-เพื่อให้ระบบทำงานได้สมบูรณ์ (โดยเฉพาะ AI ที่ต้องต่อกับฐานข้อมูล) **ต้องรันตามลำดับนี้เท่านั้นครับ:**
+เพื่อให้ระบบทำงานได้สมบูรณ์และข้อมูล Market Data (DXY, SP500) ไหลลื่น **ควรทำตามลำดับนี้ครับ:**
 
-### Step 1: Infrastructure (Docker)
-รันระบบฐานข้อมูลและ Message Broker ทั้งหมด
+### 🐳 วิธีที่ 1: รันผ่าน Docker (แนะนำสำหรับใช้งานทั่วไป)
+วิธีนี้จะรัน Infra ทั้งหมดรวมถึง Backend และ Frontend ให้อัตโนมัติ
 ```bash
 docker compose up -d
 ```
-*รอประมาณ 30-60 วินาทีเพื่อให้ Kafka และ Postgres พร้อมทำงาาน*
+*💡 ระบบจะเริ่ม Ingestion Service อัตโนมัติเพื่อดึงข้อมูลจาก Binance และ Yahoo Finance*
 
-### Step 2: Intelligence Bridge (MCP Server)
-เริ่มระบบตัวกลางสำหรับเชื่อมต่อ AI กับฐานข้อมูล
-```bash
-# เปิด CMD ใหม่
-python -m uvicorn mcp_server.main:app --host 127.0.0.1 --port 8000
-```
+### 🛠️ วิธีที่ 2: รันแบบ Manual (แนะนำสำหรับนักพัฒนา)
+หากต้องการแก้ไขโค้ดและเห็นผลทันที ให้รันแยกดังนี้:
 
-### Step 3: Core Chat Backend
-เริ่มระบบวิเคราะห์และแชทหลัก
-```bash
-# เปิด CMD ใหม่
-python chat_server.py
-```
+1.  **Infrastructure:** `docker compose up -d postgres redis kafka`
+2.  **AI Intelligence Bridge:** 
+    ```bash
+    python -m uvicorn mcp_server.main:app --host 127.0.0.1 --port 8000
+    ```
+3.  **Core Backend & API Server:** 
+    ```bash
+    python chat_server.py
+    ```
+4.  **Market Screener & Tactical Engine (MANDATORY):**
+    ```bash
+    python screener_pipeline.py
+    ```
+    *🚨 สำคัญมาก: ตัวนี้จะคอยดึงข้อมูลหุ้นและคริปโตเข้า Database ล่วงหน้า หากไม่รันตัวนี้ หน้าต่าง Alpha Tactics (Trading Tactics) จะโหลดช้ามากจนถึงขั้น Timeout ค้าง (Skeleton boxes)*
 
-### Step 4: Tactical UI (Frontend)
-เริ่มหน้าจอการใช้งาน (Tactical Terminal)
-```bash
-# เปิด CMD ใหม่
-cd frontend
-npm run dev
-```
+5.  **Neural Sniper Loop:** 
+    ```bash
+    python production_sniper_loop.py
+    ```
+
+6.  **Frontend UI:** 
+    ```bash
+    cd frontend && npm run dev
+    ```
 
 ---
 
-## 🔗 2. สารบัญลิงก์ (System URL Directory)
+## 📈 2. การตรวจสอบความพร้อมของข้อมูล (Health Check)
+หลังจาก Boot ระบบแล้ว ให้ตรวจสอบส่วนประกอบสำคัญดังนี้:
 
-รวบรวมลิงก์ทั้งหมดที่คุณต้องเข้าถึงเพื่อใช้งานและดูแลระบบ:
+1.  **Market Indices (DXY, S&P 500):** 
+    *   ไปที่หน้า **News Sentiment Hub**
+    *   ตรวจสอบว่าการ์ด "US Dollar Index" และ "Market Benchmarks" แสดงราคาปัจจุบัน (ไม่ใช่ "Syncing Tape...")
+2.  **AI Verdict:** 
+    *   ตรวจสอบว่ามีบทวิเคราะห์ AI Intelligence สำหรับดอลลาร์ปรากฏขึ้น
+3.  **Live Signals:** 
+    *   ตรวจสอบแถบ Signal Feed ว่ามีสัญญาณจาก MT5 (XM Broker) ไหลเข้ามาหรือไม่
+
+---
+
+## 🔗 3. สารบัญลิงก์ (System URL Directory)
 
 | URL                      | Interface Name                | Purpose (หน้าที่ของระบบ) |
 | :---                     | :---                          | :--- |
-| **http://localhost:8888**| **Tactical Terminal (Main)**  | หน้าจอหลักสำหรับพูดคุยกับ AI และดู Market Trends |
-| **http://localhost:8000**| **MCP Dashboard**             | ระบบตัวกลางที่ AI ใช้ดึงข้อมูลจาก Postgres (เช็คว่า Online ไหม) |
-| **http://localhost:3000**| **Grafana Metrics**           | ดูสถิติการไหลของข้อมูล (Postgres/Kafka Health) [User: admin / Pass: institutional-secret] |
-| **http://localhost:9090**| **Prometheus Telemetry**      | ตรวจสอบ Metrics ของระบบ Infrastructure โดยตรง |
+| **http://localhost:80**  | **Tactical Terminal (Docker)**| หน้าจอหลักเมื่อรันผ่าน Docker Compose |
+| **http://localhost:5173**| **Tactical Terminal (Dev)**   | หน้าจอหลักเมื่อรันผ่าน `npm run dev` |
+| **http://localhost:8888**| **FastAPI Backend**           | API หลักสำหรับ Chat และ Market Data |
+| **http://localhost:8000**| **MCP Dashboard**             | ระบบตัวกลางที่ AI ใช้ดึงข้อมูลจาก Postgres |
+| **http://localhost:3000**| **Grafana Metrics**           | ดูสถิติการไหลของข้อมูล (Postgres/Kafka Health) |
 
 ---
 
@@ -57,8 +75,8 @@ npm run dev
 | :--- | :--- | :--- |
 | `docker compose ps` | Check Status | ตรวจเช็คว่า Container ทุกตัว (Kafka, Postgres) รันอยู่ไหม |
 | `docker compose logs -f` | View Logs | ดู Log แบบ Real-time เพื่อหาจุดเกิดปัญหา |
-| `python scripts/check_db.py` | DB Audit | ตรวจสอบว่ามีข้อมูลอัปเดตเข้าฐานข้อมูลล่าสุดเมื่อไหร่ |
-| `python tests/test_e2e.py` | E2E Test | รันระบบทดสอบเพื่อยืนยันว่าดาต้าไหลตั้งแต่ต้นสายจนถึงปลายสาย |
+| `tail -f sniper_scanner.log` | Monitor AI | ติดตามการสแกนตลาดของ Neural V8 แบบ Real-time |
+| `python intelligence/ml/train_v8.py` | Model Retrain | สั่งเทรนโมเดลใหม่ด้วยข้อมูล Big Data 10 ปีย้อนหลัง |
 
 ---
 
@@ -105,6 +123,16 @@ AI สามารถเฝ้าตลาดให้คุณได้ตล�
 วิเคราะห์การเทรดของคุณแบบมืออาชีพ:
 - **Review:** สั่ง AI "รีวิวการเทรดของฉันหน่อย" เพื่อดู Critique และ Win-Rate ย้อนหลัง
 - **Dashboard:** เข้าหน้าจอ **"Alerts & Reviews"** ทางด้านซ้าย เพื่อดูสถานะการแจ้งเตือนและประวัติการวิจารณ์ของ AI ทั้งหมด
+
+### 🎯 5.5 Neural V8 Sniper Mode (Active)
+ระบบการสแกนความแม่นยำสูง (Threshold 80%+) ที่ใช้ Hybrid Neural Network:
+- **Consensus Engine:** ผสมผสานระหว่าง Ensemble Model (Fractal Analysis) และ Deep Learning (Attention-GRU)
+- **Institutional Guards:** ตรวจสอบ Spread, Exposure และ Market Session (Forex/Stocks) อัตโนมัติก่อนส่งสัญญาณ
+- **Dynamic Alerts:** แจ้งเตือนสถานะตลาด (Open/Closed) และสัญญาณ Sniper ผ่าน Telegram พร้อมประโยคที่หลากหลายสไตล์สถาบัน
+
+### 🌓 5.6 Personalized UI Experience
+- **Theme Toggle:** สามารถสลับโหมด **Light/Dark** ได้ที่มุมขวาบนของ Dashboard โดยระบบจะจดจำการตั้งค่าของคุณไว้ใน `localStorage` อัตโนมัติ
+- **Auth Integration:** ข้อมูลผู้ใช้ทุกคนจะถูกบันทึกลงใน PostgreSQL โดยอัตโนมัติเมื่อมีการ Login เพื่อการวิเคราะห์พฤติกรรมและความแม่นยำในระยะยาว
 
 ---
 

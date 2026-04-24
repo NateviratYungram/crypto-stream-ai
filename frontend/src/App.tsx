@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ModeProvider, useMode } from './contexts/ModeContext'
-import { LanguageProvider } from './contexts/LanguageContext'
+import { LanguageProvider, useLanguage } from './contexts/LanguageContext'
 import { useWebSocket } from './hooks/useWebSocket'
 import { TabSkeleton } from './components/TabSkeleton'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -17,62 +17,36 @@ import { MainLayout } from './components/layout/MainLayout'
 import { LandingHero } from './components/layout/LandingHero'
 
 // Views (Lazy loaded)
-const TrendsView       = lazy(() => import('./components/TrendsView').then(m => ({ default: m.TrendsView })))
-const WhaleTrackerView = lazy(() => import('./components/WhaleTrackerView').then(m => ({ default: m.WhaleTrackerView })))
-const RiskAuditsView   = lazy(() => import('./components/RiskAuditsView').then(m => ({ default: m.RiskAuditsView })))
-const IntelligenceHub  = lazy(() => import('./components/IntelligenceHub').then(m => ({ default: m.IntelligenceHub })))
-const PortfolioCenter  = lazy(() => import('./components/PortfolioCenter').then(m => ({ default: m.PortfolioCenter })))
-const TacticsHub       = lazy(() => import('./components/TacticsHub').then(m => ({ default: m.TacticsHub })))
-const NewsSentimentHub = lazy(() => import('./components/NewsSentimentHub').then(m => ({ default: m.NewsSentimentHub })))
-const ChatWindow       = lazy(() => import('./components/ChatWindow').then(m => ({ default: m.ChatWindow })))
-const AlertsReviewsView = lazy(() => import('./components/AlertsReviewsView').then(m => ({ default: m.AlertsReviewsView })))
-// Phase 15 — New Views
-const FundingRatesView = lazy(() => import('./components/FundingRatesView').then(m => ({ default: m.FundingRatesView })))
-const WatchlistPanel   = lazy(() => import('./components/WatchlistPanel').then(m => ({ default: m.WatchlistPanel })))
-const ScreenerView     = lazy(() => import('./components/ScreenerView').then(m => ({ default: m.ScreenerView })))
-const TradingJournalView = lazy(() => import('./components/TradingJournalView').then(m => ({ default: m.TradingJournalView })))
-const ETFFlowView      = lazy(() => import('./components/ETFFlowView').then(m => ({ default: m.ETFFlowView })))
-const PersonaSettings  = lazy(() => import('./components/PersonaSettings').then(m => ({ default: m.PersonaSettings })))
-const ProfileSettings  = lazy(() => import('./components/ProfileSettings').then(m => ({ default: m.ProfileSettings })))
-const PaperTrading     = lazy(() => import('./components/PaperTradingDashboard').then(m => ({ default: m.PaperTradingDashboard })))
-const EconomicCalendar = lazy(() => import('./components/EconomicCalendarView').then(m => ({ default: m.EconomicCalendarView })))
-const MLStats          = lazy(() => import('./components/MLStatsPanel'))
-const BacktesterView   = lazy(() => import('./components/BacktesterView').then(m => ({ default: m.BacktesterView })))
+const AlphaTerminal      = lazy(() => import('./components/AlphaTerminal').then(m => ({ default: m.AlphaTerminal })))
+const MarketIntelligence = lazy(() => import('./components/MarketIntelligence').then(m => ({ default: m.MarketIntelligence })))
+const MoneyFlow          = lazy(() => import('./components/MoneyFlow').then(m => ({ default: m.MoneyFlow })))
+const RiskAlerts         = lazy(() => import('./components/RiskAlerts').then(m => ({ default: m.RiskAlerts })))
+const StrategyLab        = lazy(() => import('./components/StrategyLab').then(m => ({ default: m.StrategyLab })))
+const ChatWindow         = lazy(() => import('./components/ChatWindow').then(m => ({ default: m.ChatWindow })))
+const UnifiedSettings   = lazy(() => import('./components/UnifiedSettingsView').then(m => ({ default: m.UnifiedSettingsView })))
 
 interface Toast { id: string; message: string }
 
-// ── URL hash ↔ tab name mapping ──────────────────────────────────────────────
 const TAB_SLUGS: Record<string, string> = {
-  'Market Trends':        'market-trends',
-  'Institutional Assets': 'portfolio',
-  'Sentiment Hub':        'sentiment',
-  'Intelligence Hub':     'intelligence',
-  'Trading Tactics':      'tactics',
-  'Whale Tracker':        'whales',
-  'Risk Audits':          'risk',
-  'Alerts & Reviews':     'alerts',
-  'Funding Rates':        'funding',
-  'Watchlist':            'watchlist',
-  'Screener':             'screener',
-  'Trading Journal':      'journal',
-  'ETF Flows':            'etf',
-  'AI Persona':           'persona',
-  'Profile Settings':     'profile',
-  'Paper Trading':        'paper',
-  'Backtester':           'backtester',
-  'Economic Calendar':    'calendar',
-  'ML Model':             'ml',
-  'Strategy Chat':        'chat',
+  'Market Intelligence': 'market-intel',
+  'Money Flow':          'money-flow',
+  'Alpha Terminal':      'alpha-terminal',
+  'Risk & Alerts':       'risk-alerts',
+  'Strategy Lab':        'strategy-lab',
+  'Strategy Chat':       'chat',
+  'Settings':            'settings',
 }
 const SLUG_TO_TAB = Object.fromEntries(Object.entries(TAB_SLUGS).map(([k, v]) => [v, k]))
 
 function tabFromHash(): string {
   const slug = window.location.hash.slice(1)
-  return SLUG_TO_TAB[slug] ?? 'Market Trends'
+  return SLUG_TO_TAB[slug] ?? 'Alpha Terminal'
 }
 
 function AppShell() {
+  const { lang } = useLanguage()
   const [activeTab, setActiveTabState] = useState<string>(tabFromHash)
+  const [visitedTabs, setVisitedTabs] = useState<string[]>([tabFromHash()])
 
   const setActiveTab = useCallback((tab: string) => {
     setActiveTabState(tab)
@@ -80,12 +54,18 @@ function AppShell() {
     if (slug) window.location.hash = slug
   }, [])
 
-  // Sync state when user presses back/forward
   useEffect(() => {
     const onHashChange = () => setActiveTabState(tabFromHash())
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
+
+  useEffect(() => {
+    if (!visitedTabs.includes(activeTab)) {
+      setVisitedTabs(prev => [...prev, activeTab])
+    }
+  }, [activeTab, visitedTabs])
+
   const [isAuthorized, setIsAuthorized] = useState(false)
   const [authModalOpen, setAuthModalOpen]   = useState(false)
   const [authModalTab,  setAuthModalTab]    = useState<'login' | 'register'>('login')
@@ -93,7 +73,6 @@ function AppShell() {
   const [cmdOpen,       setCmdOpen]         = useState(false)
   const [shortcutsOpen, setShortcutsOpen]   = useState(false)
   const [toasts,        setToasts]          = useState<Toast[]>([])
-  // G + key chord state
   const [gPressed, setGPressed] = useState(false)
   const [showTour, setShowTour] = useState(false)
   const [pendingSearchQuery, setPendingSearchQuery] = useState('')
@@ -101,66 +80,52 @@ function AppShell() {
     'BTC':    { price: 0, delta: 0 },
     'ETH':    { price: 0, delta: 0 },
     'SOL':    { price: 0, delta: 0 },
-    'GOLD':   { price: 0, delta: 0 },
-    'NASDAQ': { price: 0, delta: 0 },
-    'SP500':  { price: 0, delta: 0 },
+    'AAPL':   { price: 0, delta: 0 },
+    'MSFT':   { price: 0, delta: 0 },
     'NVDA':   { price: 0, delta: 0 },
     'TSLA':   { price: 0, delta: 0 },
+    'AMD':    { price: 0, delta: 0 },
+    'GOLD':   { price: 0, delta: 0 },
+    'OIL':    { price: 0, delta: 0 },
+    'NASDAQ': { price: 0, delta: 0 },
+    'SP500':  { price: 0, delta: 0 },
   })
-  const [currentPrices, setCurrentPrices] = useState<Record<string, number>>({})
+  const [_currentPrices, setCurrentPrices] = useState<Record<string, number>>({})
 
-  const { isRetail, setMode, mode } = useMode()
+  const { theme } = useMode()
   const { status, lastMessage } = useWebSocket()
 
-  // Auth check — JWT or persisted demo session
   useEffect(() => {
     const token   = localStorage.getItem('cs_jwt')
     const userStr = localStorage.getItem('cs_user')
-    if (userStr) {                    // demo OR jwt session
+    if (userStr) {
       try {
         const user: UserProfile = JSON.parse(userStr)
-        if (token || user.id === 'demo') {   // accept: valid jwt OR demo user
+        if (token || user.id === 'demo') {
           setCurrentUser(user)
           setIsAuthorized(true)
-          // Only set mode from account_type on first-ever login (no saved preference)
-          if (!localStorage.getItem('cs_mode')) {
-            setMode(user.account_type === 'institutional' ? 'institutional' : 'retail')
-          }
           localStorage.setItem('crypto_terminal_key', 'demo')
         }
-      } catch { /* corrupted — ignore, will re-login */ }
+      } catch { }
     }
-  }, [setMode])
+  }, [])
 
-  // Onboarding tour
   useEffect(() => {
-    if (isAuthorized && isRetail) {
+    if (isAuthorized) {
       const seen = localStorage.getItem('cs_tour_seen')
       if (!seen) setShowTour(true)
     }
-  }, [isAuthorized, isRetail])
+  }, [isAuthorized])
 
-  // KB Shortcuts
   useEffect(() => {
     let gTimer: ReturnType<typeof setTimeout>
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable
-
-      // Ctrl+K → Command Palette
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault(); setCmdOpen(o => !o); return
-      }
-      // Esc → close modals
-      if (e.key === 'Escape') {
-        setCmdOpen(false); setShortcutsOpen(false); return
-      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setCmdOpen(o => !o); return }
+      if (e.key === 'Escape') { setCmdOpen(false); setShortcutsOpen(false); return }
       if (inInput) return
-
-      // ? → shortcuts help
       if (e.key === '?') { setShortcutsOpen(o => !o); return }
-
-      // G + key chord → quick nav
       if (e.key === 'g' || e.key === 'G') {
         setGPressed(true)
         gTimer = setTimeout(() => setGPressed(false), 1500)
@@ -180,9 +145,8 @@ function AppShell() {
     }
     window.addEventListener('keydown', handler)
     return () => { window.removeEventListener('keydown', handler); clearTimeout(gTimer) }
-  }, [gPressed])
+  }, [gPressed, setActiveTab])
 
-  // Poll real stock prices (NVDA, TSLA, GOLD) every 60s
   useEffect(() => {
     if (!isAuthorized) return
     const fetchStocks = async () => {
@@ -197,22 +161,19 @@ function AppShell() {
           }
           return next
         })
-      } catch { /* silent */ }
+      } catch { }
     }
     fetchStocks()
     const id = setInterval(fetchStocks, 60_000)
     return () => clearInterval(id)
   }, [isAuthorized])
 
-  // WS Updates
   useEffect(() => {
     if (lastMessage?.type === 'TICK') {
       const { symbol, price } = lastMessage.data
       if (!symbol || !price) return
-      
       const normalizedSym = symbol.replace('USDT', '')
       const newPrice = parseFloat(price)
-      
       setCurrentPrices(prev => ({ ...prev, [normalizedSym]: newPrice }))
       setTickerPrices(prev => {
         const prev_p = prev[normalizedSym]?.price || newPrice
@@ -222,17 +183,8 @@ function AppShell() {
     }
   }, [lastMessage])
 
-  const addToast = (message: string) => {
-    const id = Date.now().toString()
-    setToasts(p => [...p, { id, message }])
-    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 5000)
-  }
-
   const handleAuthSuccess = (_token: string, user: UserProfile) => {
     setCurrentUser(user)
-    if (!localStorage.getItem('cs_mode')) {
-      setMode(user.account_type === 'institutional' ? 'institutional' : 'retail')
-    }
     setIsAuthorized(true)
     setAuthModalOpen(false)
   }
@@ -240,7 +192,6 @@ function AppShell() {
   const handleLogout = () => {
     localStorage.removeItem('cs_jwt')
     localStorage.removeItem('cs_user')
-    localStorage.removeItem('cs_mode')
     setCurrentUser(null)
     setIsAuthorized(false)
   }
@@ -255,7 +206,6 @@ function AppShell() {
     }
     localStorage.setItem('cs_user', JSON.stringify(demoUser))
     setCurrentUser(demoUser)
-    if (!localStorage.getItem('cs_mode')) setMode('retail')
     setIsAuthorized(true)
   }
 
@@ -265,8 +215,29 @@ function AppShell() {
     setActiveTab('Strategy Chat')
   }
 
-  const handleLandingNavigate = (_key: 'chart' | 'markets' | 'news' | 'community' | 'more') => {
-    handleDemoAccess()
+  const handleLandingNavigate = () => { handleDemoAccess() }
+
+  const handleWatchlistAnalyze = (symbol: string) => {
+    setPendingSearchQuery(`Analyze ${symbol} for me. Provide institutional insights, technical levels, and potential tactical setups.`);
+    setActiveTab('Strategy Chat');
+  };
+
+  const renderTabView = (tab: string) => {
+    switch (tab) {
+      case 'Market Intelligence': return <MarketIntelligence />
+      case 'Money Flow':          return <MoneyFlow tickerPrices={tickerPrices} />
+      case 'Alpha Terminal':      return <AlphaTerminal onAnalyze={handleWatchlistAnalyze} />
+      case 'Risk & Alerts':       return <RiskAlerts />
+      case 'Strategy Lab':        return <StrategyLab />
+      case 'Settings':            return <UnifiedSettings />
+      case 'Strategy Chat':
+      default:                    return (
+        <ChatWindow 
+          initialMessage={pendingSearchQuery} 
+          onClearInitialMessage={() => setPendingSearchQuery('')} 
+        />
+      )
+    }
   }
 
   if (!isAuthorized) {
@@ -294,50 +265,33 @@ function AppShell() {
       activeTab={activeTab}
       setActiveTab={setActiveTab}
       wsStatus={status}
-      mode={mode}
-      setMode={setMode}
       onOpenCommand={() => setCmdOpen(true)}
       tickerPrices={tickerPrices}
       onLogout={handleLogout}
     >
-      {/* Dynamic View Injection */}
       <Suspense fallback={<TabSkeleton variant="cards" />}>
-        {(() => {
-          switch (activeTab) {
-            case 'Market Trends':         return <ErrorBoundary tabName="Market Trends"><TrendsView /></ErrorBoundary>
-            case 'Institutional Assets': return <ErrorBoundary tabName="Portfolio"><PortfolioCenter tickerPrices={tickerPrices} /></ErrorBoundary>
-            case 'Sentiment Hub':        return <ErrorBoundary tabName="Sentiment Hub"><NewsSentimentHub /></ErrorBoundary>
-            case 'Intelligence Hub':     return <ErrorBoundary tabName="Intelligence Hub"><IntelligenceHub /></ErrorBoundary>
-            case 'Trading Tactics':      return <ErrorBoundary tabName="Trading Tactics"><TacticsHub /></ErrorBoundary>
-            case 'Whale Tracker':        return <ErrorBoundary tabName="Whale Tracker"><WhaleTrackerView /></ErrorBoundary>
-            case 'Risk Audits':          return <ErrorBoundary tabName="Risk Audits"><RiskAuditsView /></ErrorBoundary>
-            case 'Alerts & Reviews':     return <ErrorBoundary tabName="Alerts & Reviews"><AlertsReviewsView /></ErrorBoundary>
-            // Phase 15
-            case 'Funding Rates':        return <ErrorBoundary tabName="Funding Rates"><FundingRatesView /></ErrorBoundary>
-            case 'Watchlist':            return <ErrorBoundary tabName="Watchlist"><WatchlistPanel onAnalyze={sym => { setPendingSearchQuery(`วิเคราะห์ ${sym}`); setActiveTab('Strategy Chat') }} /></ErrorBoundary>
-            case 'Screener':             return <ErrorBoundary tabName="Screener"><ScreenerView /></ErrorBoundary>
-            case 'Trading Journal':      return <ErrorBoundary tabName="Trading Journal"><TradingJournalView /></ErrorBoundary>
-            case 'ETF Flows':            return <ErrorBoundary tabName="ETF Flows"><ETFFlowView /></ErrorBoundary>
-            case 'AI Persona':           return <ErrorBoundary tabName="AI Persona"><PersonaSettings /></ErrorBoundary>
-            case 'Profile Settings':     return <ErrorBoundary tabName="Profile Settings"><ProfileSettings /></ErrorBoundary>
-            case 'Paper Trading':        return <ErrorBoundary tabName="Paper Trading"><PaperTrading /></ErrorBoundary>
-            case 'Backtester':           return <ErrorBoundary tabName="Backtester"><BacktesterView /></ErrorBoundary>
-            case 'Economic Calendar':    return <ErrorBoundary tabName="Economic Calendar"><EconomicCalendar /></ErrorBoundary>
-            case 'ML Model':             return <ErrorBoundary tabName="ML Model"><MLStats /></ErrorBoundary>
-            case 'Strategy Chat':
-            default:                     return (
-              <ErrorBoundary tabName="Strategy Chat">
-                <ChatWindow 
-                  initialMessage={pendingSearchQuery} 
-                  onClearInitialMessage={() => setPendingSearchQuery('')} 
-                />
-              </ErrorBoundary>
+        <div className="relative w-full h-full">
+          {Object.keys(TAB_SLUGS).map(tabName => {
+            const isVisited = visitedTabs.includes(tabName)
+            if (!isVisited) return null
+            return (
+              <div 
+                key={tabName} 
+                className={`w-full transition-opacity duration-500 ${
+                  activeTab === tabName 
+                    ? 'opacity-100 z-10 pointer-events-auto relative flex flex-col h-full' 
+                    : 'opacity-0 -z-10 pointer-events-none overflow-hidden absolute inset-0'
+                }`}
+              >
+                <ErrorBoundary tabName={tabName}>
+                  {renderTabView(tabName)}
+                </ErrorBoundary>
+              </div>
             )
-          }
-        })()}
+          })}
+        </div>
       </Suspense>
 
-      {/* Global Modals/Tools */}
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} onNavigate={setActiveTab} />
       <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <AuthModal open={authModalOpen} defaultTab={authModalTab} onClose={() => setAuthModalOpen(false)} onSuccess={handleAuthSuccess} />
@@ -348,7 +302,6 @@ function AppShell() {
         />
       )}
 
-      {/* Toast Overlay */}
       <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
         <AnimatePresence>
           {toasts.map(t => (
@@ -356,10 +309,12 @@ function AppShell() {
               initial={{ opacity: 0, x: 60, scale: 0.95 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
               exit={{ opacity: 0, x: 60, scale: 0.95 }}
-              className="bg-slate-900/95 backdrop-blur-2xl border border-amber-500/20 rounded-2xl px-5 py-3 shadow-2xl flex items-center gap-3 max-w-xs"
+              className={`backdrop-blur-2xl border rounded-2xl px-5 py-3 shadow-2xl flex items-center gap-3 max-w-xs transition-all duration-500 ${
+                theme === 'dark' ? 'bg-slate-900/95 border-amber-500/20' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+              }`}
             >
-              <BellRing className="w-4 h-4 text-amber-400 shrink-0" />
-              <p className="text-xs font-bold text-slate-200">{t.message}</p>
+              <BellRing className={`w-4 h-4 shrink-0 ${theme === 'dark' ? 'text-amber-400' : 'text-amber-600'}`} />
+              <p className={`text-xs font-bold ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>{t.message}</p>
             </motion.div>
           ))}
         </AnimatePresence>

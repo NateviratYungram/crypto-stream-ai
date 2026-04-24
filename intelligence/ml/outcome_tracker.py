@@ -42,6 +42,8 @@ def migrate_schema():
         ("outcome",      "TEXT"),
         ("features_json","TEXT"),
         ("ml_score",     "REAL"),
+        ("close_reason", "TEXT"),
+        ("label_source", "TEXT"),
     ]:
         try:
             cur.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {typedef}")
@@ -95,6 +97,7 @@ def _close_trade(trade_id: str, current_price: float, outcome: str, reason: str)
     cur.execute("""
         UPDATE paper_trades
         SET status='CLOSED', closed_at=?, current_price=?, outcome=?,
+            exit_price=?, close_reason=?, label_source='auto_tracker',
             pnl_usd=CASE
                 WHEN side='BUY'  THEN (? - entry_price) * volume
                 WHEN side='SELL' THEN (entry_price - ?) * volume
@@ -105,6 +108,8 @@ def _close_trade(trade_id: str, current_price: float, outcome: str, reason: str)
         datetime.now(timezone.utc).isoformat(),
         current_price,
         outcome,
+        current_price,
+        reason,
         current_price, current_price,
         trade_id,
     ))
@@ -127,6 +132,7 @@ def scan_and_update() -> Dict:
     closed_win  = 0
     closed_loss = 0
     errors      = 0
+    closed_trades: List[Dict] = []
 
     for trade in trades:
         tid    = trade["id"]
@@ -160,6 +166,16 @@ def scan_and_update() -> Dict:
 
         if outcome:
             _close_trade(tid, price, outcome, reason)
+            closed_trades.append(
+                {
+                    "trade_id": tid,
+                    "symbol": sym,
+                    "outcome": outcome,
+                    "close_reason": reason,
+                    "label_source": "auto_tracker",
+                    "exit_price": float(price),
+                }
+            )
             if outcome == "WIN":
                 closed_win += 1
             else:
@@ -170,6 +186,7 @@ def scan_and_update() -> Dict:
         "closed_win":  closed_win,
         "closed_loss": closed_loss,
         "errors":      errors,
+        "closed_trades": closed_trades,
         "timestamp":   datetime.now(timezone.utc).isoformat(),
     }
     logger.info(f"[OutcomeTracker] scan_and_update: {summary}")

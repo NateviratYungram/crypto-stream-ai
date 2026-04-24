@@ -24,7 +24,11 @@ def check_correlation_safety(new_symbol: str) -> Dict[str, Any]:
         return {"passed": True} # Cannot check without MT5
 
     try:
-        import MetaTrader5 as mt5
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            return {"passed": True}
+
         # 1. Fetch current positions
         positions = mt5.positions_get()
         if positions is None or len(positions) == 0:

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TrendingUp, TrendingDown, Minus, Eye, Zap } from 'lucide-react';
+import { useMode } from '../contexts/ModeContext';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 interface Signal {
   symbol: string;
@@ -13,119 +15,196 @@ interface Signal {
   timestamp: string;
 }
 
-const directionConfig = {
-  BUY:   { color: 'emerald', icon: TrendingUp,   label: 'LONG',  bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', text: 'text-emerald-400' },
-  SELL:  { color: 'rose',    icon: TrendingDown,  label: 'SHORT', bg: 'bg-rose-500/10',    border: 'border-rose-500/30',    text: 'text-rose-400'    },
-  HOLD:  { color: 'amber',   icon: Minus,         label: 'HOLD',  bg: 'bg-amber-500/10',   border: 'border-amber-500/30',   text: 'text-amber-400'   },
-  WATCH: { color: 'blue',    icon: Eye,           label: 'WATCH', bg: 'bg-blue-500/10',    border: 'border-blue-500/30',    text: 'text-blue-400'    },
+const getDirectionConfig = (dir: string, theme: 'light' | 'dark') => {
+  const isDark = theme === 'dark';
+  const configs: any = {
+    BUY: {
+      icon: TrendingUp,
+      label: 'LONG',
+      bg: isDark ? 'bg-emerald-500/10' : 'bg-emerald-50',
+      border: isDark ? 'border-emerald-500/30' : 'border-emerald-200',
+      text: isDark ? 'text-emerald-400' : 'text-emerald-600',
+    },
+    SELL: {
+      icon: TrendingDown,
+      label: 'SHORT',
+      bg: isDark ? 'bg-rose-500/10' : 'bg-rose-50',
+      border: isDark ? 'border-rose-500/30' : 'border-rose-200',
+      text: isDark ? 'text-rose-400' : 'text-rose-600',
+    },
+    HOLD: {
+      icon: Minus,
+      label: 'HOLD',
+      bg: isDark ? 'bg-amber-500/10' : 'bg-amber-50',
+      border: isDark ? 'border-amber-500/30' : 'border-amber-200',
+      text: isDark ? 'text-amber-400' : 'text-amber-600',
+    },
+    WATCH: {
+      icon: Eye,
+      label: 'WATCH',
+      bg: isDark ? 'bg-blue-500/10' : 'bg-blue-50',
+      border: isDark ? 'border-blue-500/30' : 'border-blue-200',
+      text: isDark ? 'text-blue-400' : 'text-blue-600',
+    },
+  };
+  return configs[dir] || configs.HOLD;
 };
 
-export const SignalFeed = () => {
-  const [signals, setSignals] = useState<Signal[]>([]);
-  const [loading, setLoading] = useState(true);
+export const SignalFeed = ({
+  bootstrapSignals = [],
+  skipInitialFetch = false,
+}: {
+  bootstrapSignals?: Signal[]
+  skipInitialFetch?: boolean
+}) => {
+  const { theme } = useMode();
+  const { lastMessage } = useWebSocket();
+  const [signals, setSignals] = useState<Signal[]>(bootstrapSignals);
+  const [loading, setLoading] = useState(bootstrapSignals.length === 0);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
-  const fetchSignals = async () => {
-    try {
-      const res = await fetch('/api/signals');
-      const json = await res.json();
-      setSignals(json.signals || []);
+  // One-shot HTTP fetch on mount (fast first load before WS warms up)
+  useEffect(() => {
+    if (bootstrapSignals.length > 0) {
+      setSignals(bootstrapSignals);
       setLastRefresh(new Date());
-    } catch (err) {
-      console.error('Signal fetch error:', err);
-    } finally {
+      setLoading(false);
+      return;
+    }
+    if (skipInitialFetch) {
+      setLoading(false);
+      return;
+    }
+    fetch('/api/signals')
+      .then(r => r.json())
+      .then(json => {
+        if (json.signals?.length > 0) setSignals(json.signals);
+      })
+      .catch(err => console.error('Signal initial fetch error:', err))
+      .finally(() => setLoading(false));
+  }, [bootstrapSignals, skipInitialFetch]);
+
+  // Real-time WebSocket updates — fires every ~15s from signal_broadcaster_task
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type !== 'SIGNALS') return;
+    const incoming: Signal[] = lastMessage.data?.signals ?? [];
+    if (incoming.length > 0) {
+      setSignals(incoming);
+      setLastRefresh(new Date());
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchSignals();
-    // Poll every 30 seconds
-    const interval = setInterval(fetchSignals, 30000);
-    return () => clearInterval(interval);
-  }, []);
+  }, [lastMessage]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Zap className="w-4 h-4 text-yellow-400 glow-bloom" />
-          <h3 className="text-[11px] font-black text-white uppercase tracking-widest">AI Signal Feed</h3>
+    <div className="flex flex-col h-full space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+          <h3 className={`text-[11px] font-black uppercase tracking-[0.3em] transition-colors ${
+            theme === 'dark' ? 'text-white' : 'text-slate-900'
+          }`}>Neural Signal Stream</h3>
         </div>
-        <span className="text-[11px] font-bold text-slate-600 uppercase tracking-widest">
+        <div className={`px-3 py-1 rounded-full border text-[9px] font-black uppercase tracking-widest ${
+          theme === 'dark' ? 'bg-white/5 border-white/5 text-slate-500' : 'bg-slate-50 border-slate-200 text-slate-400'
+        }`}>
           {lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-        </span>
+        </div>
       </div>
 
-      <p className="text-[10px] text-amber-500/70 font-bold mb-2 px-1">⚠ สัญญาณ AI เพื่อการศึกษาเท่านั้น — ไม่ใช่คำแนะนำซื้อขาย</p>
-
-      <div className="flex-1 space-y-3 overflow-y-auto custom-scrollbar pr-1">
+      <div className="flex-1 space-y-4 overflow-y-auto custom-scrollbar pr-2">
         {loading ? (
-          [1,2,3].map(i => (
-            <div key={i} className="h-20 bg-slate-900/40 animate-pulse rounded-2xl border border-white/5" />
+          [1, 2, 3, 4].map(i => (
+            <div key={i} className={`h-24 animate-pulse rounded-[1.5rem] border ${
+              theme === 'dark' ? 'bg-slate-900/40 border-white/5' : 'bg-slate-50 border-slate-200'
+            }`} />
           ))
         ) : signals.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 text-center">
-            <p className="text-xs text-slate-600 font-bold uppercase tracking-widest">No signals generated</p>
-            <p className="text-[11px] text-slate-700 mt-1">Insufficient data in last 10 minutes</p>
+          <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center border ${
+              theme === 'dark' ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-200'
+            }`}>
+              <Minus className="w-6 h-6 text-slate-700" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Awaiting Volatility</p>
+              <p className="text-[9px] text-slate-700 font-bold uppercase tracking-widest">Model scan in progress...</p>
+            </div>
           </div>
         ) : (
           <AnimatePresence mode="popLayout">
             {signals.map((signal, i) => {
-              const cfg = directionConfig[signal.direction];
+              const cfg = getDirectionConfig(signal.direction, theme);
               const Icon = cfg.icon;
               return (
                 <motion.div
                   key={signal.symbol + signal.timestamp}
-                  initial={{ opacity: 0, x: -12 }}
+                  initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: i * 0.05 }}
-                  className={`p-4 rounded-2xl border ${cfg.bg} ${cfg.border} relative overflow-hidden group cursor-default`}
+                  className={`p-4 rounded-[1.4rem] border backdrop-blur-2xl transition-all duration-500 group relative overflow-hidden ${
+                    theme === 'dark' 
+                      ? 'bg-slate-900/40 border-white/5 hover:border-white/10' 
+                      : 'bg-white border-slate-200 shadow-sm hover:shadow-md'
+                  }`}
                 >
-                  <div className="flex items-start justify-between mb-2">
+                  <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <div className={`p-1.5 rounded-lg ${cfg.bg} border ${cfg.border}`}>
+                      <div className={`p-1.5 rounded-lg border transition-all duration-500 ${cfg.bg} ${cfg.border}`}>
                         <Icon className={`w-3.5 h-3.5 ${cfg.text}`} />
                       </div>
-                      <div>
-                        <span className="text-sm font-black text-white tracking-tight">{signal.symbol}</span>
-                        <span className={`ml-2 text-[11px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${cfg.bg} ${cfg.text} border ${cfg.border}`}>
+                      <div className="space-y-0">
+                        <span className={`text-sm font-black tracking-tighter italic uppercase ${
+                          theme === 'dark' ? 'text-white' : 'text-slate-950'
+                        }`}>{signal.symbol}</span>
+                        <div className={`flex items-center gap-1 text-[7px] font-black uppercase tracking-widest ${cfg.text}`}>
+                          <div className={`w-1 h-1 rounded-full bg-current ${signal.direction !== 'HOLD' ? 'animate-pulse' : ''}`} />
                           {cfg.label}
-                        </span>
+                        </div>
                       </div>
                     </div>
-                    {/* Confidence bar */}
-                    <div className="text-right">
-                      <span className={`text-sm font-black font-mono ${cfg.text}`}>{signal.confidence}%</span>
-                      <div className="w-16 h-1 bg-slate-800 rounded-full mt-1 overflow-hidden">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${signal.confidence}%` }}
-                          transition={{ duration: 0.8 }}
-                          className={`h-full rounded-full ${
-                            signal.direction === 'BUY' ? 'bg-emerald-500' :
-                            signal.direction === 'SELL' ? 'bg-rose-500' :
-                            signal.direction === 'HOLD' ? 'bg-amber-500' : 'bg-blue-500'
-                          }`}
-                        />
-                      </div>
+                    
+                    <div className="text-right space-y-0.5">
+                      <p className={`text-base font-black font-mono leading-none ${cfg.text}`}>
+                        {signal.confidence}%
+                      </p>
+                      <p className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Conf</p>
                     </div>
                   </div>
 
-                  <p className="text-xs text-slate-400 leading-relaxed font-medium line-clamp-2">{signal.reason}</p>
+                  <p className={`text-[9px] leading-relaxed font-bold mb-3 line-clamp-2 italic ${
+                    theme === 'dark' ? 'text-slate-400' : 'text-slate-600'
+                  }`}>
+                    "{signal.reason}"
+                  </p>
 
-                  <div className="flex items-center gap-4 mt-2">
-                    <span className="text-[11px] font-mono text-slate-500">
-                      ${signal.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                    <span className={`text-[11px] font-bold font-mono ${(signal.delta_pct ?? 0) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                      {(signal.delta_pct ?? 0) >= 0 ? '+' : ''}{(signal.delta_pct ?? 0).toFixed(3)}%
-                    </span>
-                    <span className="text-[11px] text-slate-600 font-bold">Vol ×{signal.vol_surge ?? 1.0}</span>
+                  <div className={`flex items-center justify-between pt-3 border-t ${theme === 'dark' ? 'border-white/5' : 'border-slate-100'}`}>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-[9px] font-black font-mono ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>
+                        ${signal.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                      <span className={`text-[9px] font-black font-mono ${ (signal.delta_pct ?? 0) >= 0 ? 'text-emerald-500' : 'text-rose-500' }`}>
+                        {(signal.delta_pct ?? 0) >= 0 ? '+' : ''}{(signal.delta_pct ?? 0).toFixed(3)}%
+                      </span>
+                    </div>
+                    <div className={`px-1.5 py-0.5 rounded-lg text-[7px] font-black uppercase tracking-widest ${
+                      theme === 'dark' ? 'bg-white/5 text-slate-500' : 'bg-slate-50 text-slate-400'
+                    }`}>
+                      ×{(signal.vol_surge ?? 1.0).toFixed(2)}
+                    </div>
                   </div>
 
-                  {/* Shine effect on hover */}
-                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/[0.02] to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                  {/* Confidence Bar Underlay */}
+                  <div className="absolute bottom-0 left-0 w-full h-[2px] bg-white/5 overflow-hidden">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${signal.confidence}%` }}
+                      className={`h-full ${
+                        signal.direction === 'BUY' ? 'bg-emerald-500' :
+                        signal.direction === 'SELL' ? 'bg-rose-500' :
+                        signal.direction === 'HOLD' ? 'bg-amber-500' : 'bg-blue-500'
+                      }`}
+                    />
+                  </div>
                 </motion.div>
               );
             })}

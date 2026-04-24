@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="th">
+<html lang="th" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -11,6 +11,15 @@
     <meta property="og:description" content="ระบบวิเคราะห์ตลาดคริปโตระดับสถาบัน ด้วย AI Multi-Agent และ Real-time Whale Tracker" />
     <meta property="og:type" content="website" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <!-- Restore saved theme BEFORE React mounts to prevent flash -->
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('cs_theme') || 'dark';
+          document.documentElement.className = t;
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

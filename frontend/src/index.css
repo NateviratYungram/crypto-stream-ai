@@ -2,8 +2,12 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Tell Tailwind v4: activate dark: variants when <html> has class="dark" */
+@custom-variant dark (&:where(.dark, .dark *));
+
+
 :root {
-  --bg-base: #020617;
+  --bg-base: #030712;
   --bg-surface: #0f172a;
   --bg-card: #1e293b;
   --accent: #38bdf8;
@@ -11,26 +15,104 @@
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-bg: rgba(15, 23, 42, 0.6);
   --glow-color: rgba(59, 130, 246, 0.15);
-  
-  /* Institutional HSL Tokens */
-  --intel-primary: 217 91% 60%;
-  --intel-secondary: 224 71% 4%;
-  --whale-alert: 45 93% 47%;
+}
+
+html.light {
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-card: #f1f5f9;
+  --accent: #2563eb;
+  --accent-glow: rgba(37, 99, 235, 0.1);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-bg: rgba(255, 255, 255, 0.7);
+  --glow-color: rgba(59, 130, 246, 0.05);
 }
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-200 antialiased;
+    @apply antialiased transition-all duration-500 ease-in-out;
     font-family: 'Inter Tight', sans-serif;
+  }
+  
+  html.dark body {
+    @apply bg-slate-950 text-slate-200;
     background-image: 
-      radial-gradient(at 0% 0%, rgba(29, 78, 216, 0.05) 0px, transparent 50%),
-      radial-gradient(at 100% 0%, rgba(79, 70, 229, 0.05) 0px, transparent 50%);
+      radial-gradient(at 0% 0%, rgba(29, 78, 216, 0.15) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(79, 70, 229, 0.1) 0px, transparent 50%),
+      radial-gradient(at 50% 100%, rgba(30, 58, 138, 0.1) 0px, transparent 50%);
+  }
+
+  html.light body {
+    @apply bg-slate-50 text-slate-900;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.1) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(99, 102, 241, 0.08) 0px, transparent 50%),
+      radial-gradient(at 50% 100%, rgba(219, 234, 254, 0.3) 0px, transparent 50%);
+  }
+
+  /* Improved Glassmorphism for Light Mode */
+  html.light .glass-card {
+    @apply bg-white/70 backdrop-blur-2xl border-slate-200/60 shadow-[0_8px_30px_rgb(0,0,0,0.02)] hover:shadow-[0_20px_40px_rgb(0,0,0,0.06)];
+  }
+
+  html.light .confirm-block {
+    @apply border-blue-200 bg-blue-50/50 shadow-sm;
+  }
+
+  html.light .confirm-label {
+    @apply text-blue-600/70 border-blue-100 bg-blue-50/80;
+  }
+
+  html.light .confirm-code {
+    @apply text-blue-800 bg-transparent;
+  }
+
+  html.light .prose {
+    --tw-prose-body: theme(colors.slate.600);
+    --tw-prose-headings: theme(colors.slate.900);
+    --tw-prose-links: theme(colors.blue.600);
+    --tw-prose-bold: theme(colors.slate.900);
+    --tw-prose-pre-bg: theme(colors.slate.50);
+    --tw-prose-pre-code: theme(colors.slate.800);
+    --tw-prose-quotes: theme(colors.slate.500);
+    --tw-prose-quote-borders: theme(colors.blue.200);
+    --tw-prose-code: theme(colors.blue.600);
+    --tw-prose-th-borders: theme(colors.slate.200);
+    --tw-prose-td-borders: theme(colors.slate.100);
+  }
+
+  html.light .prose table {
+    @apply my-6 w-full bg-white border border-slate-200 shadow-sm border-collapse rounded-xl overflow-hidden text-sm;
+  }
+
+  html.light .prose thead {
+    @apply bg-slate-50 border-b border-slate-200;
+  }
+
+  html.light .prose th {
+    @apply px-5 py-3 border-r last:border-r-0 border-slate-200 text-slate-900 font-black uppercase tracking-widest text-[10px] text-left;
+  }
+
+  html.light .prose td {
+    @apply px-5 py-3 border-b border-r last:border-r-0 border-slate-100 text-slate-700 font-bold;
+  }
+
+  html.light .prose code {
+    @apply bg-blue-50 border-blue-100 text-blue-700 font-bold;
+  }
+
+  html.light .prose pre {
+    @apply bg-slate-50 border-slate-200 shadow-inner;
+  }
+
+  html.light .prose strong {
+    @apply text-slate-900;
   }
 }
 
 @layer components {
-  /* ── Markdown prose overrides for dark AI chat UI ── */
-  .prose {
+  /* ── Dark AI chat UI ── */
+  html.dark .prose {
     --tw-prose-body: theme(colors.slate.300);
     --tw-prose-headings: theme(colors.white);
     --tw-prose-lead: theme(colors.slate.400);
@@ -47,6 +129,9 @@
     --tw-prose-pre-bg: theme(colors.slate.950 / 0.8);
     --tw-prose-th-borders: theme(colors.white / 0.1);
     --tw-prose-td-borders: theme(colors.white / 0.05);
+  }
+
+  .prose {
     font-size: 0.875rem;
     line-height: 1.75;
   }
@@ -54,22 +139,51 @@
   .prose p { margin-top: 0.5em; margin-bottom: 0.5em; }
   .prose ul, .prose ol { padding-left: 1.25em; }
   .prose li { margin-top: 0.25em; margin-bottom: 0.25em; }
-  .prose code { background: rgba(59,130,246,0.1); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.8em; }
-  .prose pre { background: rgba(2,6,23,0.8); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 1em; overflow-x: auto; }
+  
+  html.dark .prose code { background: rgba(59,130,246,0.1); color: theme('colors.blue.300'); }
+  html.light .prose code { background: rgba(59,130,246,0.05); color: theme('colors.blue.600'); }
+  .prose code { padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.8em; }
+  
+  html.dark .prose pre { background: rgba(2,6,23,0.8); border: 1px solid rgba(255,255,255,0.05); }
+  html.light .prose pre { background: theme('colors.slate.50'); border: 1px solid theme('colors.slate.200'); }
+  .prose pre { border-radius: 12px; padding: 1em; overflow-x: auto; }
+  
   .prose pre code { background: transparent; padding: 0; }
-  .prose strong { color: #fff; }
+  
+  html.dark .prose strong { color: #fff; }
+  html.light .prose strong { color: theme('colors.slate.900'); }
+  
   .prose table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
-  .prose th { background: rgba(255,255,255,0.05); padding: 0.5em 0.75em; text-align: left; }
-  .prose td { padding: 0.4em 0.75em; border-bottom: 1px solid rgba(255,255,255,0.04); }
-  .prose blockquote { border-left: 3px solid rgba(59,130,246,0.4); padding-left: 1em; color: theme(colors.slate.400); font-style: italic; }
-  .prose hr { border-color: rgba(255,255,255,0.08); }
+  
+  html.dark .prose th { background: rgba(255,255,255,0.05); color: #fff; }
+  html.light .prose th { background: theme('colors.slate.50'); color: theme('colors.slate.900'); }
+  .prose th { padding: 0.5em 0.75em; text-align: left; }
+  
+  html.dark .prose td { border-bottom: 1px solid rgba(255,255,255,0.04); color: theme('colors.slate.300'); }
+  html.light .prose td { border-bottom: 1px solid theme('colors.slate.100'); color: theme('colors.slate.600'); }
+  .prose td { padding: 0.4em 0.75em; }
+  
+  html.dark .prose blockquote { border-left: 3px solid rgba(59,130,246,0.4); color: theme(colors.slate.400); }
+  html.light .prose blockquote { border-left: 3px solid rgba(59,130,246,0.2); color: theme(colors.slate.500); }
+  .prose blockquote { padding-left: 1em; font-style: italic; }
+  
+  html.dark .prose hr { border-color: rgba(255,255,255,0.08); }
+  html.light .prose hr { border-color: theme('colors.slate.200'); }
 
   .font-mono {
     font-family: 'JetBrains Mono', monospace;
   }
 
   .glass-card {
-    @apply bg-slate-900/40 backdrop-blur-xl border border-white/5 shadow-2xl;
+    @apply backdrop-blur-xl border shadow-2xl transition-all duration-500;
+  }
+  
+  html.dark .glass-card {
+    @apply bg-slate-900/40 border-white/5 shadow-black/40;
+  }
+
+  html.light .glass-card {
+    @apply bg-white/70 border-slate-200 shadow-slate-200/50;
   }
   
   .glass-glow {
@@ -149,7 +263,8 @@
 }
 
 /* Tactical Terminal Prose Overrides */
-.prose {
+/* Tactical Terminal Prose Overrides */
+html.dark .prose {
   --tw-prose-body: theme('colors.slate.300');
   --tw-prose-headings: theme('colors.white');
   --tw-prose-links: theme('colors.blue.400');
@@ -175,19 +290,19 @@
   border: none;
 }
 
-.prose table {
+html.dark .prose table {
   @apply my-6 w-full border-collapse rounded-xl overflow-hidden text-xs bg-slate-900/40;
 }
 
-.prose thead {
+html.dark .prose thead {
   @apply bg-blue-600/10 border-b border-blue-500/20;
 }
 
-.prose th {
+html.dark .prose th {
   @apply px-4 py-3 font-black uppercase tracking-widest text-[10px] text-blue-400 text-left border-r last:border-r-0 border-white/5;
 }
 
-.prose td {
+html.dark .prose td {
   @apply px-4 py-3 border-b border-white/5 border-r last:border-r-0 text-slate-300 font-medium;
 }
 
@@ -195,7 +310,7 @@
   border-bottom: none;
 }
 
-.prose code {
+html.dark .prose code {
   @apply px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 font-bold;
 }
 
@@ -212,16 +327,16 @@
   }
 
   /* ── Trade Confirmation Block ── */
-  .confirm-block {
+  html.dark .confirm-block {
     @apply my-4 rounded-2xl border border-blue-500/30 bg-blue-950/30 overflow-hidden;
   }
-  .confirm-label {
+  html.dark .confirm-label {
     @apply block px-4 py-2 text-[10px] font-black uppercase tracking-widest text-blue-400/70 border-b border-blue-500/10;
   }
   .confirm-inner {
     @apply flex items-center justify-between gap-3 px-4 py-3;
   }
-  .confirm-code {
+  html.dark .confirm-code {
     @apply flex-1 text-sm font-black text-blue-300 font-mono tracking-wider bg-transparent border-none;
   }
   .confirm-copy-btn {
@@ -250,6 +365,12 @@
 ::-webkit-scrollbar-thumb {
   @apply bg-slate-800 rounded-full;
 }
+html.light ::-webkit-scrollbar-thumb {
+  @apply bg-slate-300;
+}
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-slate-700;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-400;
 }

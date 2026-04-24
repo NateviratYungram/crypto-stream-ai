@@ -16,8 +16,10 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
 
-from intelligence.ml.signal_model import DEFAULT_SYMBOLS, predict_win_probability
+from intelligence.ml.signal_model import TRADE_TRAIN_SYMBOLS, predict_with_neural_consensus, predict_win_probability
 from intelligence.ml.feature_extractor import extract_features
+from intelligence.guards import InstitutionalGuard  # V8 Guard Integration
+from intelligence.utils.market_hours import get_market_status_data # Added for Market Alerts
 
 load_dotenv()
 from intelligence.technical_engine import get_kline_data, compute_indicators
@@ -25,7 +27,7 @@ from intelligence.technical_engine import get_kline_data, compute_indicators
 logger = logging.getLogger(__name__)
 
 PERSISTENCE_DB  = "persistence.db"
-SCAN_THRESHOLD  = 70   # minimum win_pct % to generate an alert
+SCAN_THRESHOLD  = 80   # Sniper Mode: Increased from 70 to 80 for higher precision
 DEDUP_HOURS     = 2    # suppress duplicate alert for same symbol within this window
 
 _TG_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -95,6 +97,11 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
     skipped_dup = 0
     errors      = 0
 
+    # ── Market Session Alerts ─────────────────────────────
+    market_status = get_market_status_data()
+    # Logic to send one-time alert when market status changes could be added here
+    # For now, we'll just include it in the scan summary if it's a significant change
+    
     conn   = sqlite3.connect(PERSISTENCE_DB)
     cursor = conn.cursor()
 
@@ -108,21 +115,20 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
     cutoff = (datetime.utcnow() - timedelta(hours=DEDUP_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
 
     scanned_syms: set = set()
-    us_open = _us_market_open()
+    # us_open = _us_market_open() # No longer needed for MT5 Sniper Assets
 
-    for (sym, asset_class, tf) in DEFAULT_SYMBOLS:
-        if tf != "1h":
+    for (sym, asset_class, tf) in TRADE_TRAIN_SYMBOLS:
+        # Sniper Mode: We now scan ALL timeframes (15m, 1h, 4h) defined in TRADE_TRAIN_SYMBOLS
+        # to find the absolute best entry across the spectrum.
+        
+        lookup_key = f"{sym}_{tf}"
+        if lookup_key in scanned_syms:
             continue
-        if sym in scanned_syms:
-            continue
-        # Skip US stocks when market is closed — no live data available
-        if asset_class == "STOCK" and not us_open:
-            logger.debug(f"[ML-Scanner] Skipping {sym} (STOCK, US market closed)")
-            continue
-        scanned_syms.add(sym)
+        scanned_syms.add(lookup_key)
 
         try:
-            df = get_kline_data(sym, timeframe="1h", limit=300, asset_class=asset_class)
+            # Fetch data with higher limit for better indicator stability
+            df = get_kline_data(sym, timeframe=tf, limit=500, asset_class=asset_class)
             if df is None or len(df) < 50:
                 continue
 
@@ -136,28 +142,50 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
 
             for side in ("BUY", "SELL"):
                 try:
-                    feats  = extract_features(df, len(df) - 1, side=side, asset_class=asset_class, sentiment_score=sent_v)
-                    result = predict_win_probability(feats)
+                    # ── V8 Sentiment Confluence: Strict Mode ──
+                    # If AI wants to BUY but news is negative, or vice-versa, skip it.
+                    if side == "BUY" and sent_v <= -20:
+                        logger.info(f"🛡️ Sentiment Guard: Blocking BUY on {sym} due to negative news ({sent_v})")
+                        continue
+                    if side == "SELL" and sent_v >= 20:
+                        logger.info(f"🛡️ Sentiment Guard: Blocking SELL on {sym} due to positive news ({sent_v})")
+                        continue
+
+                    # ── V8 Sniper Guard: Pre-prediction check ──
+                    if not InstitutionalGuard.check_all_guards(sym, side):
+                        continue
+
+                    # ── V8 Hybrid Inference: Ensemble + Neural Attention ──
+                    result = predict_with_neural_consensus(
+                        df, 
+                        len(df) - 1, 
+                        side=side, 
+                        symbol=sym, 
+                        asset_class=asset_class, 
+                        sentiment_score=sent_v
+                    )
+                    
                     if not result.get("available"):
                         continue
+                    
                     win_pct = result["win_pct"]
                     if win_pct > best_win_pct:
                         best_win_pct = win_pct
                         best_side    = side
                         best_result  = result
                 except Exception as se:
-                    logger.debug(f"[ML-Scanner] {sym}/{side} predict error: {se}")
+                    logger.debug(f"[ML-Scanner] {sym}/{tf}/{side} predict error: {se}")
 
             # Only emit if best direction is above threshold
             if best_side is None or best_win_pct < threshold:
                 continue
 
-            # Deduplicate: skip if active ML alert already exists for this symbol (any direction)
+            # Deduplicate: skip if active ML alert already exists for this symbol+tf
             cursor.execute("""
                 SELECT id FROM active_alerts
-                WHERE symbol = ? AND user_id = 'ml_scanner'
+                WHERE symbol = ? AND condition LIKE ? AND user_id = 'ml_scanner'
                       AND status = 'ACTIVE' AND created_at > ?
-            """, (sym, cutoff))
+            """, (sym, f"%{tf}%", cutoff))
 
             if cursor.fetchone():
                 skipped_dup += 1
@@ -189,13 +217,37 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
 
             # ── Telegram notification ────────────────────────────────
             emoji = "📈" if best_side == "BUY" else "📉"
+            import random
+            
+            # Diverse phrases for institutional feel
+            phrases = [
+                f"🎯 *SNIPER TARGET ACQUIRED*",
+                f"🚀 *INSTITUTIONAL MOMENTUM DETECTED*",
+                f"💎 *HIGH-CONVICTION SIGNAL*",
+                f"⚡ *NEURAL V8 ANALYSIS COMPLETE*",
+                f"🏦 *SMART MONEY FOOTPRINT FOUND*"
+            ]
+            header = random.choice(phrases)
+            
+            # Market context line
+            market_ctx = ""
+            if asset_class == "MACRO":
+                status = market_status.get("forex", {}).get("status", "OPEN")
+                market_ctx = f"Market Status: *{status}*"
+            elif asset_class == "STOCK":
+                status = market_status.get("stocks", {}).get("status", "OPEN")
+                market_ctx = f"Exchange Status: *{status}*"
+
             tg_msg = (
-                f"{emoji} *ML Signal — {sym}*\n"
-                f"Direction: *{direction}*\n"
-                f"Win Probability: *{best_win_pct:.0f}%*\n"
-                f"Model AUC: {auc:.3f}\n"
-                f"Scanned: {datetime.utcnow().strftime('%H:%M UTC')}\n\n"
-                f"⚠️ _ไม่ใช่คำแนะนำการซื้อขาย_"
+                f"{header}\n\n"
+                f"Asset: *{sym}* ({tf})\n"
+                f"Action: {emoji} *{direction}*\n"
+                f"Confidence: *{best_win_pct:.1f}%*\n"
+                f"{market_ctx}\n"
+                f"Model Edge: {auc:.3f} AUC\n"
+                f"Timestamp: {datetime.utcnow().strftime('%H:%M UTC')}\n\n"
+                f"🔗 [View on TradingView](https://www.tradingview.com/chart/?symbol={sym})\n"
+                f"⚠️ _Institutional Grade Analysis — High Risk_"
             )
             _send_telegram(tg_msg)
 
@@ -207,3 +259,23 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
     conn.close()
 
     return {"scanned": len(scanned_syms), "found": found, "skipped_duplicates": skipped_dup, "errors": errors}
+
+if __name__ == "__main__":
+    import time
+    import sys
+    # Force UTF-8 for Windows Terminal
+    if sys.platform == "win32":
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+    logging.basicConfig(level=logging.INFO)
+    print("\n🚀 Starting ML Sniper V8 Dry-run Scanner...")
+    print("--- Scanning for High-Probability (80%+) Signals ---\n")
+    
+    res = scan_for_high_probability_signals()
+    
+    print(f"\n✅ Scan Complete:")
+    print(f"   Scanned    : {res.get('scanned')} assets/timeframes")
+    print(f"   Found      : {res.get('found')} signals above threshold")
+    print(f"   Duplicates : {res.get('skipped_duplicates')} skipped")
+    print(f"   Errors     : {res.get('errors')}")

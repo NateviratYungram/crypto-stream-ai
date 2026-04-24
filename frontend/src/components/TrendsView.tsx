@@ -33,42 +33,60 @@ const TVWidget = ({ src, config, className = '' }: { src: string, config: any, c
 
 export const TrendsView = () => {
   const { isConnected } = useWebSocket();
+  const { theme } = useMode();
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-950/20 overflow-y-auto pb-8 custom-scrollbar">
+    <div className={`flex-1 flex flex-col h-full overflow-y-auto pb-8 custom-scrollbar transition-colors duration-500 ${
+      theme === 'dark' ? 'bg-slate-950/20' : 'bg-slate-50'
+    }`}>
       {/* Header */}
-      <header className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-slate-950/40 backdrop-blur-3xl z-30 sticky top-0 shrink-0 shadow-2xl">
-        <div className="flex items-center gap-5">
-          <div className="w-12 h-12 bg-blue-600/10 rounded-2xl flex items-center justify-center border border-blue-500/20 shadow-inner">
-            <AreaChart className="w-6 h-6 text-blue-400" />
+      <header className={`h-20 border-b flex items-center justify-between px-8 backdrop-blur-3xl z-30 sticky top-0 shrink-0 transition-all duration-500 ${
+        theme === 'dark' ? 'border-white/5 bg-slate-950/60 shadow-2xl' : 'border-slate-200/60 bg-white/70 shadow-sm'
+      }`}>
+        <div className="flex items-center gap-4">
+          <div className={`w-12 h-12 rounded-xl flex items-center justify-center border shadow-2xl transition-all duration-500 ${
+            theme === 'dark' ? 'bg-blue-600/10 border-blue-500/20 shadow-blue-500/5' : 'bg-blue-50 border-blue-200 shadow-blue-200/20'
+          }`}>
+            <AreaChart className={`w-6 h-6 transition-colors duration-500 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
           </div>
           <div className="space-y-0.5">
-            <h1 className="text-2xl font-black text-white tracking-tighter uppercase italic">Institutional Macro Hub</h1>
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-black text-slate-400 uppercase tracking-widest leading-none flex items-center gap-2">
-                <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 shadow-[0_0_8px_#10b981] animate-pulse' : 'bg-slate-600'}`} />
-                {isConnected ? 'LIVE DATA SYNC · TRADINGVIEW ENGINE' : 'OFFLINE'}
-              </span>
+            <h1 className={`text-2xl font-black tracking-tighter uppercase italic transition-colors duration-500 ${
+              theme === 'dark' ? 'text-white' : 'text-slate-900'
+            }`}>Institutional Macro Hub</h1>
+            <div className="flex items-center gap-4">
+              <div className={`px-3 py-1 rounded-full border flex items-center gap-2 transition-all duration-500 ${
+                theme === 'dark' ? 'bg-slate-900 border-white/10' : 'bg-slate-100 border-slate-200'
+              }`}>
+                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 shadow-[0_0_10px_#10b981] animate-pulse' : 'bg-slate-600'}`} />
+                <span className={`text-[10px] font-black uppercase tracking-[0.2em] transition-colors duration-500 ${
+                  theme === 'dark' ? 'text-slate-400' : 'text-slate-500'
+                }`}>
+                  {isConnected ? 'LIVE DATA SYNC · TRADINGVIEW ENGINE' : 'OFFLINE'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
       </header>
 
       {/* Main Dashboard Grid */}
-      <div className="p-8 max-w-[1920px] mx-auto w-full flex flex-col gap-6">
+      <div className="p-8 max-w-[1920px] mx-auto w-full flex flex-col gap-8">
         
         {/* Top Row: Main Highlight & Indices */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" style={{ minHeight: '520px' }}>
           {/* Top-Left: Global Main Highlight (Spans 2 columns) */}
-          <div className="lg:col-span-2 rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+          <div className={`lg:col-span-2 rounded-[1.5rem] border overflow-hidden transition-all duration-500 flex relative p-1 ${
+            theme === 'dark' ? 'border-white/5 bg-slate-900/40 shadow-2xl hover:border-blue-500/20' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40 hover:border-blue-300'
+          }`}>
             <TVWidget 
               src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
+              className="rounded-[2.2rem]"
               config={{
                 "autosize": true,
                 "symbol": "BINANCE:BTCUSDT",
                 "interval": "D",
                 "timezone": "Etc/UTC",
-                "theme": "dark",
+                "theme": theme,
                 "style": "1",
                 "locale": "th",
                 "enable_publishing": false,
@@ -80,11 +98,14 @@ export const TrendsView = () => {
           </div>
 
           {/* Top-Right: Global Indices List */}
-          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+          <div className={`rounded-[1.5rem] border overflow-hidden transition-all duration-500 flex relative p-1 ${
+            theme === 'dark' ? 'border-white/5 bg-slate-900/40 shadow-2xl hover:border-blue-500/20' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40 hover:border-blue-300'
+          }`}>
             <TVWidget 
               src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              className="rounded-[2.2rem]"
               config={{
-                "colorTheme": "dark",
+                "colorTheme": theme,
                 "dateRange": "12M",
                 "showChart": true,
                 "locale": "th",
@@ -95,8 +116,8 @@ export const TrendsView = () => {
                 "showFloatingTooltip": true,
                 "plotLineColorGrowing": "rgba(41, 98, 255, 1)",
                 "plotLineColorFalling": "rgba(41, 98, 255, 1)",
-                "gridLineColor": "rgba(240, 243, 250, 0)",
-                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "gridLineColor": theme === 'dark' ? "rgba(240, 243, 250, 0)" : "rgba(240, 243, 250, 0.05)",
+                "scaleFontColor": theme === 'dark' ? "rgba(106, 109, 120, 1)" : "rgba(100, 116, 139, 1)",
                 "belowLineFillColorGrowing": "rgba(41, 98, 255, 0.12)",
                 "belowLineFillColorFalling": "rgba(41, 98, 255, 0.12)",
                 "belowLineFillColorGrowingBottom": "rgba(41, 98, 255, 0)",
@@ -122,13 +143,16 @@ export const TrendsView = () => {
         </div>
 
         {/* Bottom Row: Crypto, FX, US Tech */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" style={{ minHeight: '520px' }}>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" style={{ minHeight: '450px' }}>
           {/* Bottom-Left: Crypto Macro */}
-          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+          <div className={`rounded-[1.5rem] border overflow-hidden transition-all duration-500 flex relative p-1 ${
+            theme === 'dark' ? 'border-white/5 bg-slate-900/40 shadow-2xl hover:border-blue-500/20' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40 hover:border-blue-300'
+          }`}>
             <TVWidget 
               src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              className="rounded-[2.2rem]"
               config={{
-                "colorTheme": "dark",
+                "colorTheme": theme,
                 "dateRange": "1M",
                 "showChart": true,
                 "locale": "th",
@@ -139,8 +163,8 @@ export const TrendsView = () => {
                 "showFloatingTooltip": true,
                 "plotLineColorGrowing": "rgba(41, 98, 255, 1)",
                 "plotLineColorFalling": "rgba(41, 98, 255, 1)",
-                "gridLineColor": "rgba(240, 243, 250, 0)",
-                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "gridLineColor": theme === 'dark' ? "rgba(240, 243, 250, 0)" : "rgba(240, 243, 250, 0.05)",
+                "scaleFontColor": theme === 'dark' ? "rgba(106, 109, 120, 1)" : "rgba(100, 116, 139, 1)",
                 "belowLineFillColorGrowing": "rgba(41, 98, 255, 0.12)",
                 "belowLineFillColorFalling": "rgba(41, 98, 255, 0.12)",
                 "belowLineFillColorGrowingBottom": "rgba(41, 98, 255, 0)",
@@ -164,11 +188,14 @@ export const TrendsView = () => {
           </div>
 
           {/* Bottom-Middle: FX & Commodities */}
-          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+          <div className={`rounded-[1.5rem] border overflow-hidden transition-all duration-500 flex relative p-1 ${
+            theme === 'dark' ? 'border-white/5 bg-slate-900/40 shadow-2xl hover:border-blue-500/20' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40 hover:border-blue-300'
+          }`}>
             <TVWidget 
               src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              className="rounded-[2.2rem]"
               config={{
-                "colorTheme": "dark",
+                "colorTheme": theme,
                 "dateRange": "1M",
                 "showChart": true,
                 "locale": "th",
@@ -179,8 +206,8 @@ export const TrendsView = () => {
                 "showFloatingTooltip": true,
                 "plotLineColorGrowing": "rgba(16, 185, 129, 1)",
                 "plotLineColorFalling": "rgba(244, 63, 94, 1)",
-                "gridLineColor": "rgba(240, 243, 250, 0)",
-                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "gridLineColor": theme === 'dark' ? "rgba(240, 243, 250, 0)" : "rgba(240, 243, 250, 0.05)",
+                "scaleFontColor": theme === 'dark' ? "rgba(106, 109, 120, 1)" : "rgba(100, 116, 139, 1)",
                 "belowLineFillColorGrowing": "rgba(16, 185, 129, 0.12)",
                 "belowLineFillColorFalling": "rgba(244, 63, 94, 0.12)",
                 "belowLineFillColorGrowingBottom": "rgba(16, 185, 129, 0)",
@@ -203,11 +230,14 @@ export const TrendsView = () => {
           </div>
 
           {/* Bottom-Right: US Tech & Top Stocks */}
-          <div className="rounded-2xl border border-white/5 overflow-hidden bg-slate-900/40 shadow-2xl flex relative">
+          <div className={`rounded-[1.5rem] border overflow-hidden transition-all duration-500 flex relative p-1 ${
+            theme === 'dark' ? 'border-white/5 bg-slate-900/40 shadow-2xl hover:border-blue-500/20' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40 hover:border-blue-300'
+          }`}>
             <TVWidget 
               src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
+              className="rounded-[2.2rem]"
               config={{
-                "colorTheme": "dark",
+                "colorTheme": theme,
                 "dateRange": "1M",
                 "showChart": true,
                 "locale": "th",
@@ -218,8 +248,8 @@ export const TrendsView = () => {
                 "showFloatingTooltip": true,
                 "plotLineColorGrowing": "rgba(245, 158, 11, 1)",
                 "plotLineColorFalling": "rgba(245, 158, 11, 1)",
-                "gridLineColor": "rgba(240, 243, 250, 0)",
-                "scaleFontColor": "rgba(106, 109, 120, 1)",
+                "gridLineColor": theme === 'dark' ? "rgba(240, 243, 250, 0)" : "rgba(240, 243, 250, 0.05)",
+                "scaleFontColor": theme === 'dark' ? "rgba(106, 109, 120, 1)" : "rgba(100, 116, 139, 1)",
                 "belowLineFillColorGrowing": "rgba(245, 158, 11, 0.12)",
                 "belowLineFillColorFalling": "rgba(245, 158, 11, 0.12)",
                 "belowLineFillColorGrowingBottom": "rgba(245, 158, 11, 0)",

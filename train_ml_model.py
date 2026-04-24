@@ -4,7 +4,7 @@
 Quick CLI to train the ML signal model without needing Airflow.
 
 Usage:
-  python train_ml_model.py              # default symbols, 2000 bars each
+  python train_ml_model.py              # default symbols, 5000 bars each
   python train_ml_model.py --limit 500  # faster, fewer bars
   python train_ml_model.py --scan       # scan paper trade outcomes first
 """
@@ -28,7 +28,7 @@ logging.basicConfig(
 
 def main():
     parser = argparse.ArgumentParser(description="Train CryptoStream AI signal model")
-    parser.add_argument("--limit",  type=int, default=2000,  help="Bars per symbol (default: 2000)")
+    parser.add_argument("--limit",  type=int, default=5000,  help="Bars per symbol (default: 5000)")
     parser.add_argument("--scan",   action="store_true",      help="Scan paper trade outcomes first")
     parser.add_argument("--stats",  action="store_true",      help="Show paper trade stats and exit")
     args = parser.parse_args()

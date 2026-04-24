@@ -314,15 +314,29 @@ TV_EXCHANGE_MAP: dict = {
 }
 
 MACRO_MAPPING = {
+    # Commodities
     "GOLD":   "GC=F",
     "SILVER": "SI=F",
     "OIL":    "CL=F",
     "COPPER": "HG=F",
     "NATGAS": "NG=F",
+    # Indices
     "NASDAQ": "^IXIC",
     "SP500":  "^GSPC",
     "DOW":    "^DJI",
+    # Crypto (yfinance tickers)
     "BTC":    "BTC-USD",
     "ETH":    "ETH-USD",
     "SOL":    "SOL-USD",
+    "BTCUSD": "BTC-USD",
+    "ETHUSD": "ETH-USD",
+    "SOLUSD": "SOL-USD",
+    "XRPUSD": "XRP-USD",
+    # Forex
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "JPY=X",
+    "USDCHF": "CHF=X",
+    "AUDUSD": "AUDUSD=X",
+    "NZDUSD": "NZDUSD=X",
 }

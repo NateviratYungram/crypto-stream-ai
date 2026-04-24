@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  X, Eye, EyeOff, Mail, Lock, User, Phone, Globe, Briefcase,
+  X, Eye, EyeOff, Mail, Lock, User, Phone, Globe,
   ChevronRight, AlertCircle, CheckCircle2, LayoutDashboard
 } from 'lucide-react';
+import { useLanguage } from '../contexts/LanguageContext';
+import { useMode } from '../contexts/ModeContext';
+
 
 interface AuthModalProps {
   open: boolean;
@@ -35,10 +38,19 @@ const INPUT_BASE = `w-full bg-slate-900/60 border rounded-xl px-4 py-3 text-sm f
 export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: AuthModalProps) => {
   const [tab, setTab] = useState<'login' | 'register'>(defaultTab);
   const [showPass, setShowPass] = useState(false);
+  const { theme } = useMode();
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const { t } = useLanguage();
+
+  const inputClasses = `w-full border rounded-xl px-4 py-3 text-sm font-medium transition-all focus:outline-none focus:ring-2 ${
+    theme === 'dark' 
+      ? 'bg-slate-900/60 border-white/8 text-white placeholder:text-slate-600 focus:ring-blue-500/40 autofill:bg-slate-900' 
+      : 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400 focus:ring-blue-500/20 focus:border-blue-500/30 autofill:bg-white'
+  }`;
+
 
   // Login state
   const [loginEmail, setLoginEmail]       = useState('');
@@ -47,7 +59,7 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
   // Register state
   const [reg, setReg] = useState({
     full_name: '', username: '', email: '', password: '', confirm: '',
-    phone: '', country: 'Thailand', account_type: 'retail' as 'retail' | 'institutional', bio: ''
+    phone: '', country: 'Thailand', bio: ''
   });
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -85,7 +97,7 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
         body: JSON.stringify({
           email: reg.email, username: reg.username, full_name: reg.full_name,
           password: reg.password, phone: reg.phone, country: reg.country,
-          account_type: reg.account_type, bio: reg.bio
+          account_type: 'retail', bio: reg.bio
         })
       });
       const data = await res.json();
@@ -125,10 +137,14 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
             transition={{ type: 'spring', damping: 28, stiffness: 300 }}
             className="fixed inset-0 z-[9991] flex items-center justify-center p-4 pointer-events-none"
           >
-            <div className="pointer-events-auto w-full max-w-md max-h-[92vh] overflow-y-auto bg-slate-950 border border-white/8 rounded-[2rem] shadow-2xl shadow-black/60 relative">
+            <div className={`pointer-events-auto w-full max-w-md max-h-[92vh] overflow-y-auto border rounded-[2rem] shadow-2xl relative transition-all duration-500 ${
+              theme === 'dark' ? 'bg-slate-950 border-white/8 shadow-black/60' : 'bg-white border-slate-200 shadow-slate-200/50'
+            }`}>
 
               {/* Glow */}
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-64 h-32 bg-blue-600/10 blur-[60px] rounded-full pointer-events-none" />
+              <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-64 h-32 blur-[60px] rounded-full pointer-events-none transition-colors duration-500 ${
+                theme === 'dark' ? 'bg-blue-600/10' : 'bg-blue-400/5'
+              }`} />
 
               {/* Header */}
               <div className="flex items-center justify-between p-7 pb-0">
@@ -137,27 +153,35 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
                     <LayoutDashboard className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <p className="text-base font-black text-white tracking-tighter">CryptoStream AI</p>
+                    <p className={`text-base font-black tracking-tighter transition-colors duration-500 ${
+                      theme === 'dark' ? 'text-white' : 'text-slate-900'
+                    }`}>CryptoStream AI</p>
                     <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest opacity-80">Tactical Terminal</p>
                   </div>
                 </div>
-                <button onClick={onClose} className="p-2 text-slate-500 hover:text-white rounded-xl hover:bg-white/5 transition-colors">
+                <button onClick={onClose} className={`p-2 rounded-xl transition-colors ${
+                  theme === 'dark' ? 'text-slate-500 hover:text-white hover:bg-white/5' : 'text-slate-400 hover:text-slate-900 hover:bg-slate-100'
+                }`}>
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               {/* Tab Toggle */}
               <div className="px-7 pt-6 pb-0">
-                <div className="flex p-1 bg-slate-900/50 rounded-xl border border-white/5">
-                  {(['login', 'register'] as const).map(t => (
+                <div className={`flex p-1 rounded-xl border transition-all duration-500 ${
+                  theme === 'dark' ? 'bg-slate-900/50 border-white/5' : 'bg-slate-100 border-slate-200'
+                }`}>
+                  {(['login', 'register'] as const).map(tabType => (
                     <button
-                      key={t}
-                      onClick={() => switchTab(t)}
+                      key={tabType}
+                      onClick={() => switchTab(tabType)}
                       className={`flex-1 py-2.5 text-xs font-black uppercase tracking-widest rounded-lg transition-all ${
-                        tab === t ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' : 'text-slate-500 hover:text-slate-300'
+                        tab === tabType 
+                          ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' 
+                          : (theme === 'dark' ? 'text-slate-500 hover:text-slate-300' : 'text-slate-500 hover:text-slate-900')
                       }`}
                     >
-                      {t === 'login' ? 'Login' : 'Register'}
+                      {tabType === 'login' ? t('auth.login') : t('auth.register')}
                     </button>
                   ))}
                 </div>
@@ -189,30 +213,40 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
                     className="p-7 space-y-4"
                   >
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Email</label>
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>{t('auth.email')}</label>
                       <div className="relative">
-                        <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                        <Mail className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${
+                          theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                        }`} />
                         <input
                           type="email" required value={loginEmail}
                           onChange={e => setLoginEmail(e.target.value)}
                           placeholder="your@email.com"
-                          className={`${INPUT_BASE} pl-10 border-white/8 focus:border-blue-500/40`}
+                          className={`${inputClasses} pl-10`}
                         />
                       </div>
                     </div>
 
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Password</label>
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>{t('auth.password')}</label>
                       <div className="relative">
-                        <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                        <Lock className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${
+                          theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                        }`} />
                         <input
                           type={showPass ? 'text' : 'password'} required value={loginPassword}
                           onChange={e => setLoginPassword(e.target.value)}
                           placeholder="Enter password"
-                          className={`${INPUT_BASE} pl-10 pr-10 border-white/8 focus:border-blue-500/40`}
+                          className={`${inputClasses} pl-10 pr-10`}
                         />
                         <button type="button" onClick={() => setShowPass(o => !o)}
-                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
+                          className={`absolute right-3.5 top-1/2 -translate-y-1/2 transition-colors ${
+                            theme === 'dark' ? 'text-slate-600 hover:text-slate-400' : 'text-slate-400 hover:text-slate-600'
+                          }`}>
                           {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
@@ -222,13 +256,15 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
                       type="submit" disabled={loading}
                       className="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 mt-2"
                     >
-                      {loading ? <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" /> : <>Login <ChevronRight className="w-4 h-4" /></>}
+                      {loading ? <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" /> : <>{t('auth.login')} <ChevronRight className="w-4 h-4" /></>}
                     </button>
 
-                    <p className="text-center text-xs text-slate-600 font-medium">
-                      Don't have an account?{' '}
-                      <button type="button" onClick={() => switchTab('register')} className="text-blue-400 hover:text-blue-300 font-black transition-colors">
-                        Register now
+                    <p className={`text-center text-xs font-medium transition-colors duration-500 ${
+                      theme === 'dark' ? 'text-slate-600' : 'text-slate-500'
+                    }`}>
+                      {t('auth.dont_have_account')}{' '}
+                      <button type="button" onClick={() => switchTab('register')} className="text-blue-500 hover:text-blue-400 font-black transition-colors">
+                        {t('auth.register_now')}
                       </button>
                     </p>
                   </motion.form>
@@ -240,69 +276,56 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
                     onSubmit={handleRegister}
                     className="p-7 space-y-4"
                   >
-                    {/* Account Type */}
-                    <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">Account Type</label>
-                      <div className="flex gap-3">
-                        {(['retail', 'institutional'] as const).map(type => (
-                          <button
-                            key={type} type="button"
-                            onClick={() => setReg(r => ({ ...r, account_type: type }))}
-                            className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest border transition-all ${
-                              reg.account_type === type
-                                ? 'bg-blue-600/20 border-blue-500/40 text-blue-400'
-                                : 'border-white/8 text-slate-500 hover:border-white/20 hover:text-slate-300'
-                            }`}
-                          >
-                            {type === 'institutional' ? '🏛 Institutional' : '👤 Retail'}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="mt-1.5 text-[10px] text-slate-600 font-medium">
-                        {reg.account_type === 'institutional'
-                          ? 'Full platform access — quant tools, multi-asset whale tracking, risk engine'
-                          : 'Simplified mode — crypto charts, AI chat, basic signals'}
-                      </p>
-                    </div>
-
                     {/* Full Name */}
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Full Name *</label>
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>{t('auth.full_name')}</label>
                       <div className="relative">
-                        <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                        <User className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 ${
+                          theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                        }`} />
                         <input
                           type="text" required value={reg.full_name}
                           onChange={e => setReg(r => ({ ...r, full_name: e.target.value }))}
                           placeholder="John Doe"
-                          className={`${INPUT_BASE} pl-10 border-white/8 focus:border-blue-500/40`}
+                          className={`${inputClasses} pl-10`}
                         />
                       </div>
                     </div>
 
                     {/* Username */}
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Username *</label>
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>{t('auth.username')}</label>
                       <div className="relative">
-                        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-600 font-black text-sm">@</span>
+                        <span className={`absolute left-3.5 top-1/2 -translate-y-1/2 font-black text-sm ${
+                          theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                        }`}>@</span>
                         <input
                           type="text" required value={reg.username}
                           onChange={e => setReg(r => ({ ...r, username: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') }))}
                           placeholder="trader_john"
-                          className={`${INPUT_BASE} pl-8 border-white/8 focus:border-blue-500/40`}
+                          className={`${inputClasses} pl-8`}
                         />
                       </div>
                     </div>
 
                     {/* Email */}
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Email *</label>
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>{t('auth.email')} *</label>
                       <div className="relative">
-                        <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                        <Mail className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 ${
+                          theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                        }`} />
                         <input
                           type="email" required value={reg.email}
                           onChange={e => setReg(r => ({ ...r, email: e.target.value }))}
                           placeholder="your@email.com"
-                          className={`${INPUT_BASE} pl-10 border-white/8 focus:border-blue-500/40`}
+                          className={`${inputClasses} pl-10`}
                         />
                       </div>
                     </div>
@@ -310,27 +333,35 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
                     {/* Phone + Country */}
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Phone</label>
+                        <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                          theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                        }`}>{t('auth.phone')}</label>
                         <div className="relative">
-                          <Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                          <Phone className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 ${
+                            theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                          }`} />
                           <input
                             type="tel" value={reg.phone}
                             onChange={e => setReg(r => ({ ...r, phone: e.target.value }))}
                             placeholder="+66 81 234 5678"
-                            className={`${INPUT_BASE} pl-10 border-white/8 focus:border-blue-500/40`}
+                            className={`${inputClasses} pl-10`}
                           />
                         </div>
                       </div>
                       <div>
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Country</label>
+                        <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                          theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                        }`}>{t('auth.country')}</label>
                         <div className="relative">
-                          <Globe className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600 pointer-events-none" />
+                          <Globe className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none ${
+                            theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                          }`} />
                           <select
                             value={reg.country}
                             onChange={e => setReg(r => ({ ...r, country: e.target.value }))}
-                            className={`${INPUT_BASE} pl-10 border-white/8 focus:border-blue-500/40 appearance-none`}
+                            className={`${inputClasses} pl-10 appearance-none`}
                           >
-                            {COUNTRIES.map(c => <option key={c} value={c} className="bg-slate-900">{c}</option>)}
+                            {COUNTRIES.map(c => <option key={c} value={c} className={theme === 'dark' ? 'bg-slate-900' : 'bg-white'}>{c}</option>)}
                           </select>
                         </div>
                       </div>
@@ -338,30 +369,38 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
 
                     {/* Bio */}
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">
-                        <Briefcase className="w-3 h-3 inline mr-1" />Bio / Trading Style
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>
+                        <Briefcase className="w-3 h-3 inline mr-1" />{t('auth.bio')}
                       </label>
                       <textarea
                         rows={2} value={reg.bio}
                         onChange={e => setReg(r => ({ ...r, bio: e.target.value }))}
                         placeholder="e.g. Swing trader, focus on BTC + NVDA options…"
-                        className={`${INPUT_BASE} border-white/8 focus:border-blue-500/40 resize-none`}
+                        className={`${inputClasses} resize-none`}
                       />
                     </div>
 
                     {/* Password */}
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Password * (min 6 chars)</label>
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>{t('auth.password_min')}</label>
                       <div className="relative">
-                        <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                        <Lock className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 ${
+                          theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                        }`} />
                         <input
                           type={showPass ? 'text' : 'password'} required value={reg.password}
                           onChange={e => setReg(r => ({ ...r, password: e.target.value }))}
                           placeholder="Create a password"
-                          className={`${INPUT_BASE} pl-10 pr-10 border-white/8 focus:border-blue-500/40`}
+                          className={`${inputClasses} pl-10 pr-10`}
                         />
                         <button type="button" onClick={() => setShowPass(o => !o)}
-                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
+                          className={`absolute right-3.5 top-1/2 -translate-y-1/2 ${
+                            theme === 'dark' ? 'text-slate-600 hover:text-slate-400' : 'text-slate-400 hover:text-slate-600'
+                          }`}>
                           {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
@@ -369,22 +408,28 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
 
                     {/* Confirm Password */}
                     <div>
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">Confirm Password *</label>
+                      <label className={`text-[10px] font-black uppercase tracking-widest mb-1.5 block ${
+                        theme === 'dark' ? 'text-slate-500' : 'text-slate-400'
+                      }`}>{t('auth.confirm_password')}</label>
                       <div className="relative">
-                        <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                        <Lock className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 ${
+                          theme === 'dark' ? 'text-slate-600' : 'text-slate-400'
+                        }`} />
                         <input
                           type={showConfirm ? 'text' : 'password'} required value={reg.confirm}
                           onChange={e => setReg(r => ({ ...r, confirm: e.target.value }))}
                           placeholder="Repeat password"
-                          className={`${INPUT_BASE} pl-10 pr-10 border-white/8 ${reg.confirm && reg.confirm !== reg.password ? 'border-rose-500/50 focus:border-rose-500/50' : 'focus:border-blue-500/40'}`}
+                          className={`${inputClasses} pl-10 pr-10 ${reg.confirm && reg.confirm !== reg.password ? 'border-rose-500/50 focus:border-rose-500/50' : ''}`}
                         />
                         <button type="button" onClick={() => setShowConfirm(o => !o)}
-                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
+                          className={`absolute right-3.5 top-1/2 -translate-y-1/2 ${
+                            theme === 'dark' ? 'text-slate-600 hover:text-slate-400' : 'text-slate-400 hover:text-slate-600'
+                          }`}>
                           {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
                       {reg.confirm && reg.confirm !== reg.password && (
-                        <p className="mt-1 text-[10px] text-rose-400 font-bold">Passwords do not match</p>
+                        <p className="mt-1 text-[10px] text-rose-400 font-bold">{t('auth.pass_no_match')}</p>
                       )}
                     </div>
 
@@ -392,13 +437,15 @@ export const AuthModal = ({ open, defaultTab = 'login', onClose, onSuccess }: Au
                       type="submit" disabled={loading}
                       className="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 mt-2"
                     >
-                      {loading ? <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" /> : <>Create Account <ChevronRight className="w-4 h-4" /></>}
+                      {loading ? <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" /> : <>{t('auth.create_account')} <ChevronRight className="w-4 h-4" /></>}
                     </button>
 
-                    <p className="text-center text-xs text-slate-600 font-medium">
-                      Already have an account?{' '}
-                      <button type="button" onClick={() => switchTab('login')} className="text-blue-400 hover:text-blue-300 font-black transition-colors">
-                        Login
+                    <p className={`text-center text-xs font-medium transition-colors duration-500 ${
+                      theme === 'dark' ? 'text-slate-600' : 'text-slate-500'
+                    }`}>
+                      {t('auth.already_have_account')}{' '}
+                      <button type="button" onClick={() => switchTab('login')} className="text-blue-500 hover:text-blue-400 font-black transition-colors">
+                        {t('auth.login_now')}
                       </button>
                     </p>
                   </motion.form>

@@ -4,6 +4,8 @@
  */
 import { Component, ReactNode } from 'react';
 import { AlertTriangle, RefreshCcw, ChevronDown, ChevronUp } from 'lucide-react';
+import { ModeContext } from '../contexts/ModeContext';
+
 
 interface Props {
   children: ReactNode;
@@ -42,67 +44,98 @@ export class ErrorBoundary extends Component<Props, State> {
     const isNetworkError = errorMsg.toLowerCase().includes('fetch') || errorMsg.toLowerCase().includes('network');
 
     return (
-      <div className="flex-1 flex items-center justify-center p-10 min-h-[400px]">
-        <div className="w-full max-w-lg bg-slate-900/60 backdrop-blur-2xl border border-rose-500/20 rounded-[2rem] p-10 space-y-6 shadow-2xl shadow-rose-900/20">
-          {/* Icon */}
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 bg-rose-600/10 rounded-2xl flex items-center justify-center border border-rose-500/20 shrink-0">
-              <AlertTriangle className="w-7 h-7 text-rose-400" />
-            </div>
-            <div>
-              <h2 className="text-lg font-black text-white uppercase tracking-tight">
-                {tabName} Unavailable
-              </h2>
-              <p className="text-[11px] font-bold text-rose-400 uppercase tracking-widest mt-1">
-                {isNetworkError ? 'Connection Error' : 'Render Error'}
-              </p>
-            </div>
-          </div>
-
-          {/* Message */}
-          <div className="space-y-2">
-            <p className="text-sm text-slate-400 leading-relaxed">
-              {isNetworkError
-                ? 'ระบบไม่สามารถดึงข้อมูลได้ในขณะนี้ กรุณาตรวจสอบว่า Backend และ Docker ทำงานอยู่ หรือลองใหม่อีกครั้ง'
-                : 'เกิดข้อผิดพลาดขณะแสดงผลส่วนนี้ ข้อมูลยังคงอยู่ครบถ้วน คุณสามารถลอง Reset ได้เลย'}
-            </p>
-
-            {/* Collapsible technical details */}
-            <button
-              onClick={() => this.setState(s => ({ showDetails: !s.showDetails }))}
-              className="flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-400 uppercase tracking-widest transition-colors mt-2"
-            >
-              {this.state.showDetails ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              Technical Details
-            </button>
-
-            {this.state.showDetails && (
-              <div className="mt-2 p-4 bg-slate-950/60 rounded-xl border border-white/5 overflow-auto max-h-32">
-                <code className="text-xs text-rose-300 font-mono break-words whitespace-pre-wrap">
-                  {this.state.error?.stack || errorMsg}
-                </code>
+      <ModeContext.Consumer>
+        {({ theme }) => (
+          <div className="flex-1 flex items-center justify-center p-10 min-h-[400px]">
+            <div className={`w-full max-w-lg backdrop-blur-2xl border rounded-[2rem] p-10 space-y-6 shadow-2xl transition-all duration-500 ${
+              theme === 'dark' 
+                ? 'bg-slate-900/60 border-rose-500/20 shadow-rose-900/20' 
+                : 'bg-white border-slate-200 shadow-slate-200/50'
+            }`}>
+              {/* Icon */}
+              <div className="flex items-center gap-4">
+                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border shrink-0 ${
+                  theme === 'dark' ? 'bg-rose-600/10 border-rose-500/20' : 'bg-rose-50 border-rose-200'
+                }`}>
+                  <AlertTriangle className={`w-7 h-7 ${theme === 'dark' ? 'text-rose-400' : 'text-rose-500'}`} />
+                </div>
+                <div>
+                  <h2 className={`text-lg font-black uppercase tracking-tight ${
+                    theme === 'dark' ? 'text-white' : 'text-slate-900'
+                  }`}>
+                    {tabName} Unavailable
+                  </h2>
+                  <p className={`text-[11px] font-bold uppercase tracking-widest mt-1 ${
+                    theme === 'dark' ? 'text-rose-400' : 'text-rose-600'
+                  }`}>
+                    {isNetworkError ? 'Connection Error' : 'Render Error'}
+                  </p>
+                </div>
               </div>
-            )}
-          </div>
 
-          {/* Actions */}
-          <div className="flex gap-3">
-            <button
-              onClick={this.handleReset}
-              className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-lg shadow-blue-600/20 active:scale-95"
-            >
-              <RefreshCcw className="w-4 h-4" />
-              Reset Module
-            </button>
-            <button
-              onClick={() => window.location.reload()}
-              className="flex items-center gap-2 px-6 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95"
-            >
-              Full Reload
-            </button>
+              {/* Message */}
+              <div className="space-y-2">
+                <p className={`text-sm leading-relaxed ${
+                  theme === 'dark' ? 'text-slate-400' : 'text-slate-600'
+                }`}>
+                  {isNetworkError
+                    ? 'ระบบไม่สามารถดึงข้อมูลได้ในขณะนี้ กรุณาตรวจสอบว่า Backend และ Docker ทำงานอยู่ หรือลองใหม่อีกครั้ง'
+                    : 'เกิดข้อผิดพลาดขณะแสดงผลส่วนนี้ ข้อมูลยังคงอยู่ครบถ้วน คุณสามารถลอง Reset ได้เลย'}
+                </p>
+
+                {/* Collapsible technical details */}
+                <button
+                  onClick={() => this.setState(s => ({ showDetails: !s.showDetails }))}
+                  className={`flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest transition-colors mt-2 ${
+                    theme === 'dark' ? 'text-slate-600 hover:text-slate-400' : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  {this.state.showDetails ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  Technical Details
+                </button>
+
+                {this.state.showDetails && (
+                  <div className={`mt-2 p-4 rounded-xl border overflow-auto max-h-32 ${
+                    theme === 'dark' ? 'bg-slate-950/60 border-white/5' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <code className={`text-xs font-mono break-words whitespace-pre-wrap ${
+                      theme === 'dark' ? 'text-rose-300' : 'text-rose-700'
+                    }`}>
+                      {this.state.error?.stack || errorMsg}
+                    </code>
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3">
+                <button
+                  onClick={this.handleReset}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-lg active:scale-95 ${
+                    theme === 'dark'
+                      ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30'
+                  }`}
+                >
+                  <RefreshCcw className="w-4 h-4" />
+                  Reset Module
+                </button>
+                <button
+                  onClick={() => window.location.reload()}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 ${
+                    theme === 'dark'
+                      ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                      : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
+                  }`}
+                >
+                  Full Reload
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        )}
+      </ModeContext.Consumer>
     );
+
   }
 }

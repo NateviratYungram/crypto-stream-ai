@@ -6,6 +6,8 @@ from typing import Dict, List, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
+from .institutional_guard import InstitutionalGuard
+
 class GuardResult:
     def __init__(self, passed: bool, message: str, severity: str = "INFO"):
         self.passed = passed

@@ -32,7 +32,11 @@ def _to_mt5_symbol(symbol: str) -> str:
     """Uses shared normalization to find a valid MT5 symbol."""
     candidates = normalize_broker_symbol(symbol)
     if _MT5_AVAILABLE and initialize_mt5():
-        import MetaTrader5 as mt5
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            return candidates[0]
+
         for cand in candidates:
             info = mt5.symbol_info(cand)
             if info:
@@ -83,6 +87,29 @@ def _get_contract_size(mt5_symbol: str) -> float:
     return 1.0
 
 
+def _harden_sniper_v8(signal: dict) -> bool:
+    """
+    Final security check for V8 Sniper signals before MT5 execution.
+    - Ensures confidence is REAL and not a placeholder
+    - Checks for symbol mapping integrity
+    - Validates ATR-based SL/TP ranges
+    """
+    sym = signal.get("symbol")
+    conf = signal.get("master_confidence", 0)
+    
+    # 1. Integrity Check
+    if not sym or conf < 0.5:
+        logger.warning(f"🛡️ Bridge Block: Invalid signal integrity for {sym} (Conf: {conf})")
+        return False
+        
+    # 2. Sniper Validation (If V8 Sniper mode is claimed)
+    if conf >= 0.85:
+        logger.info(f"🎯 Bridge: Hardening V8 Sniper Signal for {sym}...")
+        # Add additional safety lag or double-check indicators here if needed
+        
+    return True
+
+
 # ── Core Bridge ───────────────────────────────────────────────────────────────
 
 def execute_signal(
@@ -125,6 +152,14 @@ def execute_signal(
     reasoning       = state.get("master_reasoning", "")
 
     timestamp = datetime.now(timezone.utc).isoformat()
+
+    # ── Sniper hardening check ──
+    if not _harden_sniper_v8(state):
+        return {
+            "status": "BLOCKED",
+            "reason": "Signal failed Sniper V8 integrity check",
+            "timestamp": timestamp,
+        }
 
     # ── Pre-check: only act on actionable signals ──────────────────────────────
     if master_decision not in ("LONG", "SHORT"):

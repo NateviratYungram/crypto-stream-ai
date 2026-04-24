@@ -49,7 +49,11 @@ def take_account_snapshot() -> Dict[str, Any]:
     conn = None
     try:
         from intelligence.mt5_connector import get_mt5_account_info, initialize_mt5
-        import MetaTrader5 as mt5
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            return {"error": "MetaTrader5 not available"}
+
         
         if not initialize_mt5():
             return {"error": "Failed to connect to MT5"}

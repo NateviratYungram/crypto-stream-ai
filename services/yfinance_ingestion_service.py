@@ -4,13 +4,15 @@ CryptoStream AI — yfinance Ingestion Service
 Polls Yahoo Finance and persists OHLCV candles into the market_ohlcv table.
 
 Priority groups:
-  A — MACRO (11 symbols):    every 15 min  | timeframes: 15m, 1h, 1d
-  B — NASDAQ 100 (100 syms): every 24 h    | timeframe:  1d only
-  C — S&P 500 (~500 syms):   every 24 h    | timeframe:  1d only (batched)
+  A — MT5 Assets (Tradeable): every 15 min  | timeframes: 15m, 1h, 4h, 1d
+  B — Removed (On-demand only)
+  C — Removed (On-demand only)
 
-On first start the service backfills:
-  - MACRO   → 60 days of 15m + 1 year of 1d
-  - Stocks  → 1 year of 1d
+On first start the service backfills maximum available depth:
+  - 15m → 60 days (Yahoo Limit)
+  - 1h  → 730 days / 2 years (Yahoo Limit)
+  - 4h  → 2 years
+  - 1d  → 10 years+ (Historical Depth)
 
 Run standalone:
     python -m services.yfinance_ingestion_service
@@ -55,14 +57,15 @@ DB_CONFIG = {
 # ---------------------------------------------------------------------------
 # Symbol groups
 # ---------------------------------------------------------------------------
-# Import inline to avoid circular deps when run as __main__
+# Import inline to avoid circular deps
 def _load_symbols():
-    from intelligence.constants import MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS
-    return MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS
+    from intelligence.ml.signal_model import TRADE_TRAIN_SYMBOLS
+    # Extract unique tickers from the (symbol, class, tf) tuples
+    tickers = list(set([s[0] for s in TRADE_TRAIN_SYMBOLS]))
+    return tickers
 
-# Poll intervals (seconds)
-MACRO_POLL_INTERVAL  = int(os.getenv("YF_MACRO_POLL_INTERVAL",  str(15 * 60)))   # 15 min
-STOCKS_POLL_INTERVAL = int(os.getenv("YF_STOCKS_POLL_INTERVAL", str(24 * 3600))) # 24 h
+# Poll interval (seconds)
+MT5_POLL_INTERVAL = int(os.getenv("MT5_POLL_INTERVAL", str(15 * 60)))  # 15 min
 
 # yfinance batch size (avoid rate limiting)
 YF_BATCH_SIZE = int(os.getenv("YF_BATCH_SIZE", "20"))
@@ -133,14 +136,20 @@ def _with_backoff(fn, max_retries: int = 4, base_delay: float = 5.0):
 # ---------------------------------------------------------------------------
 # yfinance fetch + normalise
 # ---------------------------------------------------------------------------
-def fetch_ohlcv(tickers: List[str], period: str, interval: str) -> List[dict]:
+def fetch_ohlcv(symbols: List[str], period: str, interval: str) -> List[dict]:
     """
-    Download OHLCV from yfinance for a list of tickers.
-    Retries with exponential backoff on network/rate-limit errors.
-    Returns a flat list of row dicts ready for upsert_ohlcv().
+    Download OHLCV from yfinance.
+    - symbols: MT5 style names (e.g. BTCUSD, GOLD)
+    Maps them to yf tickers (e.g. BTC-USD, GC=F) for download.
+    Returns rows with MT5 style names for database.
     """
-    if not tickers:
+    if not symbols:
         return []
+
+    from intelligence.constants import MACRO_MAPPING
+    # Map symbols to tickers
+    ticker_to_symbol = {MACRO_MAPPING.get(s, s): s for s in symbols}
+    tickers = list(ticker_to_symbol.keys())
 
     def _download():
         return yf.download(
@@ -156,32 +165,25 @@ def fetch_ohlcv(tickers: List[str], period: str, interval: str) -> List[dict]:
     try:
         raw = _with_backoff(_download)
     except Exception as e:
-        logger.error(f"yfinance download failed after retries ({tickers[:3]}…): {e}")
+        logger.error(f"yfinance download failed ({tickers[:3]}…): {e}")
         return []
 
     if raw is None or raw.empty:
         return []
 
     rows = []
-
-    # Single ticker: columns are just Open/High/Low/Close/Volume
     if len(tickers) == 1:
         ticker = tickers[0]
-        df = raw.copy()
-        rows.extend(_df_to_rows(df, ticker, interval))
+        symbol = ticker_to_symbol[ticker]
+        rows.extend(_df_to_rows(raw, symbol, interval))
     else:
-        # Multi ticker: MultiIndex (Price, Ticker) columns
-        for ticker in tickers:
+        for ticker, symbol in ticker_to_symbol.items():
             try:
-                if ticker in raw.columns.get_level_values(1):
-                    df = raw.xs(ticker, axis=1, level=1).dropna(how="all")
-                elif ticker in raw.columns.get_level_values(0):
+                if ticker in raw.columns.get_level_values(0):
                     df = raw[ticker].dropna(how="all")
-                else:
-                    continue
-                rows.extend(_df_to_rows(df, ticker, interval))
+                    rows.extend(_df_to_rows(df, symbol, interval))
             except Exception as e:
-                logger.warning(f"Failed to extract data for {ticker}: {e}")
+                logger.warning(f"Failed to extract {ticker}/{symbol}: {e}")
 
     return rows
 
@@ -219,77 +221,59 @@ def _df_to_rows(df: pd.DataFrame, ticker: str, interval: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 # Backfill on startup
 # ---------------------------------------------------------------------------
-def backfill(conn, macro_mapping: dict, nasdaq: List[str], sp500: List[str]):
+def backfill(conn, symbols: List[str]):
     """
-    Download historical data on first start.
-    - MACRO: 60d of 15m + 1y of 1d
-    - Stocks (NASDAQ100 + SP500): 1y of 1d
+    Download maximum historical data for tradeable assets on startup.
+    Yahoo Finance Limits:
+    - 15m: max 60d
+    - 1h:  max 730d (2 years)
+    - 1d:  max (we take 10y)
     """
-    logger.info("=== Starting historical backfill ===")
+    logger.info("=== Starting Deep Historical Backfill (MT5 Assets) ===")
 
-    macro_tickers = list(macro_mapping.values())
-
-    # 1. Macro 15m (60 days)
-    logger.info(f"Backfilling {len(macro_tickers)} macro tickers @ 15m / 60d...")
-    rows = fetch_ohlcv(macro_tickers, period="60d", interval="15m")
+    # 1. 15m (60 days - Yahoo Limit)
+    logger.info(f"Backfilling {len(symbols)} assets @ 15m / 60d (MAX)...")
+    rows = fetch_ohlcv(symbols, period="60d", interval="15m")
     if rows:
         n = upsert_ohlcv(conn, rows)
-        logger.info(f"  → Upserted {n:,} rows (macro 15m)")
+        logger.info(f"  → Upserted {n:,} rows (15m)")
 
-    # 2. Macro 1h (180 days)
-    rows = fetch_ohlcv(macro_tickers, period="180d", interval="1h")
+    # 2. 1h (2 years - Yahoo Limit)
+    logger.info(f"Backfilling {len(symbols)} assets @ 1h / 730d (MAX)...")
+    rows = fetch_ohlcv(symbols, period="730d", interval="1h")
     if rows:
         n = upsert_ohlcv(conn, rows)
-        logger.info(f"  → Upserted {n:,} rows (macro 1h)")
+        logger.info(f"  → Upserted {n:,} rows (1h)")
 
-    # 3. Macro 1d (2 years)
-    rows = fetch_ohlcv(macro_tickers, period="2y", interval="1d")
+    # 3. 4h (2 years)
+    logger.info(f"Backfilling {len(symbols)} assets @ 4h / 730d...")
+    rows = fetch_ohlcv(symbols, period="730d", interval="4h")
     if rows:
         n = upsert_ohlcv(conn, rows)
-        logger.info(f"  → Upserted {n:,} rows (macro 1d)")
+        logger.info(f"  → Upserted {n:,} rows (4h)")
 
-    # 4. NASDAQ 100 + SP500 daily — batched to avoid rate limits
-    all_stocks = list(set(nasdaq + sp500))
-    logger.info(f"Backfilling {len(all_stocks)} stock tickers @ 1d / 1y (batched)...")
-    total = 0
-    for i in range(0, len(all_stocks), YF_BATCH_SIZE):
-        batch = all_stocks[i: i + YF_BATCH_SIZE]
-        rows = fetch_ohlcv(batch, period="1y", interval="1d")
-        if rows:
-            total += upsert_ohlcv(conn, rows)
-        time.sleep(YF_BATCH_SLEEP)
+    # 4. 1d (10 years)
+    logger.info(f"Backfilling {len(symbols)} assets @ 1d / 10y...")
+    rows = fetch_ohlcv(symbols, period="10y", interval="1d")
+    if rows:
+        n = upsert_ohlcv(conn, rows)
+        logger.info(f"  → Upserted {n:,} rows (1d)")
 
-    logger.info(f"  → Upserted {total:,} rows (stocks 1d)")
-    logger.info("=== Backfill complete ===")
+    logger.info("=== Deep Backfill complete ===")
 
 
 # ---------------------------------------------------------------------------
 # Incremental refresh
 # ---------------------------------------------------------------------------
-def refresh_macro(conn, macro_mapping: dict):
-    """Fetch the latest 15m / 1h candles for macro symbols."""
-    tickers = list(macro_mapping.values())
-    logger.info(f"Refreshing {len(tickers)} macro tickers @ 15m + 1h...")
+def refresh_assets(conn, symbols: List[str]):
+    """Fetch the latest 15m / 1h / 4h / 1d candles for tradeable symbols."""
+    logger.info(f"Refreshing {len(symbols)} tradeable assets @ 15m, 1h, 4h, 1d...")
 
-    for interval, period in [("15m", "2d"), ("1h", "7d"), ("1d", "5d")]:
-        rows = fetch_ohlcv(tickers, period=period, interval=interval)
+    for interval, period in [("15m", "2d"), ("1h", "7d"), ("4h", "14d"), ("1d", "30d")]:
+        rows = fetch_ohlcv(symbols, period=period, interval=interval)
         if rows:
             n = upsert_ohlcv(conn, rows)
-            logger.info(f"  macro {interval}: upserted {n:,} rows")
-
-
-def refresh_stocks(conn, nasdaq: List[str], sp500: List[str]):
-    """Fetch the latest daily candle for all stocks (batched)."""
-    all_stocks = list(set(nasdaq + sp500))
-    logger.info(f"Refreshing {len(all_stocks)} stock tickers @ 1d...")
-    total = 0
-    for i in range(0, len(all_stocks), YF_BATCH_SIZE):
-        batch = all_stocks[i: i + YF_BATCH_SIZE]
-        rows = fetch_ohlcv(batch, period="5d", interval="1d")
-        if rows:
-            total += upsert_ohlcv(conn, rows)
-        time.sleep(YF_BATCH_SLEEP)
-    logger.info(f"  stocks 1d: upserted {total:,} rows")
+            logger.info(f"  {interval}: upserted {n:,} rows")
 
 
 # ---------------------------------------------------------------------------
@@ -299,11 +283,10 @@ def main():
     logger.info("=" * 60)
     logger.info("CryptoStream AI — yfinance Ingestion Service")
     logger.info(f"DB: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}")
-    logger.info(f"Macro poll interval : {MACRO_POLL_INTERVAL // 60} min")
-    logger.info(f"Stocks poll interval: {STOCKS_POLL_INTERVAL // 3600} h")
+    logger.info(f"Poll interval : {MT5_POLL_INTERVAL // 60} min")
     logger.info("=" * 60)
 
-    MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS = _load_symbols()
+    TICKERS = _load_symbols()
 
     # Wait for DB to be ready (Docker startup race)
     for attempt in range(30):
@@ -320,23 +303,18 @@ def main():
 
     # One-time backfill on startup
     try:
-        backfill(conn, MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS)
+        backfill(conn, TICKERS)
     except Exception as e:
         logger.error(f"Backfill error: {e}", exc_info=True)
 
-    last_macro_refresh  = 0.0
-    last_stocks_refresh = 0.0
+    last_refresh = 0.0
 
     while True:
         now = time.time()
         try:
-            if now - last_macro_refresh >= MACRO_POLL_INTERVAL:
-                refresh_macro(conn, MACRO_MAPPING)
-                last_macro_refresh = now
-
-            if now - last_stocks_refresh >= STOCKS_POLL_INTERVAL:
-                refresh_stocks(conn, NASDAQ_100_TICKERS, SP500_TICKERS)
-                last_stocks_refresh = now
+            if now - last_refresh >= MT5_POLL_INTERVAL:
+                refresh_assets(conn, TICKERS)
+                last_refresh = now
 
         except psycopg2.OperationalError:
             logger.warning("DB connection lost — reconnecting...")
@@ -348,9 +326,9 @@ def main():
         except Exception as e:
             logger.error(f"Refresh error: {e}", exc_info=True)
 
-        # Sleep until next macro poll is due
-        sleep_for = max(30, MACRO_POLL_INTERVAL - (time.time() - last_macro_refresh))
-        logger.debug(f"Sleeping {sleep_for:.0f}s until next macro refresh...")
+        # Sleep until next poll is due
+        sleep_for = max(30, MT5_POLL_INTERVAL - (time.time() - last_refresh))
+        logger.debug(f"Sleeping {sleep_for:.0f}s until next refresh...")
         time.sleep(sleep_for)
 
 

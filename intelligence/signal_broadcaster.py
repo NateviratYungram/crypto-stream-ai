@@ -175,22 +175,36 @@ class SignalBroadcaster:
         # Confidence as percentage
         conf_pct = confidence * 100 if isinstance(confidence, float) and confidence <= 1 else confidence
 
+        # Extract extra ML metadata for Sniper V8
+        v8_precision = state.get("ml_precision_score", "High")
+        is_sniper = conf_pct >= 85
+        
         if decision == "LONG":
-            emoji = "LONG"
+            emoji = "🎯 SNIPER LONG" if is_sniper else "📈 LONG"
         elif decision == "SHORT":
-            emoji = "SHORT"
+            emoji = "🎯 SNIPER SHORT" if is_sniper else "📉 SHORT"
         else:
-            emoji = "HOLD"
+            emoji = "⏳ HOLD"
 
         lines = [
             f"[{emoji}] {symbol} {timeframe}",
             f"{'=' * 22}",
-            f"Confidence : {conf_pct:.0f}%",
+            f"Neural Confidence : {conf_pct:.1f}%",
+            f"Clinical Precision : {v8_precision}",
             f"Entry Zone : {entry_low} - {entry_high}",
             f"Stop Loss  : {sl_price}",
             f"Take Profit: TP1={tp1}  TP2={tp2}",
             f"Risk/Reward: 1:{rr}",
         ]
+        
+        # ── Sniper Chart Link (Visual Confirmation) ──
+        # Provide a quick TradingView link for visual double-check
+        tv_sym = f"FX:{symbol}" if asset_class == "FOREX" else symbol
+        if symbol == "GOLD": tv_sym = "OANDA:XAUUSD"
+        if symbol == "BTCUSD": tv_sym = "BINANCE:BTCUSDT"
+        
+        chart_link = f"https://www.tradingview.com/chart/?symbol={tv_sym}"
+        lines.append(f"🔍 View Chart: [TradingView]({chart_link})")
 
         if sentiment:
             lines.append(f"Sentiment  : {sentiment}")

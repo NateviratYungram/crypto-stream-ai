@@ -85,6 +85,18 @@ def create_master_agent(client, config: dict = None):
         # Reflector Agent Integration
         reflexive = get_reflexive_context(client, MODEL_ID)
         lessons = reflexive.get("lessons", "No reflexive lessons ready.")
+        bias_adj = reflexive.get("bias_adjustments", {})
+
+        # Weights — Dynamic adjustment based on reflexive performance
+        w_tech = cfg["master_weight_technical"] * bias_adj.get("tech_weight", 1.0)
+        w_sent = cfg["master_weight_sentiment"] * bias_adj.get("sent_weight", 1.0)
+        w_conf = cfg["master_weight_confluence"] * bias_adj.get("conf_weight", 1.0)
+
+        # Normalize weights to ensure they sum to ~1.0
+        total_w = w_tech + w_sent + w_conf
+        w_tech /= total_w
+        w_sent /= total_w
+        w_conf /= total_w
 
         # Hurst context
         hurst = state.get("indicator_summary", {}).get("hurst", {})
@@ -103,6 +115,7 @@ def create_master_agent(client, config: dict = None):
         # Intelligence V6: Portfolio Risk Analysis
         portfolio_risk = risk_manager.check_correlation_risk(symbol)
         protection     = risk_manager.check_equity_protection()
+        news_shield    = risk_manager.check_news_shield(symbol)
 
         # Weights
         w_tech = cfg["master_weight_technical"]
@@ -122,6 +135,8 @@ def create_master_agent(client, config: dict = None):
             (sentiment_score * w_sent) +
             (confluence_score * (1 if trade_decision == "LONG" else -1 if trade_decision == "SHORT" else 0) * w_conf)
         )
+        # Apply reflexive risk scale to composite if helpful
+        composite *= bias_adj.get("risk_scale", 1.0)
 
         entry_zone = state.get("entry_zone", {})
         stop_loss  = state.get("stop_loss", {})
@@ -139,6 +154,7 @@ def create_master_agent(client, config: dict = None):
         sweeps  = smc.get("sweeps", {})
         htf_data = state.get("indicator_summary", {}).get("higher_timeframe", {})
         htf_bias = htf_data.get("bias", "NEUTRAL")
+        fomo     = state.get("retail_fomo", {})
 
         min_conf = float(cfg["master_confidence_threshold"])
 
@@ -163,6 +179,12 @@ H100 (Regime Persistence): {h100} ({h_regime})
 *Persistence (H>0.5) = Trends likely continue.
 *Anti-Persistence (H<0.5) = Mean reversion / Random walk.
 
+=== RETAIL FOMO (Liquidation Heatmap) ===
+Status: {fomo.get('retail_sentiment', 'UNKNOWN')}
+Long Ratio: {fomo.get('long_percent', 0)}% | Short Ratio: {fomo.get('short_percent', 0)}%
+Institutional Bias: {fomo.get('institutional_bias', 'UNKNOWN')}
+*If Retail is EXTREME_LONG_FOMO, look for SHORT traps. If EXTREME_SHORT_FOMO, look for LONG traps.
+
 === REFLEXIVE MEMORY (Lessons from Past Trades) ===
 {lessons}
 
@@ -174,9 +196,11 @@ Score: {integrity_score}/100 | Status: {drift_status}
 === PORTFOLIO RISK GUARDIAN (Correlation & Protection) ===
 Status: {portfolio_risk.get('status', 'UNKNOWN')} | Max Correlation: {portfolio_risk.get('max_corr', 0)}
 Equity Protection: {protection.get('status', 'UNKNOWN')} (Drawdown: {protection.get('current_dd', 0)}%)
+News Shield: {news_shield.get('status', 'UNKNOWN')} ({news_shield.get('reason', 'None')})
 Conflicts: {json.dumps(portfolio_risk.get('conflicts', []), indent=2)}
 *If status = HIGH_CORRELATION, reduce size or skip to avoid overlap.
 *If Protection = BLOCKED, NO_TRADE is mandatory.
+*If News Shield = BLOCKED, NO_TRADE is mandatory to avoid macro slippage.
 
 === AGENT REPORTS ===
 Technical ({w_tech*100:.0f}%): {indicator_report[:350]}
@@ -246,6 +270,8 @@ Respond ONLY with valid JSON:
                     rr_ratio=float(rr),
                     balance=100.0 # Standardize to % for now
                 )
+                # Apply reflexive scaling (e.g. scale down if recent performance is poor)
+                kelly_size *= bias_adj.get("risk_scale", 1.0)
 
         except Exception as e:
             logger.error(f"MasterAgent LLM error: {e}")
@@ -294,6 +320,11 @@ Respond ONLY with valid JSON:
         if protection.get("status") == "BLOCKED":
             master_decision = "NO_TRADE"
             reasoning = f"CRITICAL BLOCKED: Equity Protection active ({protection.get('reason')}). Daily DD: {protection.get('current_dd')}%. " + reasoning
+
+        # V9: News Shield Hard Block
+        if news_shield.get("status") == "BLOCKED":
+            master_decision = "NO_TRADE"
+            reasoning = f"NEWS SHIELD BLOCKED: High impact macro news pending. {news_shield.get('reason')}. " + reasoning
 
         # ── Format final report ───────────────────────────────────────────────
         dec_emoji = {"LONG": "🚀", "SHORT": "🔻", "NO_TRADE": "🛑"}.get(master_decision, "🛑")

@@ -109,3 +109,29 @@ class NotificationService:
             f"Current Value: {current_val}"
         )
         return await self.broadcast(msg)
+        
+    async def notify_market_opened(self, market_name: str):
+        """Called when a major market transitions to OPEN."""
+        msg = (
+            f"🟢 *MARKET OPENED*\n"
+            f"The {market_name} market is now open for trading!\n"
+            f"Volatility and institutional volume are expected to rise. Trade with caution."
+        )
+        return await self.broadcast(msg)
+
+    async def notify_market_closed(self, market_name: str, reason: str = "Regular Close"):
+        """Called when a major market transitions to CLOSED/HOLIDAY."""
+        msg = (
+            f"🔴 *MARKET CLOSED*\n"
+            f"The {market_name} market is now closed. ({reason})\n"
+            f"Stay mindful of widening spreads and weekend gaps."
+        )
+        return await self.broadcast(msg)
+
+    async def notify_system_startup(self):
+        """Called when the backend fully initializes."""
+        msg = (
+            f"🚀 *System Online*\n"
+            f"CryptoStream AI Backend is up and running. All monitoring systems and market tracking are active."
+        )
+        return await self.broadcast(msg)

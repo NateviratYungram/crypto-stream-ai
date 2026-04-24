@@ -91,16 +91,51 @@ Format:
         logger.error(f"Reflector: LLM generation failed: {e}")
         return f"Reflexive analysis failed. Quick Stats: {wins}W/{losses}L. Focus on rigorous risk management."
 
+def get_bias_adjustments(outcomes: List[Dict[str, Any]] = None) -> Dict[str, float]:
+    """
+    Calculates suggested weighting shifts for the Master Agent.
+    If recent performance is poor, it suggests reducing technical weights.
+    """
+    if outcomes is None:
+        outcomes = get_recent_outcomes(10)
+    
+    if not outcomes:
+        return {"tech_weight": 1.0, "sent_weight": 1.0, "conf_weight": 1.0, "risk_scale": 1.0}
+
+    # Simple logic: If win rate < 40%, reduce technical weight & scale down risk
+    wins = sum(1 for o in outcomes if o['outcome'] == 'WIN')
+    win_rate = wins / len(outcomes)
+    
+    adj = {
+        "tech_weight": 1.0,
+        "sent_weight": 1.0,
+        "conf_weight": 1.0,
+        "risk_scale": 1.0
+    }
+    
+    if win_rate < 0.4:
+        logger.info(f"🧠 Reflector CORE: Recent Win Rate {win_rate:.1%} is LOW. Applying defensive adjustments.")
+        adj["tech_weight"] = 0.8  # Trust technicals 20% less
+        adj["risk_scale"] = 0.5   # Scale down Kelly size by 50%
+    elif win_rate > 0.7:
+        logger.info(f"🧠 Reflector CORE: Recent Win Rate {win_rate:.1%} is HIGH. Applying opportunistic adjustments.")
+        adj["risk_scale"] = 1.2   # 20% boost to sizing (with caution)
+
+    return adj
+
 def get_reflexive_context(client, model_id: str) -> Dict[str, Any]:
-    """Wraps lessons and stats for the decision pipeline."""
+    """Wraps lessons, stats, and bias adjustments for the decision pipeline."""
+    outcomes = get_recent_outcomes(10)
     lessons = generate_reflexive_lessons(client, model_id)
-    outcomes = get_recent_outcomes(5)
+    bias_adj = get_bias_adjustments(outcomes)
     
     return {
         "lessons": lessons,
+        "bias_adjustments": bias_adj,
         "recent_performance": {
             "wins": sum(1 for o in outcomes if o['outcome'] == 'WIN'),
             "losses": sum(1 for o in outcomes if o['outcome'] == 'LOSS'),
+            "win_rate": sum(1 for o in outcomes if o['outcome'] == 'WIN') / len(outcomes) if outcomes else 0
         },
         "reflexive_timestamp": datetime.now(timezone.utc).isoformat()
     }
