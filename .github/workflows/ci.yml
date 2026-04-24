@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── 1. Python Lint ────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff
+        run: |
+          ruff check \
+            airflow/dags/ \
+            streaming/ \
+            intelligence/ \
+            --select E,F,W,I \
+            --ignore E501
+
+  # ── 2. Airflow DAG Import Tests ──────────────────────────────────────────
+  dag-tests:
+    name: Airflow DAG import tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Airflow + DAG dependencies
+        run: |
+          pip install \
+            "apache-airflow==2.8.1" \
+            psycopg2-binary \
+            pandas \
+            pyarrow \
+            requests \
+            yfinance==0.2.36 \
+            multitasking==0.0.9
+
+      - name: Verify all DAGs parse without errors
+        env:
+          AIRFLOW__CORE__DAGS_FOLDER: airflow/dags
+          AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+          AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////tmp/airflow_test.db
+        run: |
+          airflow db init
+          python -c "
+          import os, sys
+          from airflow.models import DagBag
+
+          dag_folder = 'airflow/dags'
+          bag = DagBag(dag_folder=dag_folder, include_examples=False)
+
+          if bag.import_errors:
+              for dag_file, error in bag.import_errors.items():
+                  print(f'IMPORT ERROR in {dag_file}:')
+                  print(error)
+              sys.exit(1)
+
+          print(f'Successfully loaded {len(bag.dags)} DAGs:')
+          for dag_id in sorted(bag.dags):
+              print(f'  ✓ {dag_id}')
+          "
+
+  # ── 3. dbt Parse (SQL syntax validation) ────────────────────────────────
+  dbt-parse:
+    name: dbt parse (SQL syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dbt-postgres
+        run: pip install dbt-postgres
+
+      - name: dbt deps (install packages)
+        working-directory: dbt
+        run: dbt deps
+
+      - name: dbt parse (validate all SQL models)
+        working-directory: dbt
+        env:
+          DBT_HOST: localhost
+          DBT_USER: user
+          DBT_PASSWORD: password
+        run: dbt parse --profiles-dir .
+
+  # ── 4. Schema Validation ─────────────────────────────────────────────────
+  schema-validation:
+    name: Avro schema lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install fastavro
+        run: pip install fastavro
+
+      - name: Validate Avro schemas
+        run: |
+          python -c "
+          import json, fastavro, glob, sys
+
+          schema_files = glob.glob('schemas/*.avsc')
+          if not schema_files:
+              print('No .avsc files found — skipping')
+              sys.exit(0)
+
+          errors = []
+          for path in schema_files:
+              try:
+                  with open(path) as f:
+                      schema = json.load(f)
+                  fastavro.parse_schema(schema)
+                  print(f'  ✓ {path}')
+              except Exception as e:
+                  errors.append(f'{path}: {e}')
+                  print(f'  ✗ {path}: {e}')
+
+          if errors:
+              sys.exit(1)
+          print(f'All {len(schema_files)} Avro schema(s) valid')
+          "

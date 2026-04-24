@@ -5,7 +5,8 @@
 # ============================================================
 
 # ── Kafka ─────────────────────────────────────────────────
-kafka-python          # Kafka producer/consumer for ingestion & lake writer
+confluent-kafka       # Producer with Avro + Schema Registry (producer.py)
+kafka-python          # Consumer for lake_writer.py and legacy services
 websocket-client      # Binance WebSocket stream (producer.py)
 websockets            # Async WebSocket client for Binance live price broadcaster
 
@@ -46,6 +47,9 @@ matplotlib            # Plotting backend for mplfinance (agg mode)
 feedparser            # RSS feed parser for Sentiment Agent
 yfinance              # Yahoo Finance data fetching for market indices (crypto-fear-greed, cnn-fear-greed, indices)
 aiokafka              # Async Kafka client for FastAPI WebSocket bridge
+
+# ── dbt (Transform Layer) ─────────────────────────────────
+dbt-postgres          # dbt adapter for PostgreSQL — run: dbt run --profiles-dir dbt/
 
 # ── Machine Learning (Phase 15 — Self-Learning Signal Model) ─────────────
 scikit-learn          # GradientBoostingClassifier for win-probability prediction

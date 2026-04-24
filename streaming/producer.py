@@ -1,108 +1,170 @@
+"""
+CryptoStream AI — Kafka Producer (Avro + Schema Registry)
+==========================================================
+Streams live BTC/USDT trades from Binance WebSocket into the
+trade_stream Kafka topic, serialized as Avro using the Confluent
+Schema Registry.
+
+Why Avro over plain JSON:
+  - Schema Registry enforces a contract: consumers (Flink, lake-writer)
+    cannot accidentally consume malformed messages after a producer change.
+  - Binary Avro payloads are ~5× smaller than equivalent JSON.
+  - Schema evolution (adding nullable fields) is backward-compatible —
+    old consumers keep working without redeployment.
+
+The Avro schema is defined in schemas/trade_event.avsc and registered
+automatically on first run. Schema ID is prepended to every message so
+consumers can fetch the correct schema version from the registry.
+"""
+
 import json
 import logging
 import os
+import time
 import websocket
-from kafka import KafkaProducer
-from kafka.errors import KafkaError
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from confluent_kafka import Producer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.serialization import SerializationContext, MessageField
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-# Kafka Configuration
-# KAFKA_BROKER is overridden by the 'ingestion-producer' Docker Compose service
-# to use the internal address kafka:29092. Defaults to localhost for local dev.
-KAFKA_BROKER = os.environ.get('KAFKA_BROKER', 'localhost:9092')
-KAFKA_TOPIC = 'trade_stream'
+# ---------------------------------------------------------------------------
+# Configuration (overridable via environment variables)
+# ---------------------------------------------------------------------------
+KAFKA_BROKER          = os.environ.get("KAFKA_BROKER",          "localhost:9092")
+SCHEMA_REGISTRY_URL   = os.environ.get("SCHEMA_REGISTRY_URL",   "http://localhost:8085")
+KAFKA_TOPIC           = "trade_stream"
+BINANCE_WS_URL        = "wss://stream.binance.com:9443/ws/btcusdt@trade"
 
-# Binance WebSocket URL
-# Symbol: btcusdt, Stream: trade
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
+# Avro schema path (relative to repo root; mounted at /opt in Docker)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+AVRO_SCHEMA_PATH = os.path.join(_HERE, "..", "schemas", "trade_event.avsc")
 
-# Global Producer (initialised in main())
-producer = None
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
+_producer: Producer = None
+_avro_serializer: AvroSerializer = None
 message_count = 0
 
-def get_kafka_producer():
-    """Initializes and returns a Kafka producer."""
-    try:
-        _producer = KafkaProducer(
-            bootstrap_servers=[KAFKA_BROKER],
-            value_serializer=lambda x: json.dumps(x).encode('utf-8'),
-            api_version=(0, 10, 1) # Force API version if auto-detect fails
-        )
-        logger.info("Successfully connected to Kafka")
-        return _producer
-    except Exception as e:
-        logger.error(f"Failed to connect to Kafka: {e}")
-        return None
+
+def _load_avro_schema() -> str:
+    """Read Avro schema JSON from disk."""
+    with open(AVRO_SCHEMA_PATH, "r") as fh:
+        return fh.read()
+
+
+def _build_producer() -> tuple:
+    """
+    Initialise Confluent Kafka producer + Avro serializer.
+    Returns (producer, avro_serializer).
+    """
+    schema_str = _load_avro_schema()
+
+    registry_client = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
+    avro_serializer = AvroSerializer(
+        registry_client,
+        schema_str,
+        # Map Python dict keys to Avro field names (1:1 — no transformation needed)
+        to_dict=lambda obj, _ctx: obj,
+    )
+
+    producer = Producer({"bootstrap.servers": KAFKA_BROKER})
+    logger.info("Kafka producer connected to %s", KAFKA_BROKER)
+    logger.info("Schema Registry connected to %s", SCHEMA_REGISTRY_URL)
+    return producer, avro_serializer
+
+
+def _delivery_report(err, msg):
+    """Callback invoked by Kafka producer after each message delivery."""
+    if err:
+        logger.error("Delivery failed for trade %s: %s", msg.key(), err)
+
 
 def on_message(ws, message):
-    """Callback for WebSocket messages."""
+    """Handle a raw Binance WebSocket trade event."""
     global message_count
+
     try:
-        data = json.loads(message)
-        
-        # Extract relevant fields
-        # https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md#trade
-        processed_data = {
-            "symbol": data.get("s"),
-            "price": float(data.get("p")),
-            "quantity": float(data.get("q")),
-            "timestamp": data.get("T"),
-            "trade_id": data.get("t"),
-            "is_buyer_maker": data.get("m")
+        raw = json.loads(message)
+
+        # Build a dict that matches every field in trade_event.avsc
+        record = {
+            "trade_id":       str(raw["t"]),
+            "symbol":         raw["s"],
+            "price":          str(raw["p"]),   # Avro decimal fields sent as string
+            "quantity":       str(raw["q"]),
+            "timestamp":      int(raw["T"]),
+            "is_buyer_maker": bool(raw["m"]),
+            "ingested_at":    time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
         }
 
-        # Send to Kafka
-        if producer:
-            future = producer.send(KAFKA_TOPIC, value=processed_data)
-            # future.get(timeout=10) # Synchronous send for debugging if needed
-            
-            message_count += 1
-            if message_count % 10 == 0:
-                logger.info(f"Sent {message_count} messages to Kafka topic '{KAFKA_TOPIC}'. Last price: {processed_data['price']}")
+        serialized = _avro_serializer(
+            record,
+            SerializationContext(KAFKA_TOPIC, MessageField.VALUE),
+        )
 
-    except Exception as e:
-        logger.error(f"Error processing message: {e}")
+        _producer.produce(
+            topic=KAFKA_TOPIC,
+            key=record["trade_id"],
+            value=serialized,
+            on_delivery=_delivery_report,
+        )
+        # poll() triggers delivery callbacks without blocking the WebSocket loop
+        _producer.poll(0)
+
+        message_count += 1
+        if message_count % 100 == 0:
+            logger.info(
+                "Sent %d messages | last price: %s | symbol: %s",
+                message_count, record["price"], record["symbol"],
+            )
+
+    except Exception as exc:
+        logger.error("Error processing message: %s", exc, exc_info=True)
+
 
 def on_error(ws, error):
-    """Callback for WebSocket errors."""
-    logger.error(f"WebSocket Error: {error}")
+    logger.error("WebSocket error: %s", error)
+
 
 def on_close(ws, close_status_code, close_msg):
-    """Callback for WebSocket close."""
-    logger.info("WebSocket connection closed")
-    if producer:
-        producer.close()
+    logger.info("WebSocket closed (status=%s)", close_status_code)
+    if _producer:
+        _producer.flush()
+
 
 def on_open(ws):
-    """Callback for WebSocket open."""
-    logger.info("WebSocket connection opened. Subscribing to trade stream...")
+    logger.info("WebSocket opened — streaming %s", BINANCE_WS_URL)
+
 
 def main():
-    global producer
-    producer = get_kafka_producer()
-    
-    if not producer:
-        logger.error("Exiting due to Kafka connection failure. Please confirm Kafka is running.")
-        return
+    global _producer, _avro_serializer
 
-    # websocket.enableTrace(True) # Uncomment for debug trace
+    _producer, _avro_serializer = _build_producer()
+
     ws = websocket.WebSocketApp(
         BINANCE_WS_URL,
         on_open=on_open,
         on_message=on_message,
         on_error=on_error,
-        on_close=on_close
+        on_close=on_close,
     )
 
     try:
         ws.run_forever()
     except KeyboardInterrupt:
         logger.info("Stopping producer...")
-        if producer:
-            producer.close()
+    finally:
+        if _producer:
+            _producer.flush()
+
 
 if __name__ == "__main__":
     main()

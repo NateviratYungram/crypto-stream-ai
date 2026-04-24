@@ -1,0 +1,54 @@
+version: 2
+
+models:
+  - name: mart_daily_performance
+    description: >
+      Primary BI table: joins EOD OHLCV (daily_summary) with statistical features
+      (market_features) and market regime per symbol per day.
+      Materialized as a table — refreshed nightly by dbt run.
+    columns:
+      - name: report_date
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: price_change_pct
+        description: "Day-over-day price change in percent"
+      - name: market_regime
+        tests:
+          - accepted_values:
+              values: ["RISK_ON", "RISK_OFF", "NEUTRAL"]
+              config:
+                severity: warn
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [report_date, symbol]
+
+  - name: mart_whale_activity
+    description: >
+      Daily whale trading summary with buy/sell flow and whale_bias signal.
+      A positive net_flow indicates accumulation; negative indicates distribution.
+    columns:
+      - name: trade_date
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: whale_volume
+        tests: [not_null]
+      - name: whale_bias
+        tests:
+          - accepted_values:
+              values: ["ACCUMULATING", "DISTRIBUTING", "NEUTRAL"]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [trade_date, symbol]
+
+  - name: mart_cross_asset
+    description: >
+      Cross-asset daily snapshot joining BTC on-chain data, multi-asset prices
+      (Gold, SP500, Oil, ETH, SOL, VIX), and FRED macro indicators (Fed rate, CPI,
+      yield curve, unemployment). Primary table for macro-crypto correlation analysis.
+    columns:
+      - name: price_date
+        tests:
+          - unique
+          - not_null

@@ -1,0 +1,21 @@
+crypto_stream:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_HOST', 'localhost') }}"
+      port: 5432
+      user: "{{ env_var('DBT_USER', 'user') }}"
+      password: "{{ env_var('DBT_PASSWORD', 'password') }}"
+      dbname: crypto_stream_db
+      schema: public
+      threads: 4
+    prod:
+      type: postgres
+      host: "{{ env_var('DBT_HOST') }}"
+      port: 5432
+      user: "{{ env_var('DBT_USER') }}"
+      password: "{{ env_var('DBT_PASSWORD') }}"
+      dbname: crypto_stream_db
+      schema: public
+      threads: 8

@@ -9,7 +9,12 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'airflow')\gexec
 
     GRANT ALL PRIVILEGES ON DATABASE airflow TO "$POSTGRES_USER";
+
+    SELECT 'CREATE DATABASE marquez_db'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'marquez_db')\gexec
+
+    GRANT ALL PRIVILEGES ON DATABASE marquez_db TO "$POSTGRES_USER";
 EOSQL
 
-echo "init_db.sh: 'airflow' database ready."
+echo "init_db.sh: 'airflow' and 'marquez_db' databases ready."
 

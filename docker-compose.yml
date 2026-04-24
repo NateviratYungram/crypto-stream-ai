@@ -1,16 +1,17 @@
-version: '3.8'
+
 
 # ============================================================
 # CryptoStream AI — Unified Docker Compose (All-in-One)
 # ============================================================
 # Services included:
 #   [App]           chat-server (FastAPI AI backend), frontend (React + Nginx)
-#   [Ingestion]     zookeeper, kafka, kafka-ui
+#   [Ingestion]     zookeeper, kafka, schema-registry, kafka-ui
 #   [Processing]    jobmanager (Flink), taskmanager (Flink)
 #   [Storage]       postgres, redis
-#   [Ingestion]     ingestion-producer (Binance WebSocket → Kafka)
+#   [Ingestion]     ingestion-producer (Binance WebSocket → Kafka, Avro)
 #   [Data Lake]     lake-writer (Kafka → Parquet)
 #   [Orchestration] airflow-init, airflow-webserver, airflow-scheduler
+#   [Lineage]       marquez (OpenLineage API), marquez-web (UI)
 #   [Monitoring]    prometheus, grafana, alertmanager
 #   [Exporters]     kafka-exporter, postgres-exporter
 #
@@ -18,15 +19,18 @@ version: '3.8'
 #   docker compose up -d
 #
 # App Access:
-#   Frontend  -> http://localhost        (React UI)
-#   API       -> http://localhost:8888   (FastAPI backend)
+#   Frontend       -> http://localhost        (React UI)
+#   API            -> http://localhost:8888   (FastAPI backend)
 # Tool Access:
-#   Kafka UI  -> http://localhost:8080
-#   Flink UI  -> http://localhost:8081
-#   Airflow   -> http://localhost:8082  (admin / admin)
-#   Grafana   -> http://localhost:3000  (admin / cryptostream_admin)
-#   Prometheus-> http://localhost:9090
-#   AlertMgr  -> http://localhost:9093
+#   Kafka UI       -> http://localhost:8080
+#   Schema Registry-> http://localhost:8085
+#   Flink UI       -> http://localhost:8081
+#   Airflow        -> http://localhost:8082  (admin / admin)
+#   Marquez API    -> http://localhost:5000
+#   Marquez UI     -> http://localhost:3001
+#   Grafana        -> http://localhost:3000  (admin / cryptostream_admin)
+#   Prometheus     -> http://localhost:9090
+#   AlertMgr       -> http://localhost:9093
 # ============================================================
 
 # ── Reusable Airflow anchor ─────────────────────────────────
@@ -43,8 +47,12 @@ x-airflow-common: &airflow-common
     AIRFLOW_CONN_CRYPTO_POSTGRES: postgresql://user:password@postgres:5432/crypto_stream_db
     AIRFLOW_CONN_KAFKA_DEFAULT: kafka://kafka:29092
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-key.json
+    # OpenLineage — emits dataset-level lineage events to Marquez
+    AIRFLOW__LINEAGE__BACKEND: openlineage
+    OPENLINEAGE_URL: http://marquez:5000
+    OPENLINEAGE_NAMESPACE: crypto_stream
     # pip packages needed by DAGs
-    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow apache-airflow-providers-google multitasking==0.0.9 yfinance==0.2.36"
+    _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow apache-airflow-providers-google apache-airflow-providers-openlineage openlineage-airflow multitasking==0.0.9 yfinance==0.2.36 requests"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./datalake:/opt/datalake
@@ -147,6 +155,29 @@ services:
     networks:
       - crypto-network
 
+  # Schema Registry: enforces Avro contract between producer and consumers.
+  # Prevents upstream schema changes from silently breaking Flink or lake-writer.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.4.0
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8085:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/subjects || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - crypto-network
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     hostname: kafka-ui
@@ -154,12 +185,15 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      schema-registry:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: CryptoStream-Local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
     networks:
       - crypto-network
 
@@ -286,7 +320,9 @@ services:
       DB_PASS: ${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}
       KAFKA_BROKER: kafka:29092
       REDIS_URL: redis://redis:6379/0
+    command: ["uvicorn", "chat_server:app", "--host", "0.0.0.0", "--port", "8888", "--reload"]
     volumes:
+      - .:/app                    # LIVE CODE SYNC
       - ./data:/app/data          # persist SQLite + ML models
       - ./datalake:/app/datalake  # data lake read access
     depends_on:
@@ -330,13 +366,16 @@ services:
     container_name: ingestion-producer
     command: ["python", "/opt/streaming/producer.py"]
     environment:
-      # Override broker to use internal Docker address
       KAFKA_BROKER: kafka:29092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
     volumes:
       - ./streaming:/opt/streaming
+      - ./schemas:/opt/schemas
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - crypto-network
@@ -449,7 +488,47 @@ services:
       postgres:
         condition: service_healthy
 
-  # ── LAYER 6: MONITORING (Prometheus + Grafana Stack) ────────
+  # ── LAYER 6: DATA LINEAGE (Marquez / OpenLineage) ───────────
+  # Marquez tracks dataset-level lineage: which DAGs read/write which tables.
+  # Airflow emits OpenLineage events automatically via OPENLINEAGE_URL env var.
+  # Use this to answer: "Which pipelines depend on enriched_trades?"
+
+  marquez:
+    image: marquezproject/marquez:0.45.0
+    container_name: marquez
+    ports:
+      - "5000:5000"   # OpenLineage API
+      - "5001:5001"   # Admin / health
+    environment:
+      MARQUEZ_PORT: 5000
+      MARQUEZ_ADMIN_PORT: 5001
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: marquez_db
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - crypto-network
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.45.0
+    container_name: marquez-web
+    ports:
+      - "3001:3000"
+    environment:
+      MARQUEZ_HOST: marquez
+      MARQUEZ_PORT: "5000"
+    depends_on:
+      - marquez
+    restart: unless-stopped
+    networks:
+      - crypto-network
+
+  # ── LAYER 7: MONITORING (Prometheus + Grafana Stack) ────────
   # Banking Relevance: Dedicated monitoring stack must be
   # independently operational even during pipeline maintenance —
   # required for SLA tracking and regulatory audit readiness.

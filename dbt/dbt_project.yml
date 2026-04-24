@@ -1,0 +1,23 @@
+name: crypto_stream
+version: "1.0.0"
+config-version: 2
+
+profile: crypto_stream
+
+model-paths: ["models"]
+test-paths: ["tests"]
+docs-paths: ["docs"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  crypto_stream:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts

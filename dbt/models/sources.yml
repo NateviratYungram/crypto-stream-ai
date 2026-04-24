@@ -1,0 +1,89 @@
+version: 2
+
+sources:
+  - name: crypto_stream
+    database: crypto_stream_db
+    schema: public
+    description: "CryptoStream AI — PostgreSQL source tables"
+    tables:
+      - name: enriched_trades
+        description: "Raw Binance trade events enriched by Flink (whale flag, DLQ filtered)"
+        columns:
+          - name: trade_id
+            description: "Unique trade ID from Binance exchange"
+            tests:
+              - unique
+              - not_null
+          - name: symbol
+            tests: [not_null]
+          - name: price
+            description: "Execution price — DECIMAL(20,8) to avoid IEEE-754 float errors"
+            tests: [not_null]
+          - name: quantity
+            tests: [not_null]
+          - name: timestamp
+            description: "Unix epoch milliseconds from Binance"
+            tests: [not_null]
+          - name: is_whale
+            description: "True when quantity > 0.5 BTC — AML monitoring flag"
+            tests: [not_null]
+
+      - name: market_ohlcv
+        description: "Multi-asset OHLCV from yfinance: stocks, indices, crypto, commodities"
+        columns:
+          - name: symbol
+            tests: [not_null]
+          - name: timeframe
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["1m", "5m", "15m", "1h", "1d"]
+          - name: ts
+            tests: [not_null]
+          - name: close
+            tests: [not_null]
+
+      - name: daily_summary
+        description: "EOD OHLCV + whale stats — populated by daily_aggregation Airflow DAG"
+        columns:
+          - name: report_date
+            tests: [not_null]
+          - name: symbol
+            tests: [not_null]
+        tests:
+          - dbt_utils.unique_combination_of_columns:
+              combination_of_columns: [report_date, symbol]
+
+      - name: market_features
+        description: "Hourly-computed per-symbol features: returns, volatility, correlation, beta"
+        columns:
+          - name: symbol
+            tests: [not_null]
+          - name: date
+            tests: [not_null]
+        tests:
+          - dbt_utils.unique_combination_of_columns:
+              combination_of_columns: [symbol, date]
+
+      - name: market_regime
+        description: "Daily global market regime: RISK_ON / RISK_OFF / NEUTRAL"
+        columns:
+          - name: date
+            tests:
+              - unique
+              - not_null
+          - name: regime
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["RISK_ON", "RISK_OFF", "NEUTRAL"]
+
+      - name: macro_indicators
+        description: "FRED macro data: Fed Funds Rate, CPI, Unemployment, Yield Curve"
+        columns:
+          - name: series_id
+            tests: [not_null]
+          - name: date
+            tests: [not_null]
+          - name: value
+            tests: [not_null]

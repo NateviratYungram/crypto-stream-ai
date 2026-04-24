@@ -1,0 +1,68 @@
+version: 2
+
+models:
+  - name: stg_enriched_trades
+    description: "Cleaned Binance trade events — timestamp converted to UTC, whale flag preserved"
+    columns:
+      - name: trade_id
+        tests:
+          - unique
+          - not_null
+      - name: symbol
+        tests: [not_null]
+      - name: price
+        tests: [not_null]
+      - name: quantity
+        tests: [not_null]
+      - name: traded_at
+        tests: [not_null]
+      - name: is_whale
+        tests: [not_null]
+
+  - name: stg_market_ohlcv
+    description: "OHLCV candles from yfinance — renamed columns + candle direction derived"
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: timeframe
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["1m", "5m", "15m", "1h", "1d"]
+      - name: candle_open_at
+        tests: [not_null]
+      - name: close
+        tests: [not_null]
+      - name: candle_direction
+        tests:
+          - accepted_values:
+              values: ["BULLISH", "BEARISH", "DOJI"]
+
+  - name: stg_daily_summary
+    description: "EOD OHLCV + whale stats with price_change_pct and whale_volume_pct derived"
+    columns:
+      - name: report_date
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [report_date, symbol]
+
+  - name: stg_market_features
+    description: "Per-symbol statistical features: returns, volatility, correlation, beta"
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: date
+        tests: [not_null]
+
+  - name: stg_macro_indicators
+    description: "FRED macro series: Fed Funds Rate, CPI, Unemployment, Yield Curve"
+    columns:
+      - name: series_id
+        tests: [not_null]
+      - name: date
+        tests: [not_null]
+      - name: value
+        tests: [not_null]
