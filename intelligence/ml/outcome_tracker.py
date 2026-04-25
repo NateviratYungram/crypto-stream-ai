@@ -45,6 +45,8 @@ def migrate_schema():
         ("ml_score",     "REAL"),
         ("close_reason", "TEXT"),
         ("label_source", "TEXT"),
+        ("signal_grade", "TEXT"),
+        ("macro_bias",   "TEXT"),
     ]:
         try:
             cur.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {typedef}")
@@ -198,7 +200,15 @@ def scan_and_update() -> Dict:
 # Helper: Attach SL/TP + features when opening a paper trade
 # ─────────────────────────────────────────────────────────────────────────────
 
-def attach_sl_tp_features(trade_id: str, sl: float, tp: float, features: Dict, ml_score: Optional[float] = None):
+def attach_sl_tp_features(
+    trade_id: str,
+    sl: float,
+    tp: float,
+    features: Dict,
+    ml_score: Optional[float] = None,
+    signal_grade: Optional[str] = None,
+    macro_bias: Optional[str] = None,
+):
     """
     Store SL, TP, ML features and predicted win probability on an existing OPEN paper trade.
     Call this right after opening a paper trade so outcome_tracker can evaluate it.
@@ -208,9 +218,9 @@ def attach_sl_tp_features(trade_id: str, sl: float, tp: float, features: Dict, m
     cur = con.cursor()
     cur.execute("""
         UPDATE paper_trades
-        SET sl=?, tp=?, features_json=?, ml_score=?
+        SET sl=?, tp=?, features_json=?, ml_score=?, signal_grade=?, macro_bias=?
         WHERE id=? AND status='OPEN'
-    """, (sl, tp, json.dumps(features), ml_score, trade_id))
+    """, (sl, tp, json.dumps(features), ml_score, signal_grade, macro_bias, trade_id))
     con.commit()
     con.close()
 

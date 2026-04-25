@@ -1838,6 +1838,8 @@ def execute_approved_mt5_trade(draft_id: str) -> Dict[str, Any]:
                     tp=trade["tp"] or 0,
                     features=_ml_feats,
                     ml_score=_ml_score_pct,
+                    signal_grade=trade.get("signal_grade"),
+                    macro_bias=trade.get("macro_bias"),
                 )
                 _paper_trade_id = _paper_tid
                 logger.info(f"[PaperTrade] Registered {_paper_tid} with SL={trade['sl']} TP={trade['tp']}")
