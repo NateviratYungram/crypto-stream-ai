@@ -14,9 +14,15 @@ MACRO (forex/metals) assets skip crypto-specific feeds.
 
 import logging
 import threading
+import time
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
+
+# TTL cache — intermarket data is stable for 15 minutes
+_CACHE: Dict[str, Any] = {}          # key: asset_class
+_CACHE_TS: Dict[str, float] = {}     # key: asset_class → epoch
+_CACHE_TTL = 900                      # 15 minutes
 
 
 def _fetch_dxy() -> Dict[str, Any]:
@@ -127,6 +133,8 @@ def create_intermarket_agent():
     """
     Returns an intermarket_agent_node that populates state["intermarket"].
     All fetches run in parallel threads with a 10s timeout.
+    Results are cached per asset_class for 15 minutes to avoid rate limits
+    when multiple symbols are analyzed in quick succession.
     """
     def intermarket_agent_node(state: dict) -> dict:
         asset_class = state.get("asset_class", "CRYPTO")
@@ -140,6 +148,13 @@ def create_intermarket_agent():
                 "forex_context": "", "metals_context": "",
                 "skipped": True,
             }}
+
+        # Return cached result if still fresh
+        now = time.time()
+        cache_key = asset_class
+        if cache_key in _CACHE and (now - _CACHE_TS.get(cache_key, 0)) < _CACHE_TTL:
+            logger.debug(f"Intermarket: cache hit for {asset_class}")
+            return {"intermarket": _CACHE[cache_key]}
 
         results: Dict[str, Any] = {}
 
@@ -199,6 +214,10 @@ def create_intermarket_agent():
             "metals_context": metals_context,
             "skipped":        False,
         }
+
+        # Store in cache
+        _CACHE[cache_key]    = intermarket
+        _CACHE_TS[cache_key] = time.time()
 
         logger.info(
             f"Intermarket [{asset_class}]: macro={macro_bias} "
