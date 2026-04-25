@@ -5,19 +5,13 @@ import logging
 
 class NotificationService:
     def __init__(self):
-        # ── Telegram ──────────────────────────────────────────────
         self.telegram_token   = os.environ.get("TELEGRAM_BOT_TOKEN")
         self.default_chat_id  = os.environ.get("TELEGRAM_CHAT_ID")
         self.tg_api_url = (
             f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
             if self.telegram_token else None
         )
-        # ── Line Notify ───────────────────────────────────────────
-        # Generate token at https://notify-bot.line.me/my/
-        self.line_token = os.environ.get("LINE_NOTIFY_TOKEN")
-        self._LINE_URL  = "https://notify-api.line.me/api/notify"
 
-    # ── Telegram ─────────────────────────────────────────────────
     async def send_telegram_alert(self, message: str, chat_id: str = None):
         target_chat_id = chat_id or self.default_chat_id
         if not self.tg_api_url or not target_chat_id:
@@ -38,38 +32,8 @@ class NotificationService:
             logging.error(f"Telegram notification error: {e}")
             return False
 
-    # ── Line Notify ───────────────────────────────────────────────
-    async def send_line_alert(self, message: str, image_url: str = None):
-        """
-        Push a message via LINE Notify.
-        Set LINE_NOTIFY_TOKEN in .env (get from https://notify-bot.line.me/my/).
-        Supports optional image_url for chart screenshots.
-        """
-        if not self.line_token:
-            logging.info("Line Notify skipped (LINE_NOTIFY_TOKEN missing)")
-            return False
-        try:
-            async with httpx.AsyncClient() as client:
-                headers = {"Authorization": f"Bearer {self.line_token}"}
-                data    = {"message": f"\n🛸 CryptoStream AI\n{message}"}
-                if image_url:
-                    data["imageThumbnail"] = image_url
-                    data["imageFullsize"]  = image_url
-                r = await client.post(self._LINE_URL, headers=headers, data=data, timeout=8)
-                ok = r.status_code == 200
-                if not ok:
-                    logging.warning(f"Line Notify failed: {r.status_code} {r.text}")
-                return ok
-        except Exception as e:
-            logging.error(f"Line Notify error: {e}")
-            return False
-
-    # ── Broadcast (Telegram + Line) ───────────────────────────────
     async def broadcast(self, message: str, image_url: str = None):
-        """Send to all configured channels simultaneously."""
-        tg_ok   = await self.send_telegram_alert(message)
-        line_ok = await self.send_line_alert(message, image_url=image_url)
-        return {"telegram": tg_ok, "line": line_ok}
+        return await self.send_telegram_alert(message)
 
     # ── Preset templates ──────────────────────────────────────────
     async def notify_whale(self, data: dict):

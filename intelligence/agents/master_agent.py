@@ -15,21 +15,63 @@ import os
 
 from intelligence.agents.reflector_agent import get_reflexive_context
 from intelligence.ml.drift_monitor import drift_shield
-from intelligence.persistence_utils import log_sniper_rejection
 from intelligence.risk_manager import risk_manager
 
 logger = logging.getLogger(__name__)
 MODEL_ID = os.environ.get("MODEL_ID", "gemini-2.5-flash")
 
+# Regime-based weight presets — only for MT5-tradeable assets (CRYPTO / MACRO)
+_REGIME_WEIGHTS = {
+    "RISK_ON":  {"tech": 0.60, "sent": 0.10, "conf": 0.30},  # trend dominates
+    "RISK_OFF": {"tech": 0.40, "sent": 0.30, "conf": 0.30},  # news/fear matters more
+    "NEUTRAL":  {"tech": 0.55, "sent": 0.15, "conf": 0.30},  # baseline
+}
+
+
+def _get_market_regime() -> str:
+    """Fetch latest regime from market_regime table. Falls back to NEUTRAL."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST", "localhost"),
+            dbname=os.getenv("DB_NAME", "crypto_stream_db"),
+            user=os.getenv("DB_USER", "user"),
+            password=os.getenv("DB_PASS", "password"),
+        )
+        with conn.cursor() as cur:
+            cur.execute("SELECT regime FROM market_regime ORDER BY date DESC LIMIT 1")
+            row = cur.fetchone()
+        conn.close()
+        return row[0] if row else "NEUTRAL"
+    except Exception:
+        return "NEUTRAL"
+
+
+def _compute_agent_conflict(state: dict) -> dict:
+    """
+    Detect hard disagreement between vision/indicator agents.
+    Returns: has_conflict, bull_votes, bear_votes
+    """
+    biases = [
+        str(state.get("indicator_bias", "NEUTRAL")).upper(),
+        str(state.get("pattern_bias",   "NEUTRAL")).upper(),
+        str(state.get("trend_bias",     "NEUTRAL")).upper(),
+    ]
+    bull = sum(1 for b in biases if "BULL" in b)
+    bear = sum(1 for b in biases if "BEAR" in b)
+    # Conflict: true tie only — 2:1 majority is NOT a conflict
+    conflict = bull >= 1 and bear >= 1 and bull == bear
+    return {"has_conflict": conflict, "bull_votes": bull, "bear_votes": bear}
+
 # Safety thresholds (can be overridden via config)
 DEFAULT_CONFIG = {
-    "master_weight_technical": 0.55,   # Technical analysis is primary signal
-    "master_weight_sentiment": 0.15,   # Reduced — crypto news often lags price
+    "master_weight_technical": 0.55,
+    "master_weight_sentiment": 0.15,
     "master_weight_confluence": 0.30,
-    "master_confidence_threshold": 0.58,  # Lowered from 0.65 — was blocking valid setups
-    "sentiment_contradiction_threshold": 60,  # Only block on extreme contradiction (was 50)
-    "confluence_minimum": 33,              # Lowered from 40 — 1/3 agents agreeing = valid
-    "sniper_mode": True,                   # Intelligence V7: Sniper Core (Auto-Reject < 80%)
+    "master_confidence_threshold": 0.62,  # Single effective gate (was split across 58% + 80% sniper)
+    "sentiment_contradiction_threshold": 65,
+    "confluence_minimum": 33,
+    "sniper_mode": False,                  # Disabled — 80% threshold was blocking all valid setups
 }
 
 
@@ -87,12 +129,20 @@ def create_master_agent(client, config: dict = None):
         lessons = reflexive.get("lessons", "No reflexive lessons ready.")
         bias_adj = reflexive.get("bias_adjustments", {})
 
-        # Weights — Dynamic adjustment based on reflexive performance
-        w_tech = cfg["master_weight_technical"] * bias_adj.get("tech_weight", 1.0)
-        w_sent = cfg["master_weight_sentiment"] * bias_adj.get("sent_weight", 1.0)
-        w_conf = cfg["master_weight_confluence"] * bias_adj.get("conf_weight", 1.0)
+        # Agent conflict detection (before weight computation)
+        conflict_info = _compute_agent_conflict(state)
 
-        # Normalize weights to ensure they sum to ~1.0
+        # Dynamic regime weights — STOCK always uses NEUTRAL (not MT5-tradeable)
+        asset_class = state.get("asset_class", "CRYPTO")
+        regime_key  = _get_market_regime() if asset_class != "STOCK" else "NEUTRAL"
+        rw = _REGIME_WEIGHTS[regime_key]
+
+        # Reflexive adjustment on top of regime base weights
+        w_tech = rw["tech"] * bias_adj.get("tech_weight", 1.0)
+        w_sent = rw["sent"] * bias_adj.get("sent_weight", 1.0)
+        w_conf = rw["conf"] * bias_adj.get("conf_weight", 1.0)
+
+        # Normalize so weights always sum to 1.0
         total_w = w_tech + w_sent + w_conf
         w_tech /= total_w
         w_sent /= total_w
@@ -116,11 +166,6 @@ def create_master_agent(client, config: dict = None):
         portfolio_risk = risk_manager.check_correlation_risk(symbol)
         protection     = risk_manager.check_equity_protection()
         news_shield    = risk_manager.check_news_shield(symbol)
-
-        # Weights
-        w_tech = cfg["master_weight_technical"]
-        w_sent = cfg["master_weight_sentiment"]
-        w_conf = cfg["master_weight_confluence"]
 
         # Map decision to numeric score
         tech_score = {
@@ -158,6 +203,21 @@ def create_master_agent(client, config: dict = None):
 
         min_conf = float(cfg["master_confidence_threshold"])
 
+        # Intermarket context from Step 1.5
+        im           = state.get("intermarket", {})
+        macro_bias   = im.get("macro_bias", "NEUTRAL")
+        dxy_trend    = im.get("dxy", {}).get("trend", "UNKNOWN")
+        dxy_val      = im.get("dxy", {}).get("value", "?")
+        vix_level    = im.get("vix", {}).get("level", "UNKNOWN")
+        vix_val      = im.get("vix", {}).get("value", "?")
+        fear_greed   = im.get("fear_greed", {})
+        btc_dom      = im.get("btc_dominance", {}).get("value", "?")
+        funding      = im.get("funding", {})
+        forex_ctx    = im.get("forex_context", "")
+        metals_ctx   = im.get("metals_context", "")
+        forex_sess   = state.get("forex_session", "")
+        sess_quality = state.get("session_quality", "")
+
         prompt = f"""You are the Master Risk Gate for a Smart Money / ICT hedge fund system.
 Your ONLY job: CONFIRM or REJECT the signal from Decision Agent using ICT kill conditions.
 You are a FILTER, not a generator.
@@ -165,6 +225,14 @@ You are a FILTER, not a generator.
 === SIGNAL TO REVIEW ===
 Decision: {trade_decision} (confidence: {decision_conf}%)
 Composite Score: {composite:.1f}
+
+=== INTERMARKET CONTEXT ===
+Macro Bias: {macro_bias} | DXY: {dxy_val} ({dxy_trend}) | VIX: {vix_val} ({vix_level})
+Fear & Greed: {fear_greed.get('value','?')} ({fear_greed.get('label','?')}) | BTC Dominance: {btc_dom}%
+Funding Rate: {funding.get('rate_pct','?')}% ({funding.get('bias','?')})
+{forex_ctx}{metals_ctx}
+{f"Forex Session: {forex_sess} — Quality: {sess_quality}" if forex_sess else ""}
+*RISK_OFF + weak signal → reduce size. RISK_ON → full size allowed.
 
 === MARKET CONTEXT ===
 Regime: {regime} | Session: {session}
@@ -206,23 +274,33 @@ Conflicts: {json.dumps(portfolio_risk.get('conflicts', []), indent=2)}
 Technical ({w_tech*100:.0f}%): {indicator_report[:350]}
 Sentiment ({w_sent*100:.0f}%): Score {sentiment_score:+.0f}/100 ({sentiment_label}) — {sentiment_report[:150]}
 Confluence ({w_conf*100:.0f}%): {confluence_score:.0f}/100
+Market Regime: {regime_key} | Agent Conflict: {"YES — bull_votes=" + str(conflict_info["bull_votes"]) + " bear_votes=" + str(conflict_info["bear_votes"]) if conflict_info["has_conflict"] else "NO"}
+Directional Correlation: {json.dumps(state.get("directional_correlation", {"confirmed": True, "score": 1.0}))}
+
+=== SIGNAL TIERING (size is auto-adjusted in code — you focus on CONFIRM/REJECT) ===
+Grade A+ (≥75%): full size | Grade A (62-74%): half size | Grade B (50-61%): quarter size (RISK_ON only)
+Confidence < 50% → NO_TRADE regardless.
+RISK_OFF regime shifts each grade down one level (A+ → A, A → B, B → NO_TRADE).
 
 === ICT KILL CONDITIONS (any one → NO_TRADE) ===
 1. Regime = CHAOS → NO_TRADE always
 2. Session = ASIA and asset contains GOLD/XAU → NO_TRADE
 3. HTF and LTF structure completely opposed (e.g. HTF BEARISH + LTF LONG) AND no CHOCH → NO_TRADE
-4. Confidence < {min_conf*100:.0f}% after weighting → NO_TRADE
-   ML Data Integrity Score < 40 (CRITICAL_DRIFT) → NO_TRADE
-   Sentiment contradicts by > {cfg['sentiment_contradiction_threshold']} points → NO_TRADE
-6. Confluence < {cfg['confluence_minimum']} AND no OB/FVG confirmation → NO_TRADE
-7. Equity Protection = BLOCKED (Daily Loss Limit) → NO_TRADE
-8. Portfolio Correlation Status = HIGH_CORRELATION and Reasoning = "Aggressive overlap" → NO_TRADE
+4. Confidence < {min_conf*100:.0f}% AND no strong OB/FVG/sweep confirmation → NO_TRADE
+5. ML Data Integrity Score < 40 (CRITICAL_DRIFT) → NO_TRADE
+6. Sentiment contradicts by > {cfg['sentiment_contradiction_threshold']} points → NO_TRADE
+7. Confluence < {cfg['confluence_minimum']} AND no OB/FVG confirmation → NO_TRADE
+8. Equity Protection = BLOCKED (Daily Loss Limit) → NO_TRADE
+9. Forex Session = ASIA_THIN → prefer NO_TRADE (low liquidity)
 
 === CONFIRMATION BOOSTERS (increase confidence) ===
 + Liquidity sweep occurred before entry signal
 + Price at/near a valid OB or FVG
 + HTF and LTF bias aligned
 + Session = LONDON or NEW_YORK
++ Macro Bias = RISK_ON aligns with trade direction
++ VIX = LOW (low fear, trending environment)
++ Funding rate contrarian to direction (shorts paying → LONG setup)
 
 === EXPERT DEBATE: COUNTER-EVIDENCE ===
 Before confirming, you MUST force your mind to find the "Bear Case" (for Longs) or "Bull Case" (for Shorts).
@@ -270,8 +348,9 @@ Respond ONLY with valid JSON:
                     rr_ratio=float(rr),
                     balance=100.0 # Standardize to % for now
                 )
-                # Apply reflexive scaling (e.g. scale down if recent performance is poor)
+                # Apply reflexive scaling then signal grade multiplier
                 kelly_size *= bias_adj.get("risk_scale", 1.0)
+                kelly_size *= size_mult
 
         except Exception as e:
             logger.error(f"MasterAgent LLM error: {e}")
@@ -281,27 +360,36 @@ Respond ONLY with valid JSON:
             risk_factors    = []
             entry_type      = "LIMIT"
 
-        # ── Safety enforcement (identical to QuantAgent master_agent.py) ──────
-        min_conf = float(cfg["master_confidence_threshold"])
+        # ── Signal Tiering — grade by confidence + macro regime ──────────────
+        macro_bias_live = state.get("intermarket", {}).get("macro_bias", "NEUTRAL")
+        signal_grade = "N/A"
+        size_mult    = 0.0
 
-        if confidence < min_conf:
-            master_decision = "NO_TRADE"
-            reasoning = f"BLOCKED: Confidence {confidence:.0%} < threshold {min_conf:.0%}. " + reasoning
+        if master_decision in ("LONG", "SHORT"):
+            if confidence >= 0.75:
+                signal_grade, size_mult = "A+", 1.0
+            elif confidence >= 0.62:
+                signal_grade, size_mult = "A",  0.5
+            elif confidence >= 0.50:
+                signal_grade, size_mult = "B",  0.25
+            else:
+                signal_grade, size_mult = "REJECT", 0.0
 
-        # V7 Sniper Core: Extreme Precision Guard
-        if cfg.get("sniper_mode") and confidence < 0.80 and master_decision != "NO_TRADE":
-            master_decision = "NO_TRADE"
-            sniper_reason = f"REJECTED BY SNIPER CORE: Win Probability ({confidence:.0%}) < 80% Hard Threshold. Target long-term capital preservation."
+            # RISK_OFF shifts grade down one level
+            if macro_bias_live == "RISK_OFF":
+                if signal_grade == "A+":
+                    signal_grade, size_mult = "A",      0.5
+                elif signal_grade == "A":
+                    signal_grade, size_mult = "B",      0.25
+                elif signal_grade in ("B", "REJECT"):
+                    signal_grade, size_mult = "REJECT", 0.0
 
-            # Log for the Audit Dashboard
-            log_sniper_rejection(
-                symbol=symbol,
-                confidence=confidence,
-                reasoning=reasoning,
-                price=0.0 # Price not easily available here, logged as 0.0 or could be passed
-            )
-
-            reasoning = sniper_reason + " | ORIGINAL: " + reasoning
+            if signal_grade == "REJECT":
+                master_decision = "NO_TRADE"
+                reasoning = (
+                    f"TIERED REJECT: confidence={confidence:.0%} insufficient "
+                    f"in {macro_bias_live} regime. " + reasoning
+                )
 
         if master_decision in ("LONG", "SHORT"):
             # Sentiment contradiction
@@ -326,14 +414,32 @@ Respond ONLY with valid JSON:
             master_decision = "NO_TRADE"
             reasoning = f"NEWS SHIELD BLOCKED: High impact macro news pending. {news_shield.get('reason')}. " + reasoning
 
+        # Agent conflict: hard disagreement among indicator/pattern/trend agents
+        if master_decision in ("LONG", "SHORT") and conflict_info["has_conflict"]:
+            master_decision = "NO_TRADE"
+            reasoning = (
+                f"BLOCKED: Agent conflict — {conflict_info['bull_votes']} bull vs "
+                f"{conflict_info['bear_votes']} bear (no clear consensus). " + reasoning
+            )
+
+        # Directional correlation: peer assets contradict direction
+        dir_corr = state.get("directional_correlation", {})
+        if master_decision in ("LONG", "SHORT") and not dir_corr.get("confirmed", True):
+            master_decision = "NO_TRADE"
+            reasoning = (
+                f"BLOCKED: Directional correlation failed — score={dir_corr.get('score', 0):.2f}, "
+                f"conflicts={dir_corr.get('conflicts', [])}. " + reasoning
+            )
+
         # ── Format final report ───────────────────────────────────────────────
         dec_emoji = {"LONG": "🚀", "SHORT": "🔻", "NO_TRADE": "🛑"}.get(master_decision, "🛑")
         conf_pct  = int(confidence * 100)
 
+        grade_emoji = {"A+": "🥇", "A": "🥈", "B": "🥉", "REJECT": "🚫", "N/A": "—"}.get(signal_grade, "—")
         report = f"""🧠 **MASTER DECISION — {symbol}USDT ({timeframe})**
 
 **Final Signal:** {dec_emoji} **{master_decision}** (Confidence: {conf_pct}%)
-**Entry Type:** {entry_type}
+**Signal Grade:** {grade_emoji} {signal_grade} | Size Multiplier: {size_mult:.0%} | Entry Type: {entry_type}
 
 **Weighted Scores:**
 - Technical ({w_tech*100:.0f}%): {trade_decision} @ {decision_conf}%
@@ -341,8 +447,9 @@ Respond ONLY with valid JSON:
 - Confluence ({w_conf*100:.0f}%): {confluence_score:.0f}/100
 - ML Integrity: {integrity_score}/100 ({drift_status})
 - **Composite:** {composite:.1f}
+- **Macro Regime:** {macro_bias_live} | VIX: {vix_level} | DXY: {dxy_trend}
 - **Portfolio Health:** {portfolio_risk.get('status')} (Max Corr: {portfolio_risk.get('max_corr')})
-- **Neural Size (Kelly):** {kelly_size*100:.2f}% risk
+- **Neural Size (Kelly × Grade):** {kelly_size*100:.2f}% risk
 
 **Reasoning:** {reasoning}
 
@@ -370,6 +477,9 @@ Respond ONLY with valid JSON:
             "confluence_score":   confluence_score,
             "composite_score":    composite,
             "kelly_size":         kelly_size,
+            "signal_grade":       signal_grade,
+            "size_multiplier":    size_mult,
+            "macro_bias":         macro_bias_live,
             "portfolio_health":   portfolio_risk.get("status"),
         }
 

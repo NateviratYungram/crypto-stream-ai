@@ -42,9 +42,32 @@ def main():
         logger.info("✅ Intelligence V8 Ensemble Cycle Complete.")
         return
 
-    X = np.array(dataset["_sequence"].tolist(), dtype=np.float32)
-    y = dataset["label"].values.astype(np.float32)
-    logger.info(f"Synthesized {len(X)} sequences for Deep Brain training.")
+    # Filter rows with valid sequences (paper-trade rows and old-schema rows lack them)
+    raw = dataset[dataset["_sequence"].notna()].copy()
+    seq_list = raw["_sequence"].tolist()
+    y_raw    = raw["label"].values.astype(np.float32)
+
+    ref_shape = None
+    good_seqs, good_y = [], []
+    for seq, lbl in zip(seq_list, y_raw):
+        try:
+            a = np.array(seq, dtype=np.float32)
+            if ref_shape is None and a.ndim == 2:
+                ref_shape = a.shape
+            if a.shape == ref_shape:
+                good_seqs.append(a)
+                good_y.append(lbl)
+        except Exception:
+            continue
+
+    if not good_seqs:
+        logger.warning("No valid sequences after filtering — skipping Neural V8")
+        logger.info("✅ Intelligence V8 Ensemble Cycle Complete.")
+        return
+
+    X = np.stack(good_seqs)
+    y = np.array(good_y, dtype=np.float32)
+    logger.info(f"Synthesized {len(X)} sequences of shape {X.shape[1:]} for Deep Brain training.")
 
     # 4. Train Neural V8 (Attention-GRU with Asymmetric Risk-Aware Loss)
     logger.info("--- Phase 3: Neural V8 Clinical Hardening (Sniper Precision Mode) ---")

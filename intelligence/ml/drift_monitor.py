@@ -4,24 +4,38 @@ Institutional data stability monitor for Intelligence V5.
 Detects when live market features are significantly uncoupled from training distributions.
 """
 
+import json
 import logging
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
-# Mocked baseline - in a production environment, these would be loaded from a
-# 'training_stats.json' generated during signal_model.train_model()
-BASELINE_STATS = {
-    "rsi": {"mean": 50.4, "std": 14.2, "weight": 1.0},
-    "atr_pct": {"mean": 0.012, "std": 0.005, "weight": 2.0},  # Volatility is more critical
-    "macd": {"mean": 0.0, "std": 0.8, "weight": 1.0},
-    "volume_zscore": {"mean": 0.0, "std": 1.2, "weight": 1.5},
+_STATS_PATH = Path(os.getenv("ML_MODEL_PATH", "data/signal_model.pkl")).parent / "training_stats.json"
+
+_DEFAULT_BASELINE = {
+    "rsi":             {"mean": 50.4,  "std": 14.2,  "weight": 1.0},
+    "atr_pct":         {"mean": 0.012, "std": 0.005, "weight": 2.0},
+    "macd_hist_norm":  {"mean": 0.0,   "std": 0.8,   "weight": 1.0},
+    "vol_ratio":       {"mean": 1.0,   "std": 1.2,   "weight": 1.5},
 }
+
+
+def _load_baseline() -> Dict[str, Dict]:
+    if _STATS_PATH.exists():
+        try:
+            with open(_STATS_PATH) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"[DriftMonitor] Could not load training_stats.json: {e}")
+    return _DEFAULT_BASELINE
+
 
 class DriftMonitor:
     def __init__(self, baseline: Dict[str, Dict] = None):
-        self.baseline = baseline or BASELINE_STATS
+        self.baseline = baseline if baseline is not None else _load_baseline()
         self.feature_history = {k: [] for k in self.baseline.keys()}
         self.history_limit = 100
 
@@ -39,20 +53,17 @@ class DriftMonitor:
             if val is None:
                 continue
 
-            # Simple Z-score check
-            z = abs((val - stats["mean"]) / stats["std"])
+            z = abs((val - stats["mean"]) / max(stats["std"], 1e-9))
             total_z += z * stats["weight"]
             weight_sum += stats["weight"]
 
             if z > 3.0:
                 drift_warnings.append(f"OUTLIER: {feat} is {z:.1f} std devs from baseline.")
 
-            # Update history for rolling drift
-            self.feature_history[feat].append(val)
+            self.feature_history.setdefault(feat, []).append(val)
             if len(self.feature_history[feat]) > self.history_limit:
                 self.feature_history[feat].pop(0)
 
-        # Integrity Score calculation: 100 - (Avg Z * 10)
         avg_z = (total_z / weight_sum) if weight_sum > 0 else 0
         integrity_score = max(0, min(100, int(100 - (avg_z * 12))))
 
@@ -67,12 +78,21 @@ class DriftMonitor:
             "status": status,
             "warnings": drift_warnings,
             "avg_z_score": round(avg_z, 2),
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-# Singleton instance
+
+# Singleton instance — initialised from training_stats.json if available
 drift_shield = DriftMonitor()
+
 
 def get_drift_report(features: Dict[str, Any]) -> Dict[str, Any]:
     """Tool wrapper for decision agents to check data integrity."""
     return drift_shield.check_drift(features)
+
+
+def update_baseline(stats: Dict[str, Dict]) -> None:
+    """Reload drift baseline from freshly computed training stats (called after retrain)."""
+    drift_shield.baseline = stats
+    drift_shield.feature_history = {k: [] for k in stats.keys()}
+    logger.info(f"[DriftMonitor] Baseline updated with {len(stats)} features from training stats")

@@ -37,9 +37,12 @@ from typing import List
 import psycopg2
 import psycopg2.extras
 import requests
+from airflow.datasets import Dataset
 from airflow.operators.python import PythonOperator
 
 from airflow import DAG
+
+DS_MACRO_INDICATORS = Dataset("postgres://postgres:5432/crypto_stream_db/macro_indicators")
 
 log = logging.getLogger(__name__)
 
@@ -227,12 +230,14 @@ with DAG(
         task_id="ingest_fred_series",
         python_callable=ingest_fred_series,
         provide_context=True,
+        outlets=[DS_MACRO_INDICATORS],
     )
 
     t_validate = PythonOperator(
         task_id="validate_freshness",
         python_callable=validate_fred_data,
         provide_context=True,
+        inlets=[DS_MACRO_INDICATORS],
     )
 
     t_ingest >> t_validate

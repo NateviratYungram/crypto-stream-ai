@@ -39,6 +39,7 @@ def migrate_schema():
     for col, typedef in [
         ("sl",           "REAL"),
         ("tp",           "REAL"),
+        ("exit_price",   "REAL"),
         ("outcome",      "TEXT"),
         ("features_json","TEXT"),
         ("ml_score",     "REAL"),

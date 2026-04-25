@@ -140,6 +140,30 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
             df = compute_indicators(df)
             sent_v = _get_sentiment(sym)
 
+            # Skip if live features are critically far from training distribution
+            try:
+                from intelligence.ml.drift_monitor import get_drift_report
+                last = df.iloc[-1]
+                _drift_feats = {}
+                if "RSI" in df.columns:
+                    _drift_feats["rsi"] = float(last["RSI"])
+                if "ATR" in df.columns and float(last.get("Close", 1) or 1) > 0:
+                    _drift_feats["atr_pct"] = float(last["ATR"]) / float(last["Close"])
+                if "MACD_Hist" in df.columns:
+                    _drift_feats["macd_hist_norm"] = float(last["MACD_Hist"])
+                if "Volume_Ratio" in df.columns:
+                    _drift_feats["vol_ratio"] = float(last["Volume_Ratio"])
+                if _drift_feats:
+                    _dr = get_drift_report(_drift_feats)
+                    if _dr.get("status") == "CRITICAL_DRIFT":
+                        logger.warning(
+                            f"[ML-Scanner] {sym}/{tf} CRITICAL_DRIFT "
+                            f"(integrity={_dr['integrity_score']}) — skipping"
+                        )
+                        continue
+            except Exception as _de:
+                logger.debug(f"[ML-Scanner] drift check error for {sym}/{tf}: {_de}")
+
             # Evaluate both directions
             best_side    = None
             best_win_pct = 0.0

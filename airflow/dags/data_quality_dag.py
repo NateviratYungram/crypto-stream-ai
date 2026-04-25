@@ -42,9 +42,15 @@ from typing import Any, Dict, List
 
 import psycopg2
 import psycopg2.extras
+from airflow.datasets import Dataset
 from airflow.operators.python import PythonOperator
 
 from airflow import DAG
+
+DS_ENRICHED_TRADES  = Dataset("postgres://postgres:5432/crypto_stream_db/enriched_trades")
+DS_MARKET_OHLCV     = Dataset("postgres://postgres:5432/crypto_stream_db/market_ohlcv")
+DS_DAILY_SUMMARY    = Dataset("postgres://postgres:5432/crypto_stream_db/daily_summary")
+DS_DQ_LOG           = Dataset("postgres://postgres:5432/crypto_stream_db/data_quality_log")
 
 log = logging.getLogger(__name__)
 
@@ -287,13 +293,16 @@ with DAG(
         task_id="run_assertions",
         python_callable=run_assertions,
         provide_context=True,
+        inlets=[DS_ENRICHED_TRADES, DS_MARKET_OHLCV, DS_DAILY_SUMMARY],
+        outlets=[DS_DQ_LOG],
     )
 
     t_summary = PythonOperator(
         task_id="log_dq_summary",
         python_callable=log_dq_summary,
         provide_context=True,
-        trigger_rule="all_done",  # run even if assertions fail
+        trigger_rule="all_done",
+        inlets=[DS_DQ_LOG],
     )
 
     t_assert >> t_summary

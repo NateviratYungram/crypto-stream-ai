@@ -64,42 +64,119 @@ DEFAULT_SYMBOLS = [
 ]
 
 # ── TRADEABLE ASSET Training Set (Broker-verified MT5 symbols) ───────────────
-# Covers: Crypto, Forex, Commodities across 3 timeframes for rich ML coverage
-# Only includes symbols confirmed available in XM Global MT5 terminal
+# Maximized universe: Crypto, Forex (major + minor + cross), Commodities
+# across 15m / 1h / 4h / 1d — 1d gives 20+ years of daily data via yfinance
 TRADE_TRAIN_SYMBOLS = [
-    # ── Crypto ──────────────────────────────────────────────────────────────
-    ("BTCUSD", "CRYPTO", "15m"),
-    ("BTCUSD", "CRYPTO", "1h"),
-    ("BTCUSD", "CRYPTO", "4h"),
-    ("ETHUSD", "CRYPTO", "15m"),
-    ("ETHUSD", "CRYPTO", "1h"),
-    ("ETHUSD", "CRYPTO", "4h"),
-    ("SOLUSD", "CRYPTO", "1h"),
-    ("SOLUSD", "CRYPTO", "4h"),
-    ("XRPUSD", "CRYPTO", "1h"),
-    ("XRPUSD", "CRYPTO", "4h"),
-    # ── Commodities ──────────────────────────────────────────────────────────
-    ("GOLD",   "MACRO",  "15m"),
-    ("GOLD",   "MACRO",  "1h"),
-    ("GOLD",   "MACRO",  "4h"),
-    ("SILVER", "MACRO",  "1h"),
-    ("SILVER", "MACRO",  "4h"),
-    # ── Major Forex ──────────────────────────────────────────────────────────
-    ("EURUSD", "MACRO",  "15m"),
-    ("EURUSD", "MACRO",  "1h"),
-    ("EURUSD", "MACRO",  "4h"),
-    ("GBPUSD", "MACRO",  "1h"),
-    ("GBPUSD", "MACRO",  "4h"),
-    ("USDJPY", "MACRO",  "1h"),
-    ("USDJPY", "MACRO",  "4h"),
-    ("USDCHF", "MACRO",  "1h"),
-    ("AUDUSD", "MACRO",  "1h"),
-    ("NZDUSD", "MACRO",  "1h"),
+    # ── Crypto — 15m + 1h + 4h + 1d ────────────────────────────────────────
+    ("BTCUSD",  "CRYPTO", "15m"),
+    ("BTCUSD",  "CRYPTO", "1h"),
+    ("BTCUSD",  "CRYPTO", "4h"),
+    ("BTCUSD",  "CRYPTO", "1d"),
+    ("ETHUSD",  "CRYPTO", "15m"),
+    ("ETHUSD",  "CRYPTO", "1h"),
+    ("ETHUSD",  "CRYPTO", "4h"),
+    ("ETHUSD",  "CRYPTO", "1d"),
+    ("SOLUSD",  "CRYPTO", "1h"),
+    ("SOLUSD",  "CRYPTO", "4h"),
+    ("SOLUSD",  "CRYPTO", "1d"),
+    ("XRPUSD",  "CRYPTO", "1h"),
+    ("XRPUSD",  "CRYPTO", "4h"),
+    ("XRPUSD",  "CRYPTO", "1d"),
+    ("BNBUSD",  "CRYPTO", "1h"),
+    ("BNBUSD",  "CRYPTO", "4h"),
+    ("BNBUSD",  "CRYPTO", "1d"),
+    ("ADAUSD",  "CRYPTO", "1h"),
+    ("ADAUSD",  "CRYPTO", "4h"),
+    ("DOTUSD",  "CRYPTO", "1h"),
+    ("DOTUSD",  "CRYPTO", "4h"),
+    ("LINKUSD", "CRYPTO", "1h"),
+    ("LINKUSD", "CRYPTO", "4h"),
+    ("AVAXUSD", "CRYPTO", "1h"),
+    ("AVAXUSD", "CRYPTO", "4h"),
+    ("LTCUSD",  "CRYPTO", "1h"),
+    ("LTCUSD",  "CRYPTO", "4h"),
+    ("LTCUSD",  "CRYPTO", "1d"),
+    ("ATOMUSD", "CRYPTO", "1h"),
+    ("UNIUSD",  "CRYPTO", "1h"),
+    ("MATICUSD","CRYPTO", "1h"),
+    # ── Commodities — 15m + 1h + 4h + 1d ────────────────────────────────────
+    ("GOLD",    "MACRO",  "15m"),
+    ("GOLD",    "MACRO",  "1h"),
+    ("GOLD",    "MACRO",  "4h"),
+    ("GOLD",    "MACRO",  "1d"),
+    ("SILVER",  "MACRO",  "1h"),
+    ("SILVER",  "MACRO",  "4h"),
+    ("SILVER",  "MACRO",  "1d"),
+    ("OIL",     "MACRO",  "1h"),
+    ("OIL",     "MACRO",  "4h"),
+    ("OIL",     "MACRO",  "1d"),
+    # ── Major Forex — 15m + 1h + 4h + 1d ────────────────────────────────────
+    ("EURUSD",  "MACRO",  "15m"),
+    ("EURUSD",  "MACRO",  "1h"),
+    ("EURUSD",  "MACRO",  "4h"),
+    ("EURUSD",  "MACRO",  "1d"),
+    ("GBPUSD",  "MACRO",  "15m"),
+    ("GBPUSD",  "MACRO",  "1h"),
+    ("GBPUSD",  "MACRO",  "4h"),
+    ("GBPUSD",  "MACRO",  "1d"),
+    ("USDJPY",  "MACRO",  "1h"),
+    ("USDJPY",  "MACRO",  "4h"),
+    ("USDJPY",  "MACRO",  "1d"),
+    ("USDCHF",  "MACRO",  "1h"),
+    ("USDCHF",  "MACRO",  "4h"),
+    ("USDCHF",  "MACRO",  "1d"),
+    ("AUDUSD",  "MACRO",  "1h"),
+    ("AUDUSD",  "MACRO",  "4h"),
+    ("AUDUSD",  "MACRO",  "1d"),
+    ("NZDUSD",  "MACRO",  "1h"),
+    ("NZDUSD",  "MACRO",  "4h"),
+    ("USDCAD",  "MACRO",  "1h"),
+    ("USDCAD",  "MACRO",  "4h"),
+    ("USDCAD",  "MACRO",  "1d"),
+    # ── Minor / Cross Forex — 1h + 4h + 1d ──────────────────────────────────
+    ("EURGBP",  "MACRO",  "1h"),
+    ("EURGBP",  "MACRO",  "4h"),
+    ("EURGBP",  "MACRO",  "1d"),
+    ("EURJPY",  "MACRO",  "1h"),
+    ("EURJPY",  "MACRO",  "4h"),
+    ("EURJPY",  "MACRO",  "1d"),
+    ("EURCHF",  "MACRO",  "1h"),
+    ("EURCHF",  "MACRO",  "4h"),
+    ("EURCAD",  "MACRO",  "1h"),
+    ("EURAUD",  "MACRO",  "1h"),
+    ("GBPJPY",  "MACRO",  "1h"),
+    ("GBPJPY",  "MACRO",  "4h"),
+    ("GBPJPY",  "MACRO",  "1d"),
+    ("GBPCHF",  "MACRO",  "1h"),
+    ("GBPCAD",  "MACRO",  "1h"),
+    ("AUDJPY",  "MACRO",  "1h"),
+    ("AUDJPY",  "MACRO",  "4h"),
+    ("CADJPY",  "MACRO",  "1h"),
+    ("CADJPY",  "MACRO",  "4h"),
+    ("CHFJPY",  "MACRO",  "1h"),
+    ("AUDNZD",  "MACRO",  "1h"),
+    ("AUDCAD",  "MACRO",  "1h"),
+    ("NZDCAD",  "MACRO",  "1h"),
+    ("NZDJPY",  "MACRO",  "1h"),
+    # ── Global Indices — 1d (20+ years of daily data) ────────────────────────
+    ("NASDAQ",  "MACRO",  "1d"),
+    ("SP500",   "MACRO",  "1d"),
+    ("^DJI",    "MACRO",  "1d"),
+    ("^GDAXI",  "MACRO",  "1d"),   # DAX
+    ("^FTSE",   "MACRO",  "1d"),   # FTSE 100
+    ("^FCHI",   "MACRO",  "1d"),   # CAC 40
+    ("^N225",   "MACRO",  "1d"),   # Nikkei 225
+    ("^HSI",    "MACRO",  "1d"),   # Hang Seng
+    # ── More Commodities — 1h + 4h + 1d ─────────────────────────────────────
+    ("NG=F",    "MACRO",  "1d"),   # Natural Gas
+    ("HG=F",    "MACRO",  "1d"),   # Copper
+    ("ZW=F",    "MACRO",  "1d"),   # Wheat
+    ("ZC=F",    "MACRO",  "1d"),   # Corn
 ]
 
-# Expanded symbol set for model training — full tradeable universe
-TRAIN_SYMBOLS = [item for item in TRADE_TRAIN_SYMBOLS if item[2] in ("15m", "1h")]
-DEFAULT_TRAIN_LIMIT = 5000
+# Full universe — all timeframes for maximum coverage
+TRAIN_SYMBOLS = TRADE_TRAIN_SYMBOLS
+DEFAULT_TRAIN_LIMIT = 500000
 ML_CORE_SYMBOLS = ["BTCUSD", "ETHUSD", "GOLD", "EURUSD"]
 ML_SUFFICIENCY_TARGETS = {
     "paper_labels": 100,
@@ -179,50 +256,106 @@ def _is_valid_feature_row(feats: Dict[str, Any]) -> bool:
 # Dataset Builder
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _build_daily_context(symbol: str, asset_class: str) -> dict:
+    """
+    Fetch 1d bars for symbol, compute indicators, return {date: daily_context_dict}.
+    Used to inject daily trend context into intraday training rows.
+    """
+    from intelligence.technical_engine import compute_indicators, get_kline_data
+    try:
+        df_d = get_kline_data(symbol, timeframe="1d", limit=3000, asset_class=asset_class, ignore_freshness=True)
+        if df_d is None or len(df_d) < 50:
+            return {}
+        df_d = compute_indicators(df_d)
+        lookup: dict = {}
+        for ts, row in df_d.iterrows():
+            # Index may be datetime or Unix-ms integer — normalise to date
+            try:
+                if isinstance(ts, (int, float)):
+                    d_key = pd.Timestamp(ts, unit="ms").date()
+                else:
+                    d_key = pd.Timestamp(ts).date()
+            except Exception:
+                continue
+            price  = float(row.get("Close", 0) or 0)
+            ema50  = float(row.get("ema_50",  price) or price) or price
+            ema200 = float(row.get("ema_200", price) or price) or price
+            rsi    = float(row.get("rsi_14",  50.0)  or 50.0)
+            d_trend = max(-20.0, min(20.0, (price - ema50) / ema50 * 100)) if ema50 > 0 else 0.0
+            lookup[d_key] = {
+                "d_trend":     d_trend,
+                "d_rsi":       rsi,
+                "d_ema_align": 1.0 if price > ema200 else 0.0,
+            }
+        return lookup
+    except Exception as exc:
+        logger.warning(f"[ML-Dataset] Daily context build failed for {symbol}: {exc}")
+        return {}
+
+
 def _generate_training_signals(df: pd.DataFrame, tf: str) -> pd.DataFrame:
     """
-    Relaxed signal generator specifically for ML training data.
-    Produces more labeled examples than the strict live-trading version.
+    Maximized signal generator for ML training data.
+    Three signal types per bar to maximize labeled examples:
+      Type A — Trend-following: price vs EMA50 + relaxed RSI bands
+      Type B — Oversold/Overbought reversal: extreme RSI regardless of EMA
+      Type C — Momentum breakout: strong ADX + price crosses EMA20
 
-    Rules (per bar, no consecutive same-direction signals):
-      BUY  when: price > ema50 AND rsi < 55 AND (adx > 18 OR rsi < 40)
-      SELL when: price < ema50 AND rsi > 45 AND (adx > 18 OR rsi > 60)
-
-    Timeframe-specific RSI tuning:
-      1d  → wider bands (rsi 42 / 58) to capture multi-week moves
-      15m → tighter bands (rsi 48 / 52) to capture intraday momentum
+    Cooldown replaces hard consecutive-block so opposite signals can fire
+    after `cooldown` bars, capturing more market transitions.
     """
     import numpy as np
     df = df.copy()
-    required = {"rsi_14", "ema_50", "adx_14", "atr_14"}
+    required = {"rsi_14", "ema_20", "ema_50", "adx_14", "atr_14"}
     if not required.issubset(df.columns):
         return df
 
-    is_daily  = tf in ("1d", "1w")
-    rsi_long  = 42 if is_daily else 48
-    rsi_short = 58 if is_daily else 52
-    adx_min   = 15
+    is_daily = tf in ("1d", "1w")
+    # Wider RSI bands → more signals per bar
+    rsi_buy  = 57 if not is_daily else 55
+    rsi_sell = 43 if not is_daily else 45
+    adx_min  = 10   # lowered from 15
+    cooldown = 3    # bars between same-direction signals (was hard block)
 
     close = df["Close"].values
+    ema20 = df["ema_20"].values
     ema50 = df["ema_50"].values
     rsi   = df["rsi_14"].values
     adx   = df["adx_14"].values
     n     = len(df)
 
-    signals = np.zeros(n, dtype=int)
+    signals  = np.zeros(n, dtype=int)
+    last_buy  = -cooldown - 1
+    last_sell = -cooldown - 1
+
     for i in range(1, n):
-        r = float(rsi[i]) if not np.isnan(rsi[i]) else 50
-        a = float(adx[i]) if not np.isnan(adx[i]) else 0
+        r = float(rsi[i])  if not np.isnan(rsi[i])  else 50.0
+        a = float(adx[i])  if not np.isnan(adx[i])  else 0.0
         c = float(close[i])
-        e = float(ema50[i]) if not np.isnan(ema50[i]) else c
+        e20 = float(ema20[i]) if not np.isnan(ema20[i]) else c
+        e50 = float(ema50[i]) if not np.isnan(ema50[i]) else c
 
-        buy_cond  = c > e and r < rsi_long  and (a > adx_min or r < 35)
-        sell_cond = c < e and r > rsi_short and (a > adx_min or r > 65)
+        # Type A: trend-following
+        buy_a  = c > e50 and r < rsi_buy  and (a > adx_min or r < 40)
+        sell_a = c < e50 and r > rsi_sell and (a > adx_min or r > 60)
 
-        if buy_cond  and signals[i-1] != 1:
+        # Type B: extreme RSI reversal (no EMA condition)
+        buy_b  = r < 30
+        sell_b = r > 70
+
+        # Type C: momentum — strong ADX + EMA20 cross
+        buy_c  = a > 25 and c > e20 and c > e50
+        sell_c = a > 25 and c < e20 and c < e50
+
+        want_buy  = buy_a  or buy_b  or buy_c
+        want_sell = sell_a or sell_b or sell_c
+
+        if want_buy and (i - last_buy) > cooldown:
             signals[i] = 1
-        elif sell_cond and signals[i-1] != -1:
+            last_buy = i
+        elif want_sell and (i - last_sell) > cooldown:
             signals[i] = -1
+            last_sell = i
 
     df["signal"] = signals
     return df
@@ -231,10 +364,10 @@ def _generate_training_signals(df: pd.DataFrame, tf: str) -> pd.DataFrame:
 def build_ml_dataset(
     symbols: List[Tuple[str, str, str]] = None,
     limit: int = DEFAULT_TRAIN_LIMIT,
-    sl_mult: float = 1.5,
-    tp_mult: float = 3.0,
-    max_bars: int = 48,
-    sequence_length: int = 20, # Number of bars for neural temporal memory
+    sl_mult: float = 1.2,
+    tp_mult: float = 2.0,   # 2R target → ~40-45% win rate vs 29% at 3R
+    max_bars: int = 72,     # more time to resolve → fewer timeouts
+    sequence_length: int = 20,
 ) -> pd.DataFrame:
     """
     Run backtests across symbols and return a labeled ML dataset.
@@ -272,11 +405,26 @@ def build_ml_dataset(
             low_arr   = df["Low"].values
             atr_arr   = df["atr_14"].values
 
+            # Daily trend context: only useful for intraday timeframes
+            daily_ctx_lookup: dict = {}
+            if tf in ("15m", "1h", "4h"):
+                daily_ctx_lookup = _build_daily_context(sym, asset_class)
+
             # Pre-calculate features for all rows to speed up sequence synthesis
-            # This is faster than calling extract_features in a loop
             feature_list = []
             for i in range(len(df)):
-                feature_list.append(extract_features(df, i, symbol=sym, asset_class=asset_class))
+                dc_i = None
+                if daily_ctx_lookup:
+                    try:
+                        ts_raw = df.index[i]
+                        if isinstance(ts_raw, (int, float)):
+                            d_key_i = pd.Timestamp(ts_raw, unit="ms").date()
+                        else:
+                            d_key_i = pd.Timestamp(ts_raw).date()
+                        dc_i = daily_ctx_lookup.get(d_key_i)
+                    except Exception:
+                        pass
+                feature_list.append(extract_features(df, i, symbol=sym, asset_class=asset_class, daily_context=dc_i))
 
             feat_df = pd.DataFrame(feature_list)
 
@@ -732,8 +880,35 @@ def train_model(
     # Use only rows that have all feature columns
     available = [c for c in FEATURE_COLS if c in dataset.columns]
     X_ens = dataset[available].fillna(0).values
-    X_neu = None  # Neural trainer disabled
     y = dataset["label"].values
+
+    # Build neural sequences — filter NaN rows, enforce uniform shape, align y labels
+    X_neu = None
+    y_neu = None
+    if "_sequence" in dataset.columns:
+        try:
+            seq_mask = dataset["_sequence"].notna()
+            seq_indices = dataset.index[seq_mask].tolist()
+            seq_raw     = dataset.loc[seq_mask, "_sequence"].tolist()
+            ref_shape   = None
+            good: list  = []
+            good_idx: list = []
+            for idx, s in zip(seq_indices, seq_raw):
+                try:
+                    a = np.array(s, dtype=np.float32)
+                    if ref_shape is None and a.ndim == 2:
+                        ref_shape = a.shape
+                    if a.shape == ref_shape:
+                        good.append(a)
+                        good_idx.append(idx)
+                except Exception:
+                    pass
+            if good:
+                X_neu = np.stack(good)
+                y_neu = dataset.loc[good_idx, "label"].values  # aligned labels
+                logger.info(f"[ML-Train] Neural sequences prepared: {X_neu.shape}")
+        except Exception as e:
+            logger.warning(f"[ML-Train] Neural sequence prep failed: {e}")
 
     if len(X_ens) < 50:
         return {"error": f"Not enough training samples: {len(X_ens)} (need ≥ 50)"}
@@ -749,10 +924,6 @@ def train_model(
         dtype=float,
     )
 
-    # Split for Neural
-    if X_neu is not None:
-        X_neu[:len(X_train_ens)]
-        X_neu[len(X_train_ens):]
 
     from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 
@@ -777,8 +948,18 @@ def train_model(
     model.fit(X_train_ens, y_train, clf__sample_weight=sample_weights)
     walk_forward = _walk_forward_evaluate(model, X_ens, y)
 
-    # Neural Trainer disabled for speed — GBM+RF ensemble is sufficient
-    logger.info("[ML-Train] Skipping Neural V8 (disabled for faster retrain)")
+    # Neural V8 Training (Attention-GRU on temporal sequences)
+    if X_neu is not None and y_neu is not None and TORCH_AVAILABLE:
+        try:
+            trainer = get_neural_optimizer(input_size=len(available))
+            if trainer:
+                logger.info(f"[ML-Train] Training Neural V8 on {len(X_neu)} sequences...")
+                val_loss = trainer.train_on_sequences(X_neu, y_neu, epochs=100)
+                logger.info(f"[ML-Train] Neural V8 complete — val_loss={val_loss:.4f}")
+        except Exception as e:
+            logger.warning(f"[ML-Train] Neural V8 training failed: {e}")
+    else:
+        logger.info("[ML-Train] Neural V8 skipped (no sequences or torch unavailable)")
 
     y_pred  = model.predict(X_test_ens)
     y_prob  = model.predict_proba(X_test_ens)[:, 1]
@@ -880,6 +1061,33 @@ def train_model(
         }, f)
 
     logger.info(f"[ML-Train] Saved Intelligence V8 model → {MODEL_PATH} | acc={acc:.1%} | auc={auc:.3f} | n={len(X_ens)}")
+
+    # Persist feature distribution stats so drift_monitor uses real training data
+    _stats_path = MODEL_PATH.parent / "training_stats.json"
+    try:
+        _weights = {"rsi": 1.0, "atr_pct": 2.0, "macd_hist_norm": 1.0, "vol_ratio": 1.5}
+        _X_df = pd.DataFrame(X_ens, columns=available)
+        _training_stats: Dict[str, Any] = {}
+        for _feat in _weights:
+            if _feat in _X_df.columns:
+                _col = _X_df[_feat].replace([np.inf, -np.inf], np.nan).dropna()
+                if len(_col) > 0:
+                    _training_stats[_feat] = {
+                        "mean":   round(float(_col.mean()), 6),
+                        "std":    max(round(float(_col.std()), 6), 1e-6),
+                        "weight": _weights[_feat],
+                    }
+        if _training_stats:
+            with open(_stats_path, "w") as _sf:
+                json.dump(_training_stats, _sf, indent=2)
+            logger.info(f"[ML-Train] Training stats saved → {_stats_path}")
+            try:
+                from intelligence.ml.drift_monitor import update_baseline
+                update_baseline(_training_stats)
+            except Exception:
+                pass
+    except Exception as _se:
+        logger.warning(f"[ML-Train] Could not save training stats: {_se}")
 
     return {
         "status":    "trained",
@@ -1016,8 +1224,19 @@ def predict_with_neural_consensus(
     # If the model is older than 24h OR performance has decayed, trigger background train
     _consider_auto_retrain()
 
+    # Fetch daily context once for the current bar (multi-timeframe enrichment)
+    _dc_lookup: Dict = {}
+    _daily_ctx: Optional[Dict] = None
+    try:
+        _dc_lookup = _build_daily_context(symbol, asset_class)
+        _ts_now = df.index[idx]
+        if _dc_lookup and hasattr(_ts_now, "date"):
+            _daily_ctx = _dc_lookup.get(_ts_now.date())
+    except Exception:
+        pass
+
     # 1. Ensemble V6 Opinion (Technical + Sentiment Snapshot)
-    features = extract_features(df, idx, side, symbol, asset_class, sentiment_score)
+    features = extract_features(df, idx, side, symbol, asset_class, sentiment_score, daily_context=_daily_ctx)
     v3_result = predict_win_probability(features)
 
     # 2. Neural V8 Opinion (Deep Sequence Analysis)
@@ -1030,7 +1249,9 @@ def predict_with_neural_consensus(
             if len(df) >= 20:
                 seq_data = []
                 for i in range(idx - 19, idx + 1):
-                    seq_data.append(extract_features(df, i, symbol=symbol, asset_class=asset_class))
+                    _ts_i = df.index[i]
+                    _dc_i = _dc_lookup.get(_ts_i.date()) if _dc_lookup and hasattr(_ts_i, "date") else None
+                    seq_data.append(extract_features(df, i, symbol=symbol, asset_class=asset_class, daily_context=_dc_i))
 
                 # Convert list of dicts to a 2D numpy array of values
                 seq_arr = np.array([[f.get(c, 0.0) for c in FEATURE_COLS] for f in seq_data])
@@ -1162,6 +1383,9 @@ def get_auto_retrain_status(bundle: Optional[Dict[str, Any]] = None) -> Dict[str
 
     return status
 
+_AUTO_RETRAIN_RUNNING = False
+
+
 def _consider_auto_retrain():
     """
     Intelligence V6: Adaptive Performance Trigger.
@@ -1170,28 +1394,45 @@ def _consider_auto_retrain():
     2. Significant number of new paper outcomes (50+) since last train.
     3. Model is older than 7 days anyway.
     """
+    import threading
     import time
-    global _LAST_AUTO_RETRAIN_CHECK
+    global _LAST_AUTO_RETRAIN_CHECK, _AUTO_RETRAIN_RUNNING
     now = time.time()
     if now - _LAST_AUTO_RETRAIN_CHECK < 3600:
         return
     _LAST_AUTO_RETRAIN_CHECK = now
 
     status = get_auto_retrain_status()
-    if not status.get("available"):
+    if not status.get("available") or not status.get("recommended"):
         return
 
-    if "performance_decay" in status.get("reasons", []):
-        logger.warning(
-            "V6 PERFORMANCE DECAY: Recent win rate %s. Recommend retraining.",
-            f"{(status.get('recent_win_rate') or 0.0):.1%}",
-        )
+    if _AUTO_RETRAIN_RUNNING:
+        logger.info("[AutoRetrain] Retrain already running — skipping duplicate trigger")
+        return
 
-    if "new_labels" in status.get("reasons", []):
-        logger.info(
-            "V6 DATA SUFFICIENCY: %s new labeled outcomes since last train.",
-            status.get("outcomes_since_retrain", 0),
-        )
+    reasons = status.get("reasons", [])
+    logger.warning(f"[AutoRetrain] Triggering background retrain. Reasons: {reasons}")
+
+    def _retrain_worker():
+        global _AUTO_RETRAIN_RUNNING
+        _AUTO_RETRAIN_RUNNING = True
+        try:
+            result = train_model()
+            if "error" in result:
+                logger.error(f"[AutoRetrain] Background retrain failed: {result['error']}")
+            else:
+                logger.info(
+                    f"[AutoRetrain] Complete — "
+                    f"acc={result.get('accuracy')} auc={result.get('roc_auc')} "
+                    f"n={result.get('n_samples')}"
+                )
+                invalidate_model_cache()
+        except Exception as exc:
+            logger.error(f"[AutoRetrain] Exception: {exc}")
+        finally:
+            _AUTO_RETRAIN_RUNNING = False
+
+    threading.Thread(target=_retrain_worker, name="auto-retrain", daemon=True).start()
 
     if "model_age" in status.get("reasons", []):
         logger.info(

@@ -256,17 +256,19 @@ def get_kline_data(
         # ... (yfinance fetch logic continues) ...
 
         # Map timeframe to yfinance intervals and appropriate period
-        # Institutional speed: Reduced lookback to minimize yfinance latency
+        # 1d → "max" gives 20+ years; 1h → "730d" gives 2 years (yfinance cap)
+        # 15m → "60d" is the yfinance hard cap for sub-hour intervals
         yf_intervals = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}
         interval = yf_intervals.get(timeframe, "1d")
         period_map = {
             "1m":  "5d",
-            "5m":  "15d", # Reduced from 30d (was too slow)
-            "15m": "15d", # Reduced from 30d (was too slow)
-            "1h":  "60d",
-            "1d":  "1y",
+            "5m":  "60d",
+            "15m": "60d",
+            "1h":  "730d",
+            "4h":  "730d",
+            "1d":  "max",
         }
-        period = period_map.get(timeframe, "15d")
+        period = period_map.get(timeframe, "60d")
 
         try:
             df_yf = yf.download(
@@ -367,7 +369,8 @@ def get_kline_data(
     # ── Choice B: Crypto Assets (PostgreSQL) ──────────────────────────────────
     pg_sym = _sym_crypto + "USDT"  # use pre-alias symbol (BTC not BTC-USD)
     tf_secs = TIMEFRAME_SECONDS.get(timeframe, 900)
-    lookback_s = limit * tf_secs * 2
+    MAX_LOOKBACK_S = 86400 * 365 * 20  # cap at 20 years to prevent timedelta overflow
+    lookback_s = min(limit * tf_secs * 2, MAX_LOOKBACK_S)
     since = datetime.utcnow() - timedelta(seconds=lookback_s)
 
     sql_live = f"""

@@ -29,10 +29,12 @@ from google import genai
 from intelligence.agents.confluence_agent import create_confluence_agent
 from intelligence.agents.decision_agent import create_decision_agent
 from intelligence.agents.indicator_agent import create_indicator_agent
+from intelligence.agents.intermarket_agent import create_intermarket_agent
 from intelligence.agents.master_agent import create_master_agent
 from intelligence.agents.pattern_agent import create_pattern_agent
 from intelligence.agents.sentiment_agent import create_sentiment_agent
 from intelligence.agents.trend_agent import create_trend_agent
+from intelligence.guards.correlation_guardian import check_directional_correlation
 from intelligence.chart_generator import generate_kline_chart, generate_trend_chart
 from intelligence.technical_engine import (
     compute_indicators,
@@ -54,13 +56,14 @@ class CryptoIntelligence:
         self.config = config or {}
 
         # Instantiate all agents
-        self.confluence_agent = create_confluence_agent()          # pure Python, no LLM
-        self.indicator_agent  = create_indicator_agent(client)
-        self.pattern_agent    = create_pattern_agent(client)
-        self.trend_agent      = create_trend_agent(client)
-        self.sentiment_agent  = create_sentiment_agent(client)
-        self.decision_agent   = create_decision_agent(client)
-        self.master_agent     = create_master_agent(client, config)
+        self.intermarket_agent = create_intermarket_agent()        # pure Python, no LLM
+        self.confluence_agent  = create_confluence_agent()         # pure Python, no LLM
+        self.indicator_agent   = create_indicator_agent(client)
+        self.pattern_agent     = create_pattern_agent(client)
+        self.trend_agent       = create_trend_agent(client)
+        self.sentiment_agent   = create_sentiment_agent(client)
+        self.decision_agent    = create_decision_agent(client)
+        self.master_agent      = create_master_agent(client, config)
 
         logger.info("CryptoIntelligence: All agents initialized ✅")
 
@@ -111,6 +114,17 @@ class CryptoIntelligence:
             state["indicator_summary"] = get_indicator_summary(df, sym)
             logger.info(f"  → {len(df)} candles, indicators computed")
 
+        # ── Step 1.5: Intermarket Context (parallel fetch, pure Python) ─────────
+        logger.info("Step 1.5/9: Intermarket Agent (DXY/VIX/F&G/Funding)...")
+        state.update(self.intermarket_agent(state))
+        im = state.get("intermarket", {})
+        logger.info(
+            f"  → macro={im.get('macro_bias','?')} "
+            f"DXY={im.get('dxy',{}).get('trend','?')} "
+            f"VIX={im.get('vix',{}).get('level','?')} "
+            f"F&G={im.get('fear_greed',{}).get('value','?')}"
+        )
+
         # ── Step 2: Chart Generation ──────────────────────────────────────────
         if include_charts and state.get("kline_data") is not None:
             logger.info("Step 2/9: Generating charts...")
@@ -151,10 +165,41 @@ class CryptoIntelligence:
         state.update(self.sentiment_agent(state))
         logger.info(f"  → Sentiment: {state.get('sentiment_label','?')} ({state.get('sentiment_score',0):+.0f})")
 
+        # ── Step 7.5: Asset-class session context (code-enforced, not LLM) ──────
+        if asset_class == "MACRO":
+            import datetime
+            utc_h = datetime.datetime.utcnow().hour
+            if 7 <= utc_h < 16:
+                state["forex_session"] = "LONDON"
+                state["session_quality"] = "GOOD"
+            elif 13 <= utc_h < 22:
+                state["forex_session"] = "NEW_YORK"
+                state["session_quality"] = "GOOD"
+            else:
+                state["forex_session"] = "ASIA_THIN"
+                state["session_quality"] = "POOR"
+            logger.info(f"  → Forex session: {state['forex_session']} ({state['session_quality']})")
+
         # ── Step 8: Decision Agent ────────────────────────────────────────────
         logger.info("Step 8/9: Decision Agent (LONG/SHORT/HOLD)...")
         state.update(self.decision_agent(state))
         logger.info(f"  → Decision: {state.get('trade_decision','?')}, Confidence: {state.get('decision_confidence','?')}%")
+
+        # ── Step 8.5: Directional Correlation (MT5 assets only) ──────────────
+        trade_side = state.get("trade_decision", "HOLD")
+        if trade_side in ("LONG", "SHORT"):
+            dir_corr = check_directional_correlation(
+                symbol=sym,
+                side=trade_side,
+                asset_class=asset_class,
+            )
+            state["directional_correlation"] = dir_corr
+            logger.info(
+                f"  → Directional corr: confirmed={dir_corr['confirmed']} "
+                f"score={dir_corr['score']} conflicts={dir_corr['conflicts']}"
+            )
+        else:
+            state["directional_correlation"] = {"confirmed": True, "score": 1.0, "conflicts": [], "checked": 0}
 
         # ── Step 9: Master Agent (Final Gate) ─────────────────────────────────
         logger.info("Step 9/9: Master Agent (Final weighted vote)...")

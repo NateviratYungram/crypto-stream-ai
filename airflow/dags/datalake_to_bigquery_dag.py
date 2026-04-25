@@ -25,11 +25,15 @@ import logging
 import os
 from datetime import datetime, timedelta
 
+from airflow.datasets import Dataset
 from airflow.models import Variable
 from airflow.operators.dummy import DummyOperator
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from airflow import DAG
+
+DS_PARQUET_LAKE = Dataset("file:///opt/datalake/raw_trades")
+DS_BIGQUERY     = Dataset("bigquery://crypto-stream/crypto_stream/raw_trades")
 
 try:
     from airflow.providers.google.cloud.operators.bigquery import (
@@ -169,22 +173,26 @@ with DAG(
     t_check = ShortCircuitOperator(
         task_id='check_data_availability',
         python_callable=scan_parquet_files,
+        inlets=[DS_PARQUET_LAKE],
     )
 
     if DRY_RUN or not GCP_PROVIDERS_AVAILABLE:
         t_upload = PythonOperator(
             task_id='upload_to_gcs',
             python_callable=lambda **c: log.info("DRY RUN: Uploading files..."),
+            inlets=[DS_PARQUET_LAKE],
         )
         t_create_ds = DummyOperator(task_id='create_dataset')
         t_load = PythonOperator(
             task_id='gcs_to_bigquery',
             python_callable=dry_run_bq_load,
+            outlets=[DS_BIGQUERY],
         )
     else:
         t_upload = PythonOperator(
             task_id='upload_to_gcs',
             python_callable=upload_files_to_gcs,
+            inlets=[DS_PARQUET_LAKE],
         )
 
         t_create_ds = BigQueryCreateEmptyDatasetOperator(
@@ -204,6 +212,7 @@ with DAG(
             write_disposition='WRITE_APPEND',
             location='asia-southeast1',
             gcp_conn_id=GCP_CONN_ID,
+            outlets=[DS_BIGQUERY],
         )
 
     t_done = DummyOperator(task_id='upload_complete')

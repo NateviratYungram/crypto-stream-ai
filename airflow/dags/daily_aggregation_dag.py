@@ -32,9 +32,13 @@ from datetime import datetime, timedelta
 
 import psycopg2
 import psycopg2.extras
+from airflow.datasets import Dataset
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from airflow import DAG
+
+DS_ENRICHED_TRADES = Dataset("postgres://postgres:5432/crypto_stream_db/enriched_trades")
+DS_DAILY_SUMMARY   = Dataset("postgres://postgres:5432/crypto_stream_db/daily_summary")
 
 # ---------------------------------------------------------------------------
 # DAG Default Arguments
@@ -296,24 +300,28 @@ with DAG(
         task_id='check_data_availability',
         python_callable=check_data_availability,
         provide_context=True,
+        inlets=[DS_ENRICHED_TRADES],
     )
 
     t_ohlcv = PythonOperator(
         task_id='compute_daily_ohlcv',
         python_callable=compute_daily_ohlcv,
         provide_context=True,
+        inlets=[DS_ENRICHED_TRADES],
     )
 
     t_whale = PythonOperator(
         task_id='compute_whale_summary',
         python_callable=compute_whale_summary,
         provide_context=True,
+        inlets=[DS_ENRICHED_TRADES],
     )
 
     t_upsert = PythonOperator(
         task_id='upsert_daily_summary',
         python_callable=upsert_daily_summary,
         provide_context=True,
+        outlets=[DS_DAILY_SUMMARY],
     )
 
     t_log = PythonOperator(

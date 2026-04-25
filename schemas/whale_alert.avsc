@@ -1,0 +1,67 @@
+{
+  "type": "record",
+  "name": "WhaleAlert",
+  "namespace": "ai.cryptostream.schemas",
+  "doc": "Schema for whale trade alerts published to Kafka. A whale event is triggered when a single trade exceeds the configured quantity threshold (default: 0.5 BTC). Consumed by the Flink stream processor and the chat_server Kafka consumer, which forwards the alert to the NotificationService.",
+  "fields": [
+    {
+      "name": "alert_id",
+      "type": "string",
+      "doc": "Unique identifier for this whale alert, derived from the source trade_id."
+    },
+    {
+      "name": "symbol",
+      "type": "string",
+      "doc": "Trading pair symbol, e.g. BTCUSDT."
+    },
+    {
+      "name": "quantity",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 20,
+        "scale": 8
+      },
+      "doc": "Trade quantity in base asset that triggered the alert. Always > whale threshold."
+    },
+    {
+      "name": "price",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 20,
+        "scale": 8
+      },
+      "doc": "Execution price at the time of the whale trade."
+    },
+    {
+      "name": "side",
+      "type": {
+        "type": "enum",
+        "name": "TradeSide",
+        "symbols": ["BUY", "SELL", "UNKNOWN"]
+      },
+      "doc": "Trade direction inferred from is_buyer_maker flag on the source TradeEvent."
+    },
+    {
+      "name": "notional_usd",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 24,
+        "scale": 2
+      },
+      "doc": "Computed notional value in USD (quantity × price). Used for dollar-value threshold filtering."
+    },
+    {
+      "name": "source_trade_id",
+      "type": "string",
+      "doc": "The trade_id from the originating TradeEvent record. Enables join back to enriched_trades."
+    },
+    {
+      "name": "detected_at",
+      "type": "string",
+      "doc": "ISO8601 UTC timestamp when the whale threshold was breached and the alert was emitted."
+    }
+  ]
+}

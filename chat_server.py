@@ -840,7 +840,8 @@ async def macro_poller_task():
                                 # Use previous close if available for delta
                                 prev_close = t_obj.fast_info.get('previousClose', price)
                                 delta = ((price - prev_close) / (prev_close if prev_close != 0 else 1)) * 100
-                            except:
+                            except Exception as e_fast:
+                                logger.warning(f"fast_info failed for {ticker}: {e_fast} — trying history fallback")
                                 # Deep fallback: try current price from history
                                 try:
                                     hist = t_obj.history(period="5d")
@@ -848,7 +849,8 @@ async def macro_poller_task():
                                         price = float(hist['Close'].iloc[-1])
                                         prev_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else price
                                         delta = ((price - prev_close) / (prev_close if prev_close != 0 else 1)) * 100
-                                except:
+                                except Exception as e_hist:
+                                    logger.warning(f"All price lookups failed for {ticker}: {e_hist} — skipping ticker")
                                     continue
                         else:
                             ticker_data = data[ticker].dropna(subset=['Close'])
@@ -988,8 +990,8 @@ async def kafka_consumer_task():
     finally:
         try:
             await consumer.stop()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Kafka trade consumer stop failed: {e}")
 
 async def dlq_consumer_task():
     """Consumes DLQ topic for risk alerts."""
@@ -1018,8 +1020,8 @@ async def dlq_consumer_task():
     finally:
         try:
             await consumer.stop()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Kafka DLQ consumer stop failed: {e}")
 
 def get_market_snapshot():
     """Fetches the latest market metrics from PostgreSQL for AI context."""

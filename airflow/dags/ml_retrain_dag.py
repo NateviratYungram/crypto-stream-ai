@@ -49,7 +49,7 @@ def _scan_outcomes(**ctx):
 # ── Task 2: Build ML dataset from backtests ──────────────────────────────────
 def _build_dataset(**ctx):
     from intelligence.ml.signal_model import build_ml_dataset
-    df = build_ml_dataset(limit=2000)
+    df = build_ml_dataset(limit=500000)
     n  = len(df) if df is not None and not df.empty else 0
     print(f"Dataset built: {n} rows")
     ctx["ti"].xcom_push(key="n_rows", value=n)
@@ -58,7 +58,7 @@ def _build_dataset(**ctx):
 # ── Task 3: Train model ───────────────────────────────────────────────────────
 def _train_model(**ctx):
     from intelligence.ml.signal_model import invalidate_model_cache, train_model
-    result = train_model(limit=2000)
+    result = train_model(limit=500000)
     print(f"Training result: {result}")
     invalidate_model_cache()
     ctx["ti"].xcom_push(key="train_result", value=result)

@@ -1,0 +1,43 @@
+{
+  "type": "record",
+  "name": "MacroIndicator",
+  "namespace": "ai.cryptostream.schemas",
+  "doc": "Schema for macroeconomic indicator records ingested from FRED (Federal Reserve Economic Data) by the fred_ingestion Airflow DAG. Stored in the macro_indicators table and consumed by the dbt mart_cross_asset model and the AI intelligence engine for macro-context scoring.",
+  "fields": [
+    {
+      "name": "series_id",
+      "type": "string",
+      "doc": "FRED series identifier, e.g. DFF, T10Y2Y, CPIAUCSL. Combined with date forms the primary key."
+    },
+    {
+      "name": "series_name",
+      "type": "string",
+      "doc": "Human-readable series name, e.g. 'Federal Funds Effective Rate'."
+    },
+    {
+      "name": "date",
+      "type": "string",
+      "doc": "Observation date in ISO8601 format (YYYY-MM-DD). FRED publishes daily or monthly depending on series."
+    },
+    {
+      "name": "value",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Observed value for this series on this date. Null when FRED marks the observation as missing ('.')."
+    },
+    {
+      "name": "frequency",
+      "type": {
+        "type": "enum",
+        "name": "SeriesFrequency",
+        "symbols": ["daily", "weekly", "monthly", "quarterly", "annual"]
+      },
+      "doc": "Publication frequency of this FRED series."
+    },
+    {
+      "name": "fetched_at",
+      "type": "string",
+      "doc": "ISO8601 UTC timestamp of when this record was written by the fred_ingestion DAG."
+    }
+  ]
+}

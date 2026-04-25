@@ -56,6 +56,13 @@ CREATE TABLE IF NOT EXISTS daily_summary (
 -- Index for fast date-range queries in BI dashboards
 CREATE INDEX IF NOT EXISTS idx_daily_summary_date ON daily_summary (report_date DESC);
 
+-- Indexes on enriched_trades hot query paths
+-- daily_aggregation_dag filters by DATE(TO_TIMESTAMP(timestamp/1000)) and is_whale frequently
+CREATE INDEX IF NOT EXISTS idx_enriched_trades_symbol_ts
+    ON enriched_trades (symbol, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_enriched_trades_is_whale
+    ON enriched_trades (is_whale) WHERE is_whale = TRUE;
+
 -- Create table for MCP Audit Logs (Banking Security Requirement)
 -- Logs every AI-generated SQL query to perfectly trace access and modifications
 CREATE TABLE IF NOT EXISTS mcp_audit_log (
@@ -261,6 +268,10 @@ CREATE TABLE IF NOT EXISTS market_ohlcv (
 -- Composite index for the most common query pattern: symbol + timeframe + recent time
 CREATE INDEX IF NOT EXISTS idx_market_ohlcv_lookup
     ON market_ohlcv (symbol, timeframe, ts DESC);
+
+-- Partial index for feature_store_dag lookups that filter by symbol+timeframe without ts range
+CREATE INDEX IF NOT EXISTS idx_market_ohlcv_symbol_timeframe
+    ON market_ohlcv (symbol, timeframe);
 
 -- ==========================================
 -- News Sentiment Store

@@ -1,16 +1,8 @@
 """
 CryptoStream AI — Signal Broadcaster
-Sends trading signals and alerts via LINE Notify and/or Telegram.
-
-Ported from QuantAgent signal_broadcaster.py — adapted for CryptoStream:
-  - format_trade_signal() updated to use CryptoStream field names
-    (symbol, entry_zone, stop_loss, take_profit, master_decision, etc.)
-  - Env-var fallbacks: LINE_NOTIFY_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-  - enable_notifications defaults to True if any token is set
-  - Thread-safe (each call creates its own HTTP session)
+Sends trading signals and alerts via Telegram.
 
 Configuration (pass as config dict or set env vars):
-    LINE_NOTIFY_TOKEN    — free, unlimited, see https://notify-bot.line.me
     TELEGRAM_BOT_TOKEN   — from @BotFather
     TELEGRAM_CHAT_ID     — numeric chat/channel ID
 
@@ -30,21 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class SignalBroadcaster:
-    """
-    Sends trading signals and alerts via LINE Notify (free) and/or Telegram (free).
-
-    Priority: LINE first (simpler auth), then Telegram.
-    Both channels can be active simultaneously.
-    """
+    """Sends trading signals and alerts via Telegram."""
 
     def __init__(self, config: dict = None):
         self.config = config or {}
 
     # ── Config helpers ─────────────────────────────────────────────────────────
-
-    def _line_token(self) -> str:
-        return (self.config.get("line_notify_token") or
-                os.getenv("LINE_NOTIFY_TOKEN", ""))
 
     def _tg_token(self) -> str:
         return (self.config.get("telegram_bot_token") or
@@ -58,67 +41,22 @@ class SignalBroadcaster:
         explicit = self.config.get("enable_notifications")
         if explicit is not None:
             return bool(explicit)
-        # Auto-enable if any token is configured
-        return bool(self._line_token() or self._tg_token())
+        return bool(self._tg_token())
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def send_signal(self, message: str, image_path: Optional[str] = None) -> dict:
-        """
-        Send a message to all configured channels.
-
-        Args:
-            message    : Plain text / Markdown message
-            image_path : Optional local path to a chart image
-
-        Returns:
-            Dict with channel → result mapping, or status string
-        """
         if not self._enabled():
             return {"status": "Notifications disabled"}
-
-        results = {}
-        line_token = self._line_token()
-        if line_token:
-            results["line"] = self._send_line(line_token, message, image_path)
 
         tg_token = self._tg_token()
         tg_chat  = self._tg_chat()
         if tg_token and tg_chat:
-            results["telegram"] = self._send_telegram(tg_token, tg_chat, message, image_path)
+            return {"telegram": self._send_telegram(tg_token, tg_chat, message, image_path)}
 
-        if not results:
-            return {"status": "No notification channels configured"}
-
-        return results
+        return {"status": "No notification channels configured"}
 
     # ── Channel senders ────────────────────────────────────────────────────────
-
-    def _send_line(self, token: str, message: str, image_path: Optional[str] = None) -> dict:
-        """POST to LINE Notify endpoint."""
-        try:
-            import requests
-            url     = "https://notify-api.line.me/api/notify"
-            headers = {"Authorization": f"Bearer {token}"}
-            data    = {"message": f"\n{message}"}
-            files   = None
-
-            if image_path:
-                try:
-                    files = {"imageFile": open(image_path, "rb")}
-                except Exception:
-                    pass
-
-            resp = requests.post(url, headers=headers, data=data,
-                                 files=files, timeout=10)
-            if files:
-                files["imageFile"].close()
-
-            if resp.status_code == 200:
-                return {"status": "OK", "channel": "LINE"}
-            return {"status": "FAILED", "channel": "LINE", "error": resp.text[:120]}
-        except Exception as e:
-            return {"status": "ERROR", "channel": "LINE", "error": str(e)[:120]}
 
     def _send_telegram(self, token: str, chat_id: str,
                        message: str, image_path: Optional[str] = None) -> dict:

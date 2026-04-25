@@ -1,0 +1,60 @@
+{
+  "type": "record",
+  "name": "MarketOhlcv",
+  "namespace": "ai.cryptostream.schemas",
+  "doc": "Schema for OHLCV (candlestick) records written to the Parquet data lake by the lake-writer and ingested into market_ohlcv by the yfinance Airflow DAGs. This schema is the contract between the ingestion layer and downstream consumers: dbt staging models, the AI intelligence engine, and the datalake_to_bigquery DAG.",
+  "fields": [
+    {
+      "name": "symbol",
+      "type": "string",
+      "doc": "Ticker symbol, e.g. BTC-USD, AAPL, GC=F (Gold futures). Matches yfinance ticker format."
+    },
+    {
+      "name": "timeframe",
+      "type": "string",
+      "doc": "Candlestick interval. One of: 15m, 1h, 1d. Matches yfinance interval parameter."
+    },
+    {
+      "name": "ts",
+      "type": "string",
+      "doc": "Candle open timestamp in ISO8601 UTC format. Combined with (symbol, timeframe) forms the primary key."
+    },
+    {
+      "name": "open",
+      "type": "double",
+      "doc": "Opening price of the candle period."
+    },
+    {
+      "name": "high",
+      "type": "double",
+      "doc": "Highest price during the candle period. Must be >= low."
+    },
+    {
+      "name": "low",
+      "type": "double",
+      "doc": "Lowest price during the candle period. Must be <= high."
+    },
+    {
+      "name": "close",
+      "type": "double",
+      "doc": "Closing price of the candle period. Must be within [low, high]. Adjusted close is used when available (yfinance auto_adjust=True)."
+    },
+    {
+      "name": "volume",
+      "type": "double",
+      "default": 0.0,
+      "doc": "Trading volume in base asset units during the candle period. May be 0 for after-hours or thinly traded instruments."
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "default": "yfinance",
+      "doc": "Data source identifier. Currently always 'yfinance'. Reserved for multi-source ingestion."
+    },
+    {
+      "name": "fetched_at",
+      "type": "string",
+      "doc": "ISO8601 UTC timestamp of when this record was written to the database or lake."
+    }
+  ]
+}

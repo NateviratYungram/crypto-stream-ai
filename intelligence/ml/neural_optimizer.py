@@ -110,7 +110,10 @@ else:
                     attn_list = [attn_list]
             return float(prob.item()), attn_list
 
-        def train_on_sequences(self, X: np.ndarray, y: np.ndarray, epochs: int = 150, lr: float = 0.001):
+        def train_on_sequences(
+            self, X: np.ndarray, y: np.ndarray,
+            epochs: int = 150, lr: float = 0.001, batch_size: int = 512,
+        ):
             split_idx = int(len(X) * 0.8)
             X_train, X_val = X[:split_idx], X[split_idx:]
             y_train, y_val = y[:split_idx], y[split_idx:]
@@ -118,15 +121,22 @@ else:
                 X_train, y_train = X, y
                 X_val, y_val = X, y
 
-            self.model.train()
-            optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
+            # Adaptive fp_weight: penalise false positives more when wins are rare
+            win_rate = float(np.mean(y_train)) if len(y_train) > 0 else 0.5
+            fp_weight = max(1.5, min(6.0, (1.0 - win_rate) / max(win_rate, 1e-6)))
 
             X_t = torch.from_numpy(X_train).float().to(self.device)
             y_t = torch.from_numpy(y_train).float().unsqueeze(1).to(self.device)
             X_v = torch.from_numpy(X_val).float().to(self.device)
             y_v = torch.from_numpy(y_val).float().unsqueeze(1).to(self.device)
 
-            def risk_aware_bce(output, target, fp_weight=3.0):
+            n_train = len(X_t)
+            batch_size = min(batch_size, n_train)
+
+            optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+
+            def risk_aware_bce(output, target):
                 epsilon = 1e-7
                 output = torch.clamp(output, epsilon, 1.0 - epsilon)
                 loss = target * torch.log(output) + fp_weight * (1.0 - target) * torch.log(1.0 - output)
@@ -138,16 +148,23 @@ else:
 
             for epoch in range(epochs):
                 self.model.train()
-                optimizer.zero_grad()
-                outputs, _ = self.model(X_t)
-                batch_loss = risk_aware_bce(outputs, y_t)
-                batch_loss.backward()
-                optimizer.step()
+                perm = torch.randperm(n_train, device=self.device)
+                for start in range(0, n_train, batch_size):
+                    idx = perm[start:start + batch_size]
+                    xb, yb = X_t[idx], y_t[idx]
+                    optimizer.zero_grad()
+                    outputs, _ = self.model(xb)
+                    loss = risk_aware_bce(outputs, yb)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    optimizer.step()
 
                 self.model.eval()
                 with torch.no_grad():
                     val_outputs, _ = self.model(X_v)
                     val_loss = risk_aware_bce(val_outputs, y_v)
+
+                scheduler.step(val_loss)
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -167,7 +184,8 @@ def get_neural_optimizer(input_size: int = 24):
     if not TORCH_AVAILABLE:
         return None
     global _TRAINER_CACHE
-    if _TRAINER_CACHE is None:
+    # Reset cache when input_size changes (e.g. FEATURE_COLS grows)
+    if _TRAINER_CACHE is None or _TRAINER_CACHE.model.gru.input_size != input_size:
         _TRAINER_CACHE = SequentialTrainer(input_size=input_size)
     return _TRAINER_CACHE
 

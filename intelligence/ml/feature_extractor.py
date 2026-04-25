@@ -70,6 +70,7 @@ def extract_features(
     symbol: str = "UNKNOWN",
     asset_class: str = "CRYPTO",
     sentiment_score: float = 0.0,
+    daily_context: Dict[str, float] = None,
 ) -> Dict[str, float]:
     """
     Extract ML features from df at row `idx`.
@@ -169,6 +170,12 @@ def extract_features(
     hurst = compute_hurst_exponent(close_series, window=30)
     v_skew = compute_volatility_skew(close_series, window=30)
 
+    # ── Daily trend context (multi-timeframe) ────────────────────────────────
+    dc = daily_context or {}
+    d_trend     = float(dc.get("d_trend", 0.0))    # % price vs daily EMA50 (clipped ±20)
+    d_rsi       = float(dc.get("d_rsi", 50.0))     # daily RSI-14
+    d_ema_align = float(dc.get("d_ema_align", 0.5)) # 1.0 = above daily EMA200, 0.0 = below
+
     return {
         "rsi":            rsi,
         "adx":            adx,
@@ -194,6 +201,9 @@ def extract_features(
         "rvi":           _f("rvi_14", 50.0),
         "hurst_exponent":  hurst,
         "vol_skew":        v_skew,
+        "d_trend":         d_trend,
+        "d_rsi":           d_rsi,
+        "d_ema_align":     d_ema_align,
     }
 
 
@@ -206,6 +216,7 @@ FEATURE_COLS = [
     "regime_enc", "hour", "dow", "session",
     "asset_class_enc", "side_enc", "sentiment_score",
     "cmf", "rvi", "hurst_exponent", "vol_skew",
+    "d_trend", "d_rsi", "d_ema_align",
 ]
 
 

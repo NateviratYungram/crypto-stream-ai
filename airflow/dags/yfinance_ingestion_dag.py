@@ -28,9 +28,12 @@ from typing import List
 import psycopg2
 import psycopg2.extras
 import yfinance as yf
+from airflow.datasets import Dataset
 from airflow.operators.python import PythonOperator
 
 from airflow import DAG
+
+DS_MARKET_OHLCV = Dataset("postgres://postgres:5432/crypto_stream_db/market_ohlcv")
 
 log = logging.getLogger(__name__)
 
@@ -269,16 +272,19 @@ with DAG(
         task_id="fetch_macro_15m",
         python_callable=task_fetch_macro_15m,
         provide_context=True,
+        outlets=[DS_MARKET_OHLCV],
     )
     t_1h = PythonOperator(
         task_id="fetch_macro_1h",
         python_callable=task_fetch_macro_1h,
         provide_context=True,
+        outlets=[DS_MARKET_OHLCV],
     )
     t_1d = PythonOperator(
         task_id="fetch_macro_1d",
         python_callable=task_fetch_macro_1d,
         provide_context=True,
+        outlets=[DS_MARKET_OHLCV],
     )
 
     # Run all three timeframes in parallel
@@ -303,4 +309,5 @@ with DAG(
         task_id="fetch_stocks_1d",
         python_callable=task_fetch_stocks_1d,
         provide_context=True,
+        outlets=[DS_MARKET_OHLCV],
     )
