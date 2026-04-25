@@ -289,11 +289,15 @@ def execute_signal(
             "timestamp": timestamp,
         }
 
-    # Position sizing
+    # Position sizing — apply signal grade multiplier from master agent tiering
+    size_mult        = float(state.get("size_multiplier", 1.0))
+    signal_grade     = state.get("signal_grade", "A+")
+    effective_risk   = risk_pct * size_mult
+
     contract_size = _get_contract_size(mt5_symbol)
     lot = _calculate_lot_size(
         balance=account_balance,
-        risk_pct=risk_pct,
+        risk_pct=effective_risk,
         entry_price=entry_price,
         sl_price=sl_price,
         contract_size=contract_size,
@@ -307,8 +311,10 @@ def execute_signal(
         "sl":            round(sl_price, 5),
         "tp":            round(tp1_price, 5) if tp1_price else None,
         "tp2":           round(tp2_price, 5) if tp2_price else None,
-        "risk_pct":      risk_pct,
-        "risk_usd":      round(account_balance * risk_pct / 100, 2),
+        "signal_grade":  signal_grade,
+        "size_mult":     size_mult,
+        "risk_pct":      effective_risk,
+        "risk_usd":      round(account_balance * effective_risk / 100, 2),
         "rr":            rr,
         "confidence":    round(float(confidence) * 100 if float(confidence) <= 1 else float(confidence), 1),
         "timeframe":     timeframe,

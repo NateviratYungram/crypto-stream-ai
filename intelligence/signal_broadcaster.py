@@ -91,13 +91,12 @@ class SignalBroadcaster:
         Format an AI analysis result into a human-readable signal message.
         Handles CryptoStream state field names.
         """
-        decision   = state.get("master_decision", "NO_TRADE")
-        confidence = state.get("master_confidence", 0)
-        symbol     = state.get("symbol", "?")
-        timeframe  = state.get("timeframe", "?")
-        reasoning  = state.get("master_reasoning", "")
-        sentiment  = state.get("sentiment_label", "")
-        fg_index   = state.get("fear_greed_index", None)
+        decision    = state.get("master_decision", "NO_TRADE")
+        confidence  = state.get("master_confidence", 0)
+        symbol      = state.get("symbol", "?")
+        timeframe   = state.get("timeframe", "?")
+        reasoning   = state.get("master_reasoning", "")
+        sentiment   = state.get("sentiment_label", "")
         asset_class = state.get("asset_class", "")
 
         entry_zone = state.get("entry_zone", {})
@@ -111,50 +110,70 @@ class SignalBroadcaster:
         tp1        = tp_data.get("tp1", "?")
         tp2        = tp_data.get("tp2", "?")
 
-        # Confidence as percentage
-        conf_pct = confidence * 100 if isinstance(confidence, float) and confidence <= 1 else confidence
+        conf_pct     = confidence * 100 if isinstance(confidence, float) and confidence <= 1 else confidence
+        signal_grade = state.get("signal_grade", "")
+        size_mult    = state.get("size_multiplier", 1.0)
 
-        # Extract extra ML metadata for Sniper V8
-        v8_precision = state.get("ml_precision_score", "High")
-        is_sniper = conf_pct >= 85
+        # Intermarket context
+        im         = state.get("intermarket", {})
+        macro_bias = state.get("macro_bias") or im.get("macro_bias", "")
+        vix_level  = im.get("vix", {}).get("level", "")
+        dxy_trend  = im.get("dxy", {}).get("trend", "")
+        fg_val     = im.get("fear_greed", {}).get("value", None)
+        funding    = im.get("funding", {}).get("bias", "")
+
+        grade_icon = {"A+": "🥇", "A": "🥈", "B": "🥉"}.get(signal_grade, "")
+        macro_icon = {"RISK_ON": "🟢", "RISK_OFF": "🔴", "NEUTRAL": "🟡"}.get(macro_bias, "")
 
         if decision == "LONG":
-            emoji = "🎯 SNIPER LONG" if is_sniper else "📈 LONG"
+            dir_emoji = "📈 LONG"
         elif decision == "SHORT":
-            emoji = "🎯 SNIPER SHORT" if is_sniper else "📉 SHORT"
+            dir_emoji = "📉 SHORT"
         else:
-            emoji = "⏳ HOLD"
+            dir_emoji = "⏳ HOLD"
 
         lines = [
-            f"[{emoji}] {symbol} {timeframe}",
-            f"{'=' * 22}",
-            f"Neural Confidence : {conf_pct:.1f}%",
-            f"Clinical Precision : {v8_precision}",
-            f"Entry Zone : {entry_low} - {entry_high}",
+            f"[{dir_emoji}] {symbol} {timeframe}",
+            f"{'─' * 24}",
+            f"Confidence : {conf_pct:.1f}%",
+        ]
+
+        if signal_grade:
+            lines.append(f"Grade      : {grade_icon} {signal_grade}  (size {size_mult:.0%})")
+
+        lines += [
+            f"Entry Zone : {entry_low} – {entry_high}",
             f"Stop Loss  : {sl_price}",
             f"Take Profit: TP1={tp1}  TP2={tp2}",
             f"Risk/Reward: 1:{rr}",
         ]
 
-        # ── Sniper Chart Link (Visual Confirmation) ──
-        # Provide a quick TradingView link for visual double-check
-        tv_sym = f"FX:{symbol}" if asset_class == "FOREX" else symbol
-        if symbol == "GOLD":
-            tv_sym = "OANDA:XAUUSD"
-        if symbol == "BTCUSD":
-            tv_sym = "BINANCE:BTCUSDT"
-
-        chart_link = f"https://www.tradingview.com/chart/?symbol={tv_sym}"
-        lines.append(f"🔍 View Chart: [TradingView]({chart_link})")
+        if macro_bias:
+            macro_parts = [f"{macro_icon} {macro_bias}"]
+            if vix_level:
+                macro_parts.append(f"VIX={vix_level}")
+            if dxy_trend:
+                macro_parts.append(f"DXY={dxy_trend}")
+            if fg_val is not None:
+                macro_parts.append(f"F&G={fg_val}")
+            if funding:
+                macro_parts.append(f"Funding={funding}")
+            lines.append(f"Macro      : {' | '.join(macro_parts)}")
 
         if sentiment:
             lines.append(f"Sentiment  : {sentiment}")
-        if fg_index is not None:
-            lines.append(f"Fear/Greed : {fg_index}")
 
+        tv_sym = f"FX:{symbol}" if asset_class == "FOREX" else symbol
+        if symbol == "GOLD":
+            tv_sym = "OANDA:XAUUSD"
+        elif symbol in ("BTC", "BTCUSD"):
+            tv_sym = "BINANCE:BTCUSDT"
+
+        chart_link = f"https://www.tradingview.com/chart/?symbol={tv_sym}"
         lines += [
-            f"{'=' * 22}",
+            f"{'─' * 24}",
             reasoning[:280] if reasoning else "(no reasoning)",
+            f"🔍 [TradingView]({chart_link})",
         ]
 
         return "\n".join(lines)
@@ -175,6 +194,8 @@ class SignalBroadcaster:
         ]
 
         if details:
+            grade = details.get('signal_grade', '')
+            mult  = details.get('size_mult', 1.0)
             lines += [
                 f"Volume  : {details.get('volume', '?')} lot",
                 f"Entry   : {details.get('entry_price', '?')}",
@@ -182,6 +203,8 @@ class SignalBroadcaster:
                 f"TP      : {details.get('tp', '?')}",
                 f"Risk    : ${details.get('risk_usd', '?')} ({details.get('risk_pct', '?')}%)",
             ]
+            if grade:
+                lines.append(f"Grade   : {grade} (size {mult:.0%})")
 
         if reason:
             lines.append(f"Note    : {reason[:120]}")
