@@ -147,7 +147,11 @@ jobs:
             google-genai \
             pytz \
             kafka-python \
-            pillow
+            pillow \
+            sqlalchemy \
+            aiokafka \
+            sqlparse \
+            ta
 
       - name: Run unit tests
         run: pytest tests/unit/ -v
