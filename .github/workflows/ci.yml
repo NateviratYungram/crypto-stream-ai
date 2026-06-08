@@ -157,6 +157,9 @@ jobs:
             python-jose[cryptography]
 
       - name: Run unit tests
+        env:
+          APP_ENV: test
+          GEMINI_API_KEY: ci-test-key
         run: pytest tests/unit/ -v
 
   # ── 5. Schema Validation ─────────────────────────────────────────────────
