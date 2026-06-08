@@ -152,7 +152,8 @@ jobs:
             aiokafka \
             sqlparse \
             ta \
-            slowapi
+            slowapi \
+            passlib[bcrypt]
 
       - name: Run unit tests
         run: pytest tests/unit/ -v
