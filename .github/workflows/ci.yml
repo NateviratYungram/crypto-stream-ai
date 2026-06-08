@@ -134,7 +134,20 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: pip install pytest pyyaml pandas pyarrow
+        run: |
+          pip install \
+            pytest \
+            pyyaml \
+            pandas \
+            pyarrow \
+            python-dotenv \
+            yfinance \
+            fastapi \
+            httpx \
+            google-genai \
+            pytz \
+            kafka-python \
+            pillow
 
       - name: Run unit tests
         run: pytest tests/unit/ -v
