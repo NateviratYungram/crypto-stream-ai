@@ -1023,7 +1023,6 @@ def train_model(
     Returns summary metrics.
     """
     try:
-        from sklearn.ensemble import GradientBoostingClassifier
         from sklearn.metrics import accuracy_score, roc_auc_score
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import StandardScaler
