@@ -12,6 +12,22 @@ import pytest
 
 import lake_writer as lw
 
+
+def _time_sequence(*values: float):
+    remaining = iter(values)
+    last = values[-1] if values else 0.0
+
+    def _fake_time():
+        nonlocal last
+        try:
+            last = next(remaining)
+        except StopIteration:
+            pass
+        return last
+
+    return _fake_time
+
+
 _SAMPLE_RECORDS = [
     {
         "trade_id":       "111",
@@ -228,8 +244,7 @@ def test_main_flushes_on_idle_and_shutdown(monkeypatch, tmp_path):
     monkeypatch.setattr(lw, "_build_consumer", lambda: (consumer, MagicMock()))
     monkeypatch.setattr(lw, "_deserialize", lambda msg, deserializer: {"trade_id": "1", "symbol": "BTC", "price": "1", "quantity": "2", "timestamp": 1, "is_buyer_maker": False, "ingested_at": "now"})
 
-    times = iter([0.0, 11.0, 11.0, 12.0, 12.0])
-    monkeypatch.setattr(lw.time, "time", lambda: next(times))
+    monkeypatch.setattr(lw.time, "time", _time_sequence(0.0, 11.0, 11.0, 12.0, 12.0))
     flushes = []
     monkeypatch.setattr(lw, "flush_to_parquet", lambda records, flush_time: flushes.append((list(records), flush_time)))
 
@@ -288,8 +303,7 @@ def test_main_idle_flushes_buffer_when_time_limit_hits(monkeypatch, tmp_path):
             "ingested_at": "now",
         },
     )
-    times = iter([0.0, 1.0, 11.0, 12.0])
-    monkeypatch.setattr(lw.time, "time", lambda: next(times))
+    monkeypatch.setattr(lw.time, "time", _time_sequence(0.0, 1.0, 11.0, 12.0))
     flushes = []
     monkeypatch.setattr(lw, "flush_to_parquet", lambda records, flush_time: flushes.append((list(records), flush_time)))
 
@@ -460,8 +474,7 @@ def test_main_flushes_on_record_limit_after_successful_message(monkeypatch, tmp_
             "ingested_at": "now",
         },
     )
-    times = iter([0.0, 1.0, 2.0])
-    monkeypatch.setattr(lw.time, "time", lambda: next(times))
+    monkeypatch.setattr(lw.time, "time", _time_sequence(0.0, 1.0, 2.0))
     flushes = []
     monkeypatch.setattr(lw, "flush_to_parquet", lambda records, flush_time: flushes.append((list(records), flush_time)))
 

@@ -154,7 +154,11 @@ jobs:
             ta \
             slowapi \
             passlib[bcrypt] \
-            python-jose[cryptography]
+            python-jose[cryptography] \
+            matplotlib \
+            scipy \
+            scikit-learn \
+            mplfinance
 
       - name: Run unit tests
         env:
