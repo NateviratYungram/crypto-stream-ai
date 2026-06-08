@@ -279,6 +279,29 @@ def refresh_assets(conn, symbols: List[str]):
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+def _connect_with_retry(max_attempts: int = 30, sleep_fn=time.sleep):
+    """Connect to PostgreSQL with bounded retries for startup races."""
+    for attempt in range(max_attempts):
+        try:
+            conn = get_conn()
+            logger.info("Connected to PostgreSQL")
+            return conn
+        except Exception as e:
+            logger.warning(f"DB not ready (attempt {attempt+1}/{max_attempts}): {e}")
+            sleep_fn(5)
+    logger.error(f"Could not connect to PostgreSQL after {max_attempts} attempts. Exiting.")
+    return None
+
+
+def _run_refresh_cycle(conn, tickers: List[str], last_refresh: float, now: float | None = None) -> float:
+    """Execute one polling decision and return the latest refresh timestamp."""
+    now = time.time() if now is None else now
+    if now - last_refresh >= MT5_POLL_INTERVAL:
+        refresh_assets(conn, tickers)
+        return now
+    return last_refresh
+
+
 def main():
     logger.info("=" * 60)
     logger.info("CryptoStream AI — yfinance Ingestion Service")
@@ -289,16 +312,8 @@ def main():
     TICKERS = _load_symbols()
 
     # Wait for DB to be ready (Docker startup race)
-    for attempt in range(30):
-        try:
-            conn = get_conn()
-            logger.info("Connected to PostgreSQL")
-            break
-        except Exception as e:
-            logger.warning(f"DB not ready (attempt {attempt+1}/30): {e}")
-            time.sleep(5)
-    else:
-        logger.error("Could not connect to PostgreSQL after 30 attempts. Exiting.")
+    conn = _connect_with_retry()
+    if conn is None:
         return
 
     # One-time backfill on startup
@@ -312,9 +327,7 @@ def main():
     while True:
         now = time.time()
         try:
-            if now - last_refresh >= MT5_POLL_INTERVAL:
-                refresh_assets(conn, TICKERS)
-                last_refresh = now
+            last_refresh = _run_refresh_cycle(conn, TICKERS, last_refresh, now=now)
 
         except psycopg2.OperationalError:
             logger.warning("DB connection lost — reconnecting...")

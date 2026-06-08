@@ -7,11 +7,23 @@ Analyzes past outcomes to improve future decision confidence.
 import logging
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 logger = logging.getLogger(__name__)
 PAPER_DB = os.getenv("PAPER_TRADE_DB", "persistence.db")
+
+
+@contextmanager
+def _connect_paper_db() -> Iterator[sqlite3.Connection]:
+    conn = sqlite3.connect(PAPER_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
 
 def get_recent_outcomes(limit: int = 10) -> List[Dict[str, Any]]:
     """Retrieves the last N closed trades with their outcomes and metadata."""
@@ -19,21 +31,16 @@ def get_recent_outcomes(limit: int = 10) -> List[Dict[str, Any]]:
         if not os.path.exists(PAPER_DB):
             return []
 
-        conn = sqlite3.connect(PAPER_DB)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT symbol, side, entry_price, current_price, outcome, pnl_usd, ml_score, closed_at, features_json
-            FROM paper_trades
-            WHERE status = 'CLOSED' AND outcome IS NOT NULL
-            ORDER BY closed_at DESC
-            LIMIT ?
-        """, (limit,))
-
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
-        return rows
+        with _connect_paper_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT symbol, side, entry_price, current_price, outcome, pnl_usd, ml_score, closed_at, features_json
+                FROM paper_trades
+                WHERE status = 'CLOSED' AND outcome IS NOT NULL
+                ORDER BY closed_at DESC
+                LIMIT ?
+            """, (limit,))
+            return [dict(r) for r in cursor.fetchall()]
     except Exception as e:
         logger.error(f"Reflector: Failed to fetch outcomes: {e}")
         return []
@@ -121,6 +128,50 @@ def get_bias_adjustments(outcomes: List[Dict[str, Any]] = None) -> Dict[str, flo
         adj["risk_scale"] = 1.2   # 20% boost to sizing (with caution)
 
     return adj
+
+def get_symbol_outcomes(symbol: str, timeframe: str = None, limit: int = 5) -> List[Dict[str, Any]]:
+    """Last N closed trades for a specific symbol (optionally filtered by timeframe)."""
+    try:
+        if not os.path.exists(PAPER_DB):
+            return []
+        with _connect_paper_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT symbol, side, entry_price, outcome, pnl_usd,
+                       ml_score, closed_at, signal_grade, macro_bias
+                FROM paper_trades
+                WHERE status='CLOSED' AND outcome IS NOT NULL AND symbol=?
+                ORDER BY closed_at DESC LIMIT ?
+            """, (symbol.upper(), limit))
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.warning(f"Reflector: symbol outcomes failed for {symbol}: {e}")
+        return []
+
+
+def format_symbol_memory(symbol: str, timeframe: str = None, limit: int = 5) -> str:
+    """Compact symbol-specific trade history block for LLM context injection."""
+    rows = get_symbol_outcomes(symbol, timeframe, limit)
+    if not rows:
+        return f"No closed {symbol} trade history on record — treat as first encounter."
+    wins = sum(1 for r in rows if str(r.get("outcome", "")).upper() == "WIN")
+    losses = len(rows) - wins
+    total_pnl = sum(float(r.get("pnl_usd") or 0) for r in rows)
+    wr = wins / len(rows)
+    lines = [
+        f"{symbol} last {len(rows)} trades: {wins}W/{losses}L ({wr:.0%}) | net PnL {total_pnl:+.2f} USD"
+    ]
+    for r in rows:
+        outcome = str(r.get("outcome", "?")).upper()
+        side    = str(r.get("side", "?")).upper()
+        grade   = r.get("signal_grade", "?") or "?"
+        pnl     = float(r.get("pnl_usd") or 0)
+        macro   = r.get("macro_bias", "?") or "?"
+        closed  = str(r.get("closed_at", ""))[:10]
+        tag     = "WIN" if outcome == "WIN" else "LOSS"
+        lines.append(f"  [{tag}] {side} grade={grade} macro={macro} pnl={pnl:+.2f} [{closed}]")
+    return "\n".join(lines)
+
 
 def get_reflexive_context(client, model_id: str) -> Dict[str, Any]:
     """Wraps lessons, stats, and bias adjustments for the decision pipeline."""

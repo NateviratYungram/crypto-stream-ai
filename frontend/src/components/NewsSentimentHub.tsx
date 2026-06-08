@@ -60,13 +60,66 @@ interface SentimentData {
     key_factors?: string[];
   };
   articles: NewsArticle[];
+  _meta?: DataQualityMeta;
+}
+
+type DataQuality = 'live' | 'stale' | 'partial' | 'unavailable';
+
+interface DataQualityMeta {
+  status?: string;
+  data_quality?: DataQuality;
+  source?: string;
+  warning?: string | null;
+  error?: string | null;
+  updated_at?: string;
 }
 
 interface DataStatus {
   loading: boolean;
   error: boolean;
   lastUpdate: Date | null;
+  quality: DataQuality | null;
+  warning: string | null;
+  source: string | null;
 }
+
+const EMPTY_STATUS: DataStatus = {
+  loading: true,
+  error: false,
+  lastUpdate: null,
+  quality: null,
+  warning: null,
+  source: null,
+};
+
+const parseDataStatus = (payload: any): Pick<DataStatus, 'error' | 'lastUpdate' | 'quality' | 'warning' | 'source'> => {
+  const meta: DataQualityMeta | undefined = payload?._meta;
+  const updatedAtRaw = meta?.updated_at || payload?.updated_at;
+  const parsedDate = typeof updatedAtRaw === 'string' && updatedAtRaw ? new Date(updatedAtRaw) : null;
+  const quality = meta?.data_quality ?? payload?.data_quality ?? null;
+  return {
+    error: quality === 'unavailable' || meta?.status === 'error',
+    lastUpdate: parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : new Date(),
+    quality,
+    warning: meta?.warning || payload?.warning || null,
+    source: meta?.source || null,
+  };
+};
+
+const getQualityBadgeTone = (quality: DataQuality | null, theme: 'dark' | 'light') => {
+  if (quality === 'live') return theme === 'dark' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (quality === 'stale') return theme === 'dark' ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' : 'border-amber-200 bg-amber-50 text-amber-700';
+  if (quality === 'partial') return theme === 'dark' ? 'border-sky-500/30 bg-sky-500/10 text-sky-400' : 'border-sky-200 bg-sky-50 text-sky-700';
+  return theme === 'dark' ? 'border-rose-500/30 bg-rose-500/10 text-rose-400' : 'border-rose-200 bg-rose-50 text-rose-700';
+};
+
+const getQualityLabel = (quality: DataQuality | null) => {
+  if (quality === 'live') return 'Live';
+  if (quality === 'stale') return 'Snapshot';
+  if (quality === 'partial') return 'Partial';
+  if (quality === 'unavailable') return 'Unavailable';
+  return 'Syncing';
+};
 
 // ────────────────────────────────────────────────────────────────
 // Institutional Chart Component (Powered by lightweight-charts)
@@ -637,7 +690,7 @@ const MarketIndicesCard = ({ data, status, onRefresh }: {
 function useGaugePoll(endpoint: string, transform: (json: any) => number) {
   const [score, setScore] = useState<number>(50);
   const [rawData, setRawData] = useState<any>(null);
-  const [status, setStatus] = useState<DataStatus>({ loading: true, error: false, lastUpdate: null });
+  const [status, setStatus] = useState<DataStatus>({ ...EMPTY_STATUS });
 
   const poll = useCallback(async () => {
     setStatus(s => ({ ...s, loading: true }));
@@ -647,9 +700,9 @@ function useGaugePoll(endpoint: string, transform: (json: any) => number) {
       const json = await r.json();
       setRawData(json);
       setScore(Math.max(0, Math.min(100, transform(json))));
-      setStatus({ loading: false, error: false, lastUpdate: new Date() });
+      setStatus({ loading: false, ...parseDataStatus(json) });
     } catch {
-      setStatus(s => ({ ...s, loading: false, error: true }));
+      setStatus(s => ({ ...s, loading: false, error: true, quality: s.quality ?? 'unavailable' }));
     }
   }, [endpoint]);
 
@@ -991,15 +1044,15 @@ export const NewsSentimentHub = () => {
 
   // 3. Global Market Indices
   const [indices, setIndices] = useState<IndicesData | null>(null);
-  const [indicesStatus, setIndicesStatus] = useState<DataStatus>({ loading: true, error: false, lastUpdate: null });
+  const [indicesStatus, setIndicesStatus] = useState<DataStatus>({ ...EMPTY_STATUS });
 
   // 4. Real-time News Articles
   const [newsData, setNewsData] = useState<SentimentData | null>(null);
-  const [newsStatus, setNewsStatus] = useState<DataStatus>({ loading: true, error: false, lastUpdate: null });
+  const [newsStatus, setNewsStatus] = useState<DataStatus>({ ...EMPTY_STATUS });
 
   // 5. DXY Specific News
   const [dxyNews, setDxyNews] = useState<SentimentData | null>(null);
-  const [dxyNewsStatus, setDxyNewsStatus] = useState<DataStatus>({ loading: true, error: false, lastUpdate: null });
+  const [dxyNewsStatus, setDxyNewsStatus] = useState<DataStatus>({ ...EMPTY_STATUS });
 
   const fetchIndices = useCallback(async () => {
     setIndicesStatus(s => ({ ...s, loading: true }));
@@ -1008,9 +1061,9 @@ export const NewsSentimentHub = () => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const json: IndicesData = await r.json();
       setIndices(json);
-      setIndicesStatus({ loading: false, error: false, lastUpdate: new Date() });
+      setIndicesStatus({ loading: false, ...parseDataStatus(json) });
     } catch {
-      setIndicesStatus(s => ({ ...s, loading: false, error: true }));
+      setIndicesStatus(s => ({ ...s, loading: false, error: true, quality: s.quality ?? 'unavailable' }));
     }
   }, []);
 
@@ -1021,9 +1074,9 @@ export const NewsSentimentHub = () => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const json: SentimentData = await r.json();
       setNewsData(json);
-      setNewsStatus({ loading: false, error: false, lastUpdate: new Date() });
+      setNewsStatus({ loading: false, ...parseDataStatus(json) });
     } catch {
-      setNewsStatus(s => ({ ...s, loading: false, error: true }));
+      setNewsStatus(s => ({ ...s, loading: false, error: true, quality: s.quality ?? 'unavailable' }));
     }
   }, []);
 
@@ -1034,9 +1087,9 @@ export const NewsSentimentHub = () => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const json: SentimentData = await r.json();
       setDxyNews(json);
-      setDxyNewsStatus({ loading: false, error: false, lastUpdate: new Date() });
+      setDxyNewsStatus({ loading: false, ...parseDataStatus(json) });
     } catch {
-      setDxyNewsStatus(s => ({ ...s, loading: false, error: true }));
+      setDxyNewsStatus(s => ({ ...s, loading: false, error: true, quality: s.quality ?? 'unavailable' }));
     }
   }, []);
 
@@ -1104,9 +1157,9 @@ export const NewsSentimentHub = () => {
           {/* Data source badges */}
           <div className="hidden lg:flex items-center gap-2">
             {[
-              { label: 'Yahoo Live', color: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
-              { label: 'CNN Scraper', color: 'text-rose-400 border-rose-500/30 bg-rose-500/10' },
-              { label: 'Native Charts', color: 'text-sky-400 border-sky-500/30 bg-sky-500/10' },
+              { label: `Market ${getQualityLabel(indicesStatus.quality)}`, color: getQualityBadgeTone(indicesStatus.quality, theme) },
+              { label: `News ${getQualityLabel(newsStatus.quality)}`, color: getQualityBadgeTone(newsStatus.quality, theme) },
+              { label: `DXY ${getQualityLabel(dxyNewsStatus.quality)}`, color: getQualityBadgeTone(dxyNewsStatus.quality, theme) },
             ].map(b => (
               <span key={b.label} className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${b.color}`}>
                 {b.label}
@@ -1131,6 +1184,13 @@ export const NewsSentimentHub = () => {
       </header>
 
       <div className="p-8 space-y-8 max-w-[1700px] mx-auto w-full">
+        {(indicesStatus.warning || newsStatus.warning || dxyNewsStatus.warning) && (
+          <div className={`rounded-2xl border px-4 py-3 text-xs font-bold ${
+            theme === 'dark' ? 'border-amber-500/20 bg-amber-500/10 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'
+          }`}>
+            {newsStatus.warning || dxyNewsStatus.warning || indicesStatus.warning}
+          </div>
+        )}
 
         {/* ── 1. Breaking News Analysis (AI Driven) ── */}
         <AnimatePresence mode="wait">

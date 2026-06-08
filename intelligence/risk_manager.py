@@ -71,8 +71,6 @@ class RiskManager:
             # Fetch returns for correlation check
             # Note: This is a heavy operation, in a real system we'd use a cached matrix
             data = yf.download(all_symbols, period=f"{lookback_days}d", interval="1d", progress=False)['Close']
-            if len(all_symbols) == 1:
-                return {"status": "SAFE", "max_corr": 0, "conflicts": []}
 
             returns = data.pct_change().dropna()
             corr_matrix = returns.corr()

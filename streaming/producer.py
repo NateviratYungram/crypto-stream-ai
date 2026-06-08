@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import time
+from decimal import Decimal
 
 import websocket
 from confluent_kafka import Producer
@@ -98,8 +99,8 @@ def on_message(ws, message):
         record = {
             "trade_id":       str(raw["t"]),
             "symbol":         raw["s"],
-            "price":          str(raw["p"]),   # Avro decimal fields sent as string
-            "quantity":       str(raw["q"]),
+            "price":          Decimal(str(raw["p"])),
+            "quantity":       Decimal(str(raw["q"])),
             "timestamp":      int(raw["T"]),
             "is_buyer_maker": bool(raw["m"]),
             "ingested_at":    time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),

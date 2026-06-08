@@ -12,16 +12,20 @@ direction with higher probability (prevents contradictory LONG+SHORT signals).
 import logging
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 from dotenv import load_dotenv
 
 from intelligence.guards import InstitutionalGuard  # V8 Guard Integration
+from intelligence.ml.performance_feedback import paper_entry_performance_gate
 from intelligence.ml.signal_model import (
     TRADE_TRAIN_SYMBOLS,
     predict_with_neural_consensus,
 )
+from intelligence.ml.symbol_policy import get_symbol_policy
+from intelligence.ml.symbol_threshold import get_threshold_for_side
+from intelligence.ml.trading_quality_gate import get_trading_quality_gate
 from intelligence.technical_engine import compute_indicators, get_kline_data
 from intelligence.utils.market_hours import (
     get_market_status_data,  # Added for Market Alerts
@@ -31,7 +35,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-PERSISTENCE_DB  = "persistence.db"
+PERSISTENCE_DB  = os.getenv("PAPER_TRADE_DB", "data/persistence.db")
 SCAN_THRESHOLD  = 80   # Sniper Mode: Increased from 70 to 80 for higher precision
 DEDUP_HOURS     = 2    # suppress duplicate alert for same symbol within this window
 
@@ -58,15 +62,11 @@ def _send_telegram(text: str) -> bool:
 def _us_market_open() -> bool:
     """Return True if US equity market is currently open (Mon-Fri 09:30–16:00 ET)."""
     import zoneinfo
-    from datetime import timezone
     try:
         et = datetime.now(zoneinfo.ZoneInfo("America/New_York"))
     except Exception:
         # fallback: UTC-4 (EDT approximation)
-        et = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(
-            type('tz', (), {'utcoffset': lambda s, dt: __import__('datetime').timedelta(hours=-4),
-                            'tzname': lambda s, dt: 'EDT', 'dst': lambda s, dt: None})()
-        )
+        et = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-4), "EDT"))
     if et.weekday() >= 5:
         return False
     return (et.hour, et.minute) >= (9, 30) and (et.hour, et.minute) < (16, 0)
@@ -117,7 +117,8 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
           AND created_at < datetime('now', '-6 hours')
     """)
 
-    cutoff = (datetime.utcnow() - timedelta(hours=DEDUP_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    now_utc = datetime.now(timezone.utc)
+    cutoff = (now_utc - timedelta(hours=DEDUP_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
 
     scanned_syms: set = set()
     # us_open = _us_market_open() # No longer needed for MT5 Sniper Assets
@@ -205,8 +206,45 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
                 except Exception as se:
                     logger.debug(f"[ML-Scanner] {sym}/{tf}/{side} predict error: {se}")
 
-            # Only emit if best direction is above threshold
-            if best_side is None or best_win_pct < threshold:
+            if best_side is None:
+                continue
+
+            quality_gate = get_trading_quality_gate(
+                sym,
+                entry_source="signal_feed_analysis",
+                side=best_side,
+            )
+            adaptive_threshold = max(
+                float(threshold),
+                float(get_threshold_for_side(sym, best_side)) * 100.0,
+                float(quality_gate.get("minimum_buy_sell_probability") or 0.0) * 100.0,
+            )
+            performance_gate = paper_entry_performance_gate(sym, best_side, "signal_feed_analysis")
+            if not bool(performance_gate.get("ok", True)):
+                logger.info(
+                    "[ML-Scanner] %s/%s blocked by paper performance gate: %s",
+                    sym,
+                    best_side,
+                    performance_gate.get("blockers", []),
+                )
+                continue
+            symbol_policy = get_symbol_policy(sym, best_side, force_refresh=True)
+            if symbol_policy.get("action") == "block":
+                logger.info(
+                    "[ML-Scanner] %s/%s blocked by symbol policy: %s",
+                    sym,
+                    best_side,
+                    symbol_policy.get("reasons", []),
+                )
+                continue
+            if symbol_policy.get("action") == "reduce":
+                adaptive_threshold = max(
+                    adaptive_threshold,
+                    min(95.0, adaptive_threshold + 3.0),
+                )
+
+            # Only emit if best direction is above the stricter adaptive threshold
+            if best_win_pct < adaptive_threshold:
                 continue
 
             # Deduplicate: skip if active ML alert already exists for this symbol+tf
@@ -233,7 +271,8 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
             message   = (
                 f"Win probability {best_win_pct:.0f}% ({direction}) | "
                 f"Model AUC {auc:.3f} | {n_samples} training samples | "
-                f"Scanned {datetime.utcnow().strftime('%H:%M UTC')}"
+                f"Adaptive floor {adaptive_threshold:.0f}% | "
+                f"Scanned {now_utc.strftime('%H:%M UTC')}"
             )
 
             cursor.execute("""
@@ -274,7 +313,7 @@ def scan_for_high_probability_signals(threshold: float = SCAN_THRESHOLD) -> dict
                 f"Confidence: *{best_win_pct:.1f}%*\n"
                 f"{market_ctx}\n"
                 f"Model Edge: {auc:.3f} AUC\n"
-                f"Timestamp: {datetime.utcnow().strftime('%H:%M UTC')}\n\n"
+                f"Timestamp: {now_utc.strftime('%H:%M UTC')}\n\n"
                 f"🔗 [View on TradingView](https://www.tradingview.com/chart/?symbol={sym})\n"
                 f"⚠️ _Institutional Grade Analysis — High Risk_"
             )

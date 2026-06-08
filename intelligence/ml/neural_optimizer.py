@@ -180,7 +180,7 @@ else:
     _TRAINER_CACHE = None
 
 
-def get_neural_optimizer(input_size: int = 24):
+def get_neural_optimizer(input_size: int = 35):
     if not TORCH_AVAILABLE:
         return None
     global _TRAINER_CACHE

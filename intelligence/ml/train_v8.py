@@ -1,4 +1,3 @@
-
 import logging
 import sys
 from pathlib import Path
@@ -9,76 +8,134 @@ import numpy as np
 sys.path.append(str(Path.cwd()))
 
 from intelligence.ml.neural_optimizer import get_neural_trainer
-from intelligence.ml.signal_model import build_ml_dataset, train_model
+from intelligence.ml.signal_model import (
+    build_ml_dataset,
+    get_paper_label_quality_report,
+    invalidate_model_cache,
+    train_model,
+)
+from intelligence.ml.symbol_threshold import refresh_threshold_cache
+from intelligence.ml.trading_quality_gate import clear_trading_quality_gate_cache
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("V8Trainer")
 
-def main():
-    logger.info("🚀 Starting Intelligence V8: Clinical Precision Training Cycle")
-    logger.info("   [Data Source: PostgreSQL 10-Year Big Data]")
-    logger.info("   [Asymmetric Risk-Aware Loss Active: FP Penalty = 3x]")
 
-    # 1. Build common dataset for all models
-    logger.info("--- Phase 0: Big Data Acquisition & Sequence Synthesis ---")
-    dataset = build_ml_dataset(limit=500000) # Full historical lookback
+def _finalize_caches() -> None:
+    invalidate_model_cache()
+    refresh_threshold_cache()
+    clear_trading_quality_gate_cache()
 
+
+def train(limit: int = 500000, neural_epochs: int = 150) -> dict:
+    logger.info("Starting Intelligence V8 training cycle")
+    logger.info("Data source: PostgreSQL + paper outcomes")
+
+    logger.info("--- Phase 0: Dataset Build ---")
+    dataset = build_ml_dataset(limit=limit)
     if dataset.empty:
-        logger.error("❌ Failed to build dataset. Check DB connection and data availability.")
-        return
+        logger.error("Failed to build dataset. Check DB connection and data availability.")
+        return {"status": "error", "reason": "dataset_empty"}
 
-    # 2. Train Ensemble V8 (GBM/RF with Fractal Features)
-    logger.info("--- Phase 1: Ensemble V8 Hardening ---")
+    paper_quality = get_paper_label_quality_report(force_refresh=True)
+    logger.info(
+        "[PaperLabels] included=%s excluded=%s reasons=%s",
+        paper_quality.get("included"),
+        paper_quality.get("excluded"),
+        paper_quality.get("reasons", {}),
+    )
+
+    logger.info("--- Phase 1: Ensemble Training ---")
     ensemble_results = train_model(dataset=dataset)
     if "error" in ensemble_results:
-        logger.error(f"Ensemble failed: {ensemble_results['error']}")
-    else:
-        logger.info(f"✅ Ensemble Accuracy: {ensemble_results.get('accuracy', 0):.4f} | AUC: {ensemble_results.get('roc_auc', 0):.4f} | Samples: {ensemble_results.get('n_samples')}")
+        logger.error("Ensemble failed: %s", ensemble_results["error"])
+        return {"status": "error", "reason": ensemble_results["error"], "paper_label_quality": paper_quality}
 
-    # 3. Prepare neural training sequences
-    logger.info("--- Phase 2: Neural Sequence Preparation ---")
+    if ensemble_results.get("status") == "rejected":
+        logger.warning(
+            "Ensemble promotion rejected | blockers=%s",
+            (ensemble_results.get("promotion_gate") or {}).get("blockers", []),
+        )
+        clear_trading_quality_gate_cache()
+        return {**ensemble_results, "paper_label_quality": paper_quality}
+
+    logger.info(
+        "Ensemble trained | acc=%.4f auc=%.4f samples=%s",
+        float(ensemble_results.get("accuracy", 0.0) or 0.0),
+        float(ensemble_results.get("roc_auc", 0.0) or 0.0),
+        ensemble_results.get("n_samples"),
+    )
+
     if "_sequence" not in dataset.columns:
-        logger.warning("No sequence data available - skipping Neural retrain")
-        logger.info("✅ Intelligence V8 Ensemble Cycle Complete.")
-        return
+        logger.warning("No sequence column available - skipping neural phase")
+        _finalize_caches()
+        return {
+            "status": "trained",
+            "ensemble": ensemble_results,
+            "neural": {"status": "skipped", "reason": "no_sequence_column"},
+            "paper_label_quality": paper_quality,
+        }
 
-    # Filter rows with valid sequences (paper-trade rows and old-schema rows lack them)
+    logger.info("--- Phase 2: Neural Sequence Preparation ---")
     raw = dataset[dataset["_sequence"].notna()].copy()
     seq_list = raw["_sequence"].tolist()
-    y_raw    = raw["label"].values.astype(np.float32)
+    y_raw = raw["label"].values.astype(np.float32)
 
     ref_shape = None
     good_seqs, good_y = [], []
     for seq, lbl in zip(seq_list, y_raw):
         try:
-            a = np.array(seq, dtype=np.float32)
-            if ref_shape is None and a.ndim == 2:
-                ref_shape = a.shape
-            if a.shape == ref_shape:
-                good_seqs.append(a)
+            arr = np.array(seq, dtype=np.float32)
+            if ref_shape is None and arr.ndim == 2:
+                ref_shape = arr.shape
+            if arr.shape == ref_shape:
+                good_seqs.append(arr)
                 good_y.append(lbl)
         except Exception:
             continue
 
     if not good_seqs:
-        logger.warning("No valid sequences after filtering — skipping Neural V8")
-        logger.info("✅ Intelligence V8 Ensemble Cycle Complete.")
-        return
+        logger.warning("No valid sequences after filtering - skipping neural phase")
+        _finalize_caches()
+        return {
+            "status": "trained",
+            "ensemble": ensemble_results,
+            "neural": {"status": "skipped", "reason": "no_valid_sequences"},
+            "paper_label_quality": paper_quality,
+        }
 
     X = np.stack(good_seqs)
     y = np.array(good_y, dtype=np.float32)
-    logger.info(f"Synthesized {len(X)} sequences of shape {X.shape[1:]} for Deep Brain training.")
+    logger.info("Prepared %s sequences of shape %s", len(X), list(X.shape[1:]))
 
-    # 4. Train Neural V8 (Attention-GRU with Asymmetric Risk-Aware Loss)
-    logger.info("--- Phase 3: Neural V8 Clinical Hardening (Sniper Precision Mode) ---")
-    trainer = get_neural_trainer()
+    logger.info("--- Phase 3: Neural Training ---")
+    trainer = get_neural_trainer(input_size=int(X.shape[-1]))
+    neural_summary = {"status": "skipped", "reason": "trainer_unavailable"}
     if trainer:
-        val_loss = trainer.train_on_sequences(X, y, epochs=150)
-        logger.info(f"✅ Neural Training Complete. Final Val Loss: {val_loss:.4f}")
+        val_loss = trainer.train_on_sequences(X, y, epochs=neural_epochs)
+        logger.info("Neural training complete | val_loss=%.4f", float(val_loss))
+        neural_summary = {
+            "status": "trained",
+            "val_loss": float(val_loss),
+            "sequence_count": int(len(X)),
+            "sequence_shape": list(X.shape[1:]),
+        }
     else:
-        logger.warning("Neural Trainer not available (Torch missing?)")
+        logger.warning("Neural trainer not available")
 
-    logger.info("🏆 Intelligence V8 Clinical Precision Evolution Complete!")
+    _finalize_caches()
+    logger.info("Intelligence V8 training cycle complete")
+    return {
+        "status": "trained",
+        "ensemble": ensemble_results,
+        "neural": neural_summary,
+        "paper_label_quality": paper_quality,
+    }
+
+
+def main():
+    train()
+
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import numpy as np
@@ -9,7 +9,13 @@ import yfinance as yf
 from sqlalchemy import create_engine, text
 
 from intelligence.archiver import archiver
-from intelligence.constants import MACRO_MAPPING, NASDAQ_100_TICKERS, SP500_TICKERS
+from intelligence.constants import (
+    MACRO_MAPPING,
+    NASDAQ_100_TICKERS,
+    SP500_TICKERS,
+    TICKER_ALIASES,
+    YFINANCE_DISABLED_TICKERS,
+)
 from intelligence.mt5_connector import (
     _MT5_AVAILABLE,
     mt5_get_rates,
@@ -25,6 +31,14 @@ except Exception:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow_aware() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utcnow_naive() -> datetime:
+    return _utcnow_aware().replace(tzinfo=None)
 
 # ── Timeframe → seconds mapping (used for PostgreSQL bucket queries) ──────────
 TIMEFRAME_SECONDS = {
@@ -114,6 +128,19 @@ _FRESHNESS_SECONDS = {
     "1d":  43200,  # 12 hours (daily candle)
 }
 
+
+def _is_dataframe_fresh(df: Optional[pd.DataFrame], timeframe: str) -> bool:
+    """Return True when the latest candle is fresh enough for live analysis."""
+    try:
+        if df is None or df.empty or "Datetime" not in df.columns:
+            return False
+        freshness = _FRESHNESS_SECONDS.get(timeframe, 1200)
+        latest = pd.to_datetime(df["Datetime"].max(), utc=True)
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=freshness)
+        return latest >= cutoff
+    except Exception:
+        return False
+
 def _query_market_ohlcv(ticker: str, timeframe: str, limit: int, ignore_freshness: bool = False) -> Optional[pd.DataFrame]:
     """
     Try to serve OHLCV from the market_ohlcv table.
@@ -145,7 +172,7 @@ def _query_market_ohlcv(ticker: str, timeframe: str, limit: int, ignore_freshnes
 
         if not ignore_freshness:
             freshness = _FRESHNESS_SECONDS.get(timeframe, 1200)
-            cutoff = datetime.utcnow() - timedelta(seconds=freshness)
+            cutoff = _utcnow_naive() - timedelta(seconds=freshness)
             latest = df["Datetime"].max()
             if latest < cutoff:
                 logger.info(f"market_ohlcv cache STALE for {ticker}/{timeframe} (latest={latest})")
@@ -176,13 +203,14 @@ def get_kline_data(
 
     # ── Choice 0: MT5 Data Bridge (Highest Priority for Real-Time Sync) ──
     # Check MT5 with the RAW symbol before any alias mappings occur
-    if _MT5_AVAILABLE and not ignore_freshness:
+    force_mt5_history = os.getenv("ML_TRAIN_USE_MT5", "0").strip().lower() in {"1", "true", "yes"}
+    if _MT5_AVAILABLE and (not ignore_freshness or force_mt5_history):
         try:
             mt5_rates = mt5_get_rates(sym, timeframe=timeframe, count=limit)
             if mt5_rates is not None and not mt5_rates.empty:
                 logger.info(f"TechnicalEngine: MT5 sync HIT for {sym}/{timeframe}")
                 mt5_rates.attrs["market_status"] = "OPEN"
-                mt5_rates.attrs["last_update"] = datetime.utcnow().isoformat()
+                mt5_rates.attrs["last_update"] = _utcnow_aware().isoformat()
                 return mt5_rates
         except Exception as e_mt5:
             logger.warning(f"TechnicalEngine: MT5 raw sync attempt failed for {sym}: {e_mt5}")
@@ -196,11 +224,7 @@ def get_kline_data(
     _sym_crypto = sym  # save pre-alias for Binance/Postgres queries
 
     # Apply global alias map first (TSMC→TSM, TSLA stays TSLA, etc.)
-    try:
-        from intelligence.constants import TICKER_ALIASES
-        sym = TICKER_ALIASES.get(sym, sym)
-    except Exception:
-        pass
+    sym = TICKER_ALIASES.get(sym, sym)
 
     # Strip -USD suffix for crypto routing logic (but keep it for yfinance lookup)
     _sym_no_usd = sym.replace("-USD", "").replace("USD", "").strip()
@@ -235,14 +259,32 @@ def get_kline_data(
             ticker = "^IXIC"
         if ticker == "SP500":
             ticker = "^GSPC"
+        if ticker in YFINANCE_DISABLED_TICKERS:
+            logger.info(f"TechnicalEngine: yfinance disabled for known no-data ticker {ticker}")
+            df_disabled = pd.DataFrame([{
+                "Datetime": _utcnow_naive(),
+                "Open": 0.0,
+                "High": 0.0,
+                "Low": 0.0,
+                "Close": 0.0,
+                "Volume": 0,
+                "is_speculative": True,
+                "target_symbol": ticker,
+            }])
+            df_disabled.attrs["market_status"] = "NO_DATA"
+            df_disabled.attrs["last_update"] = _utcnow_aware().isoformat()
+            return df_disabled
 
 
         # ── Choice 1: Archive SQL (High-Speed Historical Cache) ────────────────
         try:
             cached_sql = archiver.get_data(ticker, timeframe, limit=limit)
             if cached_sql is not None and len(cached_sql) >= limit:
-                logger.info(f"TechnicalEngine: SQL Archive HIT for {ticker}/{timeframe}")
-                return cached_sql
+                if ignore_freshness or _is_dataframe_fresh(cached_sql, timeframe):
+                    logger.info(f"TechnicalEngine: SQL Archive HIT for {ticker}/{timeframe}")
+                    return cached_sql
+                latest = pd.to_datetime(cached_sql["Datetime"].max(), utc=True)
+                logger.info(f"TechnicalEngine: SQL Archive STALE for {ticker}/{timeframe} (latest={latest})")
         except Exception as e_sql:
             logger.warning(f"TechnicalEngine: SQL Archive fetch failed for {ticker}: {e_sql}")
 
@@ -285,7 +327,7 @@ def get_kline_data(
             if df_yf.empty:
                 logger.warning(f"TechnicalEngine: No data found for {ticker}")
                 return pd.DataFrame([{
-                    "Datetime": datetime.utcnow(),
+                    "Datetime": _utcnow_naive(),
                     "Open": 0.0, "High": 0.0, "Low": 0.0, "Close": 0.0, "Volume": 0,
                     "is_speculative": True,
                     "target_symbol": ticker
@@ -340,7 +382,7 @@ def get_kline_data(
             try:
                 latest_ts = pd.to_datetime(df_yf["Datetime"].iloc[-1], utc=True)
                 # Ensure UTC for comparison
-                now_ts = datetime.utcnow().replace(tzinfo=latest_ts.tzinfo)
+                now_ts = _utcnow_aware().astimezone(latest_ts.tzinfo)
                 diff_mins = (now_ts - latest_ts).total_seconds() / 60
 
                 tf_mins = TIMEFRAME_SECONDS.get(timeframe, 60) / 60
@@ -371,7 +413,7 @@ def get_kline_data(
     tf_secs = TIMEFRAME_SECONDS.get(timeframe, 900)
     MAX_LOOKBACK_S = 86400 * 365 * 20  # cap at 20 years to prevent timedelta overflow
     lookback_s = min(limit * tf_secs * 2, MAX_LOOKBACK_S)
-    since = datetime.utcnow() - timedelta(seconds=lookback_s)
+    since = _utcnow_naive() - timedelta(seconds=lookback_s)
 
     sql_live = f"""
         SELECT
@@ -567,6 +609,11 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["hurst_100"] = df["Close"].rolling(window=100).apply(lambda x: compute_hurst_exponent(x, 100))
     df["hurst_30"]  = df["Close"].rolling(window=30).apply(lambda x: compute_hurst_exponent(x, 30))
 
+    # ── VWAP (Volume Weighted Average Price) — key institutional level ────────
+    if "Volume" in df.columns and df["Volume"].sum() > 0:
+        typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+        df["vwap"] = (typical_price * df["Volume"]).cumsum() / df["Volume"].cumsum()
+
     return df
 
 
@@ -623,8 +670,7 @@ def get_indicator_summary(df: pd.DataFrame, symbol: str = "") -> dict:
     rvi = safe(last.get("rvi_14"))
     hurst_100 = safe(last.get("hurst_100"), 0.5)
     hurst_30 = safe(last.get("hurst_30"), 0.5)
-    hurst_100 = safe(last.get("hurst_100"), 0.5)
-    hurst_30 = safe(last.get("hurst_30"), 0.5)
+    vwap = safe(last.get("vwap"))
 
     # Signal labels
     rsi_signal = (
@@ -710,11 +756,12 @@ def get_indicator_summary(df: pd.DataFrame, symbol: str = "") -> dict:
         },
         "ema": {"ema_20": ema_20, "ema_50": ema_50, "ema_200": ema_200, "signal": ema_signal, "long_term": long_term_trend},
         "volume": {"value": volume, "sma_20": vol_sma, "spike": volume_spike, "cmf": cmf},
+        "vwap": {"value": vwap, "position": "Above VWAP (Bullish)" if close > vwap > 0 else "Below VWAP (Bearish)" if vwap > 0 else "N/A"},
         "volatility": {"atr": atr, "rvi": rvi},
         "hurst": {"h100": hurst_100, "h30": hurst_30, "regime": hurst_regime},
         "patterns": patterns_data,
         "trend_analysis": trend_data,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": _utcnow_aware().isoformat()
     }
 
     return summary
@@ -736,34 +783,85 @@ def detect_patterns(df: pd.DataFrame) -> dict:
         last_5 = df.tail(5)
         patterns = []
 
-        # 1. Engulfing Patterns
         curr = last_5.iloc[-1]
         prev = last_5.iloc[-2]
 
-        # Safe access to OHLC data
-        c_close, c_open = curr['Close'], curr['Open']
-        p_close, p_open = prev['Close'], prev['Open']
+        c_close, c_open = float(curr['Close']), float(curr['Open'])
+        p_close, p_open = float(prev['Close']), float(prev['Open'])
+        c_high,  c_low  = float(curr['High']),  float(curr['Low'])
 
+        body        = abs(c_close - c_open)
+        total_range = c_high - c_low
+        upper_wick  = c_high - max(c_open, c_close)
+        lower_wick  = min(c_open, c_close) - c_low
+
+        # 1. Engulfing
         if c_close > p_open and c_open < p_close and p_close < p_open:
             patterns.append("Bullish Engulfing")
         elif c_close < p_open and c_open > p_close and p_close > p_open:
             patterns.append("Bearish Engulfing")
 
         # 2. Pin Bar / Hammer
-        body = abs(c_close - c_open)
-        total_range = curr['High'] - curr['Low']
         if total_range > 0:
-            upper_wick = curr['High'] - max(c_open, c_close)
-            lower_wick = min(c_open, c_close) - curr['Low']
-
             if lower_wick > body * 2 and upper_wick < body:
                 patterns.append("Hammer / Bullish Pin Bar")
             elif upper_wick > body * 2 and lower_wick < body:
                 patterns.append("Shooting Star / Bearish Pin Bar")
 
+        # 3. Doji — indecision (body < 10% of range)
+        if total_range > 0 and body < total_range * 0.1:
+            patterns.append("Doji (Indecision)")
+
+        # 4. Inside Bar — consolidation / breakout setup
+        p_high, p_low = float(prev['High']), float(prev['Low'])
+        if c_high < p_high and c_low > p_low:
+            patterns.append("Inside Bar (Consolidation)")
+
+        # 5. Outside Bar / Engulfing Range
+        if c_high > p_high and c_low < p_low:
+            if c_close > c_open:
+                patterns.append("Outside Bar Bullish")
+            else:
+                patterns.append("Outside Bar Bearish")
+
+        # 6. Three White Soldiers / Three Black Crows (3-candle trend confirmation)
+        if len(last_5) >= 3:
+            c1, c2, c3 = last_5.iloc[-3], last_5.iloc[-2], last_5.iloc[-1]
+            if (float(c1['Close']) > float(c1['Open']) and
+                    float(c2['Close']) > float(c2['Open']) and
+                    float(c3['Close']) > float(c3['Open']) and
+                    float(c2['Close']) > float(c1['Close']) and
+                    float(c3['Close']) > float(c2['Close'])):
+                patterns.append("Three White Soldiers (Strong Bullish)")
+            elif (float(c1['Close']) < float(c1['Open']) and
+                    float(c2['Close']) < float(c2['Open']) and
+                    float(c3['Close']) < float(c3['Open']) and
+                    float(c2['Close']) < float(c1['Close']) and
+                    float(c3['Close']) < float(c2['Close'])):
+                patterns.append("Three Black Crows (Strong Bearish)")
+
+        # 7. Morning Star / Evening Star (3-candle reversal)
+        if len(last_5) >= 3:
+            s1, s2, s3 = last_5.iloc[-3], last_5.iloc[-2], last_5.iloc[-1]
+            s1_body = abs(float(s1['Close']) - float(s1['Open']))
+            s2_body = abs(float(s2['Close']) - float(s2['Open']))
+            s3_body = abs(float(s3['Close']) - float(s3['Open']))
+            # Morning Star: large bearish, small body (gap down), large bullish
+            if (float(s1['Close']) < float(s1['Open']) and
+                    s2_body < s1_body * 0.3 and
+                    float(s3['Close']) > float(s3['Open']) and
+                    s3_body > s1_body * 0.5):
+                patterns.append("Morning Star (Bullish Reversal)")
+            # Evening Star: large bullish, small body, large bearish
+            elif (float(s1['Close']) > float(s1['Open']) and
+                    s2_body < s1_body * 0.3 and
+                    float(s3['Close']) < float(s3['Open']) and
+                    s3_body > s1_body * 0.5):
+                patterns.append("Evening Star (Bearish Reversal)")
+
         return {
             "detected": patterns if patterns else ["None"],
-            "observation": f"Latest candle body: {round(body, 2)}, range: {round(total_range, 2)}"
+            "observation": f"Latest candle body: {round(body, 2)}, range: {round(total_range, 2)}, upper_wick: {round(upper_wick, 2)}, lower_wick: {round(lower_wick, 2)}"
         }
     except Exception as e:
         logger.error(f"Error in detect_patterns: {e}")

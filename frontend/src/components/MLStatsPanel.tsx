@@ -84,6 +84,54 @@ interface MLStats {
     } | null;
   };
   model_exists: boolean;
+  readiness?: {
+    passed?: boolean;
+    blockers?: { name?: string; detail?: string; ok?: boolean }[];
+    thresholds?: {
+      min_profit_factor?: number;
+      min_walk_forward_auc?: number;
+      min_holdout_auc?: number;
+    };
+    paper?: {
+      profit_factor?: number;
+      expectancy_usd?: number;
+      max_drawdown_usd?: number;
+    };
+  };
+  promotion_history?: {
+    available?: boolean;
+    count?: number;
+    trained_count?: number;
+    rejected_count?: number;
+    latest?: {
+      status?: string;
+      trigger_reason?: string;
+      roc_auc?: number;
+      accuracy?: number;
+      walk_forward_auc?: number;
+      override_reason?: string;
+      blockers?: string[];
+      created_at?: string;
+    } | null;
+  };
+  symbol_policy?: {
+    summary?: {
+      blocked?: number;
+      reduced?: number;
+      allowed?: number;
+    };
+    rows?: Array<{
+      key: string;
+      symbol: string;
+      side: string;
+      action: 'allow' | 'reduce' | 'block';
+      size_multiplier: number;
+      trades: number;
+      win_rate: number;
+      pnl: number;
+      reasons?: string[];
+    }>;
+  };
   focus?: {
     core_symbols?: string[];
     targets?: {
@@ -287,6 +335,14 @@ export default function MLStatsPanel() {
   const overallProgress = num(sufficiency?.progress?.overall) * 100;
   const winRate = paper?.win_rate != null ? Math.round(paper.win_rate * 100) : null;
   const autoRetrain = model?.auto_retrain;
+  const readiness = stats?.readiness;
+  const blockers = readiness?.blockers ?? [];
+  const promotionSummary = stats?.promotion_history;
+  const latestPromotion = promotionSummary?.latest;
+  const symbolPolicy = stats?.symbol_policy;
+  const policyRows = symbolPolicy?.rows ?? [];
+  const blockedRows = policyRows.filter((row) => row.action === 'block');
+  const reducedRows = policyRows.filter((row) => row.action === 'reduce');
   const maxImp = features[0]?.importance ?? 1;
   const recentWinRatePct =
     typeof autoRetrain?.recent_win_rate === 'number' ? autoRetrain.recent_win_rate * 100 : null;
@@ -446,6 +502,52 @@ export default function MLStatsPanel() {
                 <div className="flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 text-blue-400" />
                   <h3 className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                    Live Readiness
+                  </h3>
+                  <span
+                    className={`ml-auto rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-widest ${
+                      readiness?.passed
+                        ? theme === 'dark'
+                          ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                          : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : theme === 'dark'
+                          ? 'bg-rose-500/10 text-rose-300 border-rose-500/20'
+                          : 'bg-rose-50 text-rose-700 border-rose-200'
+                    }`}
+                  >
+                    {readiness?.passed ? 'Ready' : 'Blocked'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <StatCard label="PF" value={readiness?.paper?.profit_factor != null ? readiness.paper.profit_factor.toFixed(2) : '--'} sub={`need ${(readiness?.thresholds?.min_profit_factor ?? 0).toFixed(2)}`} tone={num(readiness?.paper?.profit_factor) >= num(readiness?.thresholds?.min_profit_factor) ? 'emerald' : 'rose'} theme={theme} />
+                  <StatCard label="Holdout AUC" value={auc ? auc.toFixed(3) : '--'} sub={`need ${(readiness?.thresholds?.min_holdout_auc ?? 0).toFixed(3)}`} tone={auc >= num(readiness?.thresholds?.min_holdout_auc) ? 'emerald' : 'rose'} theme={theme} />
+                  <StatCard label="WF AUC" value={walkForward?.avg_roc_auc ? walkForward.avg_roc_auc.toFixed(3) : '--'} sub={`need ${(readiness?.thresholds?.min_walk_forward_auc ?? 0).toFixed(3)}`} tone={num(walkForward?.avg_roc_auc) >= num(readiness?.thresholds?.min_walk_forward_auc) ? 'emerald' : 'rose'} theme={theme} />
+                </div>
+
+                <div className={`rounded-xl border p-4 text-sm space-y-2 ${theme === 'dark' ? 'bg-white/5 border-white/10 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
+                  {blockers.length ? blockers.map((blocker) => (
+                    <div key={`${blocker.name}-${blocker.detail}`} className="flex items-start gap-2">
+                      <AlertCircle className="mt-0.5 h-4 w-4 text-rose-400" />
+                      <div>
+                        <p className="font-black uppercase tracking-widest text-[10px]">{blocker.name || 'blocker'}</p>
+                        <p className="text-xs">{blocker.detail || 'details unavailable'}</p>
+                      </div>
+                    </div>
+                  )) : (
+                    <p>All model-quality checks are clear.</p>
+                  )}
+                </div>
+              </div>
+
+              <div
+                className={`rounded-2xl border p-6 space-y-4 transition-all duration-500 ${
+                  theme === 'dark' ? 'border-white/5 bg-slate-900/40' : 'bg-white border-slate-200 shadow-sm'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-blue-400" />
+                  <h3 className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
                     Auto Retrain Monitor
                   </h3>
                   <span
@@ -477,6 +579,41 @@ export default function MLStatsPanel() {
                     </p>
                   ) : (
                     <p>Current model looks stable enough to keep collecting more labels before the next forced retrain.</p>
+                  )}
+                </div>
+              </div>
+
+              <div
+                className={`rounded-2xl border p-6 space-y-4 transition-all duration-500 ${
+                  theme === 'dark' ? 'border-white/5 bg-slate-900/40' : 'bg-white border-slate-200 shadow-sm'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-blue-400" />
+                  <h3 className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                    Promotion History
+                  </h3>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <StatCard label="Promoted" value={fmt(num(promotionSummary?.trained_count))} sub="saved challengers" tone="emerald" theme={theme} />
+                  <StatCard label="Rejected" value={fmt(num(promotionSummary?.rejected_count))} sub="blocked challengers" tone="amber" theme={theme} />
+                  <StatCard label="Attempts" value={fmt(num(promotionSummary?.count))} sub="recent history" tone="slate" theme={theme} />
+                </div>
+
+                <div className={`rounded-xl border p-4 space-y-2 ${theme === 'dark' ? 'bg-white/5 border-white/10 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Latest Challenger</p>
+                  <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                    {(latestPromotion?.status || 'unknown').toUpperCase()} {latestPromotion?.trigger_reason ? `• ${latestPromotion.trigger_reason}` : ''}
+                  </p>
+                  <p className="text-xs">
+                    AUC {latestPromotion?.roc_auc != null ? latestPromotion.roc_auc.toFixed(3) : '--'} • ACC {latestPromotion?.accuracy != null ? `${(latestPromotion.accuracy * 100).toFixed(1)}%` : '--'} • WF {latestPromotion?.walk_forward_auc != null ? latestPromotion.walk_forward_auc.toFixed(3) : '--'}
+                  </p>
+                  {latestPromotion?.override_reason && (
+                    <p className="text-xs text-blue-400">{latestPromotion.override_reason}</p>
+                  )}
+                  {!!latestPromotion?.blockers?.length && (
+                    <p className="text-xs text-rose-400">{latestPromotion.blockers.join(', ')}</p>
                   )}
                 </div>
               </div>
@@ -577,6 +714,36 @@ export default function MLStatsPanel() {
                 <StatCard label="Calibration" value={model?.calibration?.available ? 'On' : 'Off'} sub={model?.calibration?.method || 'n/a'} tone={model?.calibration?.available ? 'emerald' : 'amber'} theme={theme} />
                 <StatCard label="ECE" value={model?.calibration?.ece != null ? model.calibration.ece.toFixed(3) : '--'} sub="lower is better" tone={num(model?.calibration?.ece) <= 0.08 ? 'emerald' : 'amber'} theme={theme} />
                 <StatCard label="Brier" value={model?.calibration?.brier_score != null ? model.calibration.brier_score.toFixed(3) : '--'} sub="lower is better" tone={num(model?.calibration?.brier_score) <= 0.2 ? 'emerald' : 'amber'} theme={theme} />
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <StatCard label="Blocked Sides" value={fmt(blockedRows.length)} sub="hard stop" tone={blockedRows.length ? 'rose' : 'emerald'} theme={theme} />
+                <StatCard label="Reduced Sides" value={fmt(reducedRows.length)} sub="risk trimmed" tone={reducedRows.length ? 'amber' : 'emerald'} theme={theme} />
+                <StatCard label="Allowed Sides" value={fmt(num(symbolPolicy?.summary?.allowed))} sub="normal flow" tone="slate" theme={theme} />
+              </div>
+
+              <div className={`rounded-xl border p-4 space-y-3 ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200'}`}>
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Policy Highlights</p>
+                {[...blockedRows, ...reducedRows].slice(0, 6).map((row) => (
+                  <div key={row.key} className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{row.symbol} {row.side}</p>
+                      <p className="text-[10px] font-bold text-slate-500">
+                        {row.trades} trades • {row.win_rate.toFixed(1)}% • {row.pnl >= 0 ? '+' : ''}${row.pnl.toFixed(2)}
+                      </p>
+                    </div>
+                    <div className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-widest ${
+                      row.action === 'block'
+                        ? theme === 'dark' ? 'bg-rose-500/10 text-rose-300' : 'bg-rose-50 text-rose-700'
+                        : theme === 'dark' ? 'bg-amber-500/10 text-amber-300' : 'bg-amber-50 text-amber-700'
+                    }`}>
+                      {row.action === 'block' ? 'block' : `x${row.size_multiplier.toFixed(2)}`}
+                    </div>
+                  </div>
+                ))}
+                {blockedRows.length === 0 && reducedRows.length === 0 && (
+                  <p className="text-xs text-slate-500">No symbol-side policy pressure right now.</p>
+                )}
               </div>
 
               <div className="flex flex-wrap gap-3">

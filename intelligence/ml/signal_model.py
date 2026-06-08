@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import pickle
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,6 +25,18 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from .feature_extractor import FEATURE_COLS, extract_features
+from .signal_model_support_helpers import (
+    apply_calibration as _helper_apply_calibration,
+    build_calibration_profile as _helper_build_calibration_profile,
+    build_dataset_report as _helper_build_dataset_report,
+    build_sufficiency_status as _helper_build_sufficiency_status,
+    count_reason as _helper_count_reason,
+    model_promotion_gate as _helper_model_promotion_gate,
+    normalize_paper_symbol as _helper_normalize_paper_symbol,
+    paper_feature_coverage as _helper_paper_feature_coverage,
+    paper_label_quality_decision as _helper_paper_label_quality_decision,
+    prune_weak_slices as _helper_prune_weak_slices,
+)
 
 try:
     from .neural_optimizer import TORCH_AVAILABLE, get_neural_optimizer
@@ -38,6 +51,23 @@ logger = logging.getLogger(__name__)
 MODEL_PATH    = Path(os.getenv("ML_MODEL_PATH", "data/signal_model.pkl"))
 DATASET_PATH  = Path(os.getenv("ML_DATASET_PATH", "data/ml_dataset.parquet"))
 PAPER_DB_PATH = os.getenv("PAPER_TRADE_DB", "persistence.db")
+PAPER_TRAIN_INCLUDE_SOURCES = {
+    source.strip()
+    for source in os.getenv("ML_PAPER_TRAIN_INCLUDE_SOURCES", "auto_paper,shadow_label").split(",")
+    if source.strip()
+}
+PAPER_TRAIN_MIN_ABS_PNL = float(os.getenv("ML_PAPER_TRAIN_MIN_ABS_PNL", "0.000001"))
+ML_MODEL_MIN_PROMOTION_AUC = float(os.getenv("ML_MODEL_MIN_PROMOTION_AUC", "0.50"))
+ML_MODEL_MIN_PROMOTION_ACCURACY = float(os.getenv("ML_MODEL_MIN_PROMOTION_ACCURACY", "0.35"))
+ML_MODEL_PROMOTION_ACCURACY_TOLERANCE = float(os.getenv("ML_MODEL_PROMOTION_ACCURACY_TOLERANCE", "0.005"))
+ML_MODEL_PROMOTION_MIN_AUC_IMPROVEMENT = float(os.getenv("ML_MODEL_PROMOTION_MIN_AUC_IMPROVEMENT", "0.005"))
+ML_MODEL_PROMOTION_MAX_ACCURACY_REGRESSION = float(os.getenv("ML_MODEL_PROMOTION_MAX_ACCURACY_REGRESSION", "0.032"))
+_LAST_PAPER_LABEL_QUALITY_REPORT: Dict[str, Any] = {
+    "available": False,
+    "included": 0,
+    "excluded": 0,
+    "reasons": {},
+}
 
 # Training assets — two tiers:
 # DEFAULT_SYMBOLS = full list used by the ML scanner (signal detection)
@@ -179,9 +209,9 @@ TRAIN_SYMBOLS = TRADE_TRAIN_SYMBOLS
 DEFAULT_TRAIN_LIMIT = 500000
 ML_CORE_SYMBOLS = ["BTCUSD", "ETHUSD", "GOLD", "EURUSD"]
 ML_SUFFICIENCY_TARGETS = {
-    "paper_labels": 100,
-    "training_samples": 1500,
-    "core_symbols": len(ML_CORE_SYMBOLS),
+    "paper_labels":      int(os.getenv("ML_READY_MIN_PAPER_LABELS", "100")),
+    "training_samples":  int(os.getenv("ML_READY_MIN_MODEL_SAMPLES", "1500")),
+    "core_symbols":      len(ML_CORE_SYMBOLS),
 }
 AUTO_RETRAIN_MIN_RECENT_OUTCOMES = 20
 AUTO_RETRAIN_DECAY_WIN_RATE = 0.45
@@ -256,99 +286,212 @@ def _is_valid_feature_row(feats: Dict[str, Any]) -> bool:
 # Dataset Builder
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_daily_context(symbol: str, asset_class: str) -> dict:
-    """
-    Fetch 1d bars for symbol, compute indicators, return {date: daily_context_dict}.
-    Used to inject daily trend context into intraday training rows.
-    """
+def _build_htf_bars(symbol: str, asset_class: str, timeframe: str, limit: int = 5000) -> dict:
+    """Fetch HTF bars, compute indicators, return {date: row} lookup."""
     from intelligence.technical_engine import compute_indicators, get_kline_data
     try:
-        df_d = get_kline_data(symbol, timeframe="1d", limit=3000, asset_class=asset_class, ignore_freshness=True)
-        if df_d is None or len(df_d) < 50:
+        df = get_kline_data(symbol, timeframe=timeframe, limit=limit, asset_class=asset_class, ignore_freshness=True)
+        if df is None or len(df) < 30:
             return {}
-        df_d = compute_indicators(df_d)
+        df = compute_indicators(df)
         lookup: dict = {}
-        for ts, row in df_d.iterrows():
-            # Index may be datetime or Unix-ms integer — normalise to date
+        for ts, row in df.iterrows():
             try:
-                if isinstance(ts, (int, float)):
-                    d_key = pd.Timestamp(ts, unit="ms").date()
-                else:
-                    d_key = pd.Timestamp(ts).date()
+                d_key = pd.Timestamp(ts, unit="ms").date() if isinstance(ts, (int, float)) else pd.Timestamp(ts).date()
             except Exception:
                 continue
-            price  = float(row.get("Close", 0) or 0)
-            ema50  = float(row.get("ema_50",  price) or price) or price
-            ema200 = float(row.get("ema_200", price) or price) or price
-            rsi    = float(row.get("rsi_14",  50.0)  or 50.0)
-            d_trend = max(-20.0, min(20.0, (price - ema50) / ema50 * 100)) if ema50 > 0 else 0.0
-            lookup[d_key] = {
-                "d_trend":     d_trend,
-                "d_rsi":       rsi,
-                "d_ema_align": 1.0 if price > ema200 else 0.0,
-            }
+            lookup[d_key] = row
         return lookup
-    except Exception as exc:
-        logger.warning(f"[ML-Dataset] Daily context build failed for {symbol}: {exc}")
+    except Exception:
         return {}
 
 
-def _generate_training_signals(df: pd.DataFrame, tf: str) -> pd.DataFrame:
-    """
-    Maximized signal generator for ML training data.
-    Three signal types per bar to maximize labeled examples:
-      Type A — Trend-following: price vs EMA50 + relaxed RSI bands
-      Type B — Oversold/Overbought reversal: extreme RSI regardless of EMA
-      Type C — Momentum breakout: strong ADX + price crosses EMA20
+# VIX lookup cache (date → vix_close) — refreshed per dataset build
+_VIX_CACHE: dict = {}
 
-    Cooldown replaces hard consecutive-block so opposite signals can fire
-    after `cooldown` bars, capturing more market transitions.
+
+def _build_vix_context() -> dict:
+    """Fetch VIX daily data and return {date: vix_level}. High VIX = risk-off."""
+    global _VIX_CACHE
+    if _VIX_CACHE:
+        return _VIX_CACHE
+    from intelligence.technical_engine import get_kline_data
+    try:
+        df = get_kline_data("^VIX", timeframe="1d", limit=3000, asset_class="MACRO", ignore_freshness=True)
+        if df is None or df.empty:
+            return {}
+        lookup: dict = {}
+        for ts, row in df.iterrows():
+            try:
+                d_key = pd.Timestamp(ts, unit="ms").date() if isinstance(ts, (int, float)) else pd.Timestamp(ts).date()
+            except Exception:
+                continue
+            v = float(row.get("Close", 0) or 0)
+            if v > 0:
+                lookup[d_key] = v
+        _VIX_CACHE = lookup
+        logger.info(f"[ML-Dataset] VIX context loaded: {len(lookup)} days")
+        return lookup
+    except Exception as exc:
+        logger.warning(f"[ML-Dataset] VIX context failed: {exc}")
+        return {}
+
+
+def _build_daily_context(symbol: str, asset_class: str) -> dict:
+    """
+    Fetch 1d + 4h bars, compute indicators, return {date: context_dict}.
+    Context includes daily trend, 4h trend, EMA alignment, and VIX regime.
+    """
+    daily_rows = _build_htf_bars(symbol, asset_class, "1d", limit=3000)
+    h4_rows    = _build_htf_bars(symbol, asset_class, "4h", limit=10000)
+    vix_ctx    = _build_vix_context()
+
+    if not daily_rows:
+        return {}
+
+    # Build 4h date → latest row mapping (use last 4h bar of each day)
+    h4_by_date: dict = {}
+    for d, row in h4_rows.items():
+        h4_by_date[d] = row  # overwrites with latest bar of that date
+
+    lookup: dict = {}
+    for d_key, row in daily_rows.items():
+        price  = float(row.get("Close", 0) or 0)
+        ema20  = float(row.get("ema_20",  price) or price) or price
+        ema50  = float(row.get("ema_50",  price) or price) or price
+        ema200 = float(row.get("ema_200", price) or price) or price
+        rsi    = float(row.get("rsi_14",  50.0)  or 50.0)
+        d_trend = max(-20.0, min(20.0, (price - ema50) / ema50 * 100)) if ema50 > 0 else 0.0
+
+        # 4h trend alignment
+        h4_bullish = h4_sell = False
+        if d_key in h4_by_date:
+            h4r = h4_by_date[d_key]
+            h4p   = float(h4r.get("Close", 0) or 0)
+            h4e20 = float(h4r.get("ema_20", h4p) or h4p) or h4p
+            h4e50 = float(h4r.get("ema_50", h4p) or h4p) or h4p
+            h4_bullish = h4p > h4e20 and h4e20 > h4e50
+            h4_sell    = h4p < h4e20 and h4e20 < h4e50
+
+        # VIX regime: >25 = elevated fear, >35 = crisis
+        vix = float(vix_ctx.get(d_key, 0) or 0)
+        vix_risk_off = vix > 25.0  # block aggressive buys in high fear
+        vix_crisis   = vix > 35.0  # block all new positions in crisis
+
+        lookup[d_key] = {
+            "d_trend":      d_trend,
+            "d_rsi":        rsi,
+            "d_ema_align":  1.0 if price > ema200 else 0.0,
+            "d_bullish":    price > ema20 and ema20 > ema50,
+            "d_bearish":    price < ema20 and ema20 < ema50,
+            "h4_bullish":   h4_bullish,
+            "h4_bearish":   h4_sell,
+            "vix":          vix,
+            "vix_risk_off": vix_risk_off,
+            "vix_crisis":   vix_crisis,
+        }
+    return lookup
+
+
+def _generate_training_signals(
+    df: pd.DataFrame,
+    tf: str,
+    daily_ctx_lookup: dict = None,
+    asset_class: str = "CRYPTO",
+) -> pd.DataFrame:
+    """
+    Quality-focused signal generator for ML training data.
+
+    Signals only fire when multiple conditions agree — creating fewer but
+    higher-quality examples. Three types require EMA alignment + ADX:
+      Type A — Trend-following: EMA stack aligned, RSI not extended, ADX confirms
+      Type C — Momentum breakout: strong ADX + full EMA alignment + RSI cap
+      Type D — MACD+EMA confluence: MACD histogram agrees with EMA trend
+
+    When daily_ctx_lookup is provided, signals are additionally gated by the
+    daily trend direction — no longs against a daily downtrend and vice versa.
     """
     import numpy as np
     df = df.copy()
-    required = {"rsi_14", "ema_20", "ema_50", "adx_14", "atr_14"}
+    required = {"rsi_14", "ema_20", "ema_50", "adx_14", "atr_14", "macd_hist"}
     if not required.issubset(df.columns):
-        return df
+        required_base = {"rsi_14", "ema_20", "ema_50", "adx_14", "atr_14"}
+        if not required_base.issubset(df.columns):
+            return df
 
     is_daily = tf in ("1d", "1w")
-    # Wider RSI bands → more signals per bar
-    rsi_buy  = 57 if not is_daily else 55
-    rsi_sell = 43 if not is_daily else 45
-    adx_min  = 10   # lowered from 15
-    cooldown = 3    # bars between same-direction signals (was hard block)
+    # MTF gate disabled for training — MTF context is already encoded as features
+    # (d_trend, d_rsi, d_ema_align). Gating here blocks entire assets/periods
+    # (e.g. SOL in a downtrend) from generating any training examples, which is
+    # worse than having the model learn the MTF relationship from labels.
+    use_mtf  = False
+    rsi_buy  = 55 if not is_daily else 52
+    rsi_sell = 45 if not is_daily else 48
+    adx_min  = 20
+    cooldown = 6
 
     close = df["Close"].values
     ema20 = df["ema_20"].values
     ema50 = df["ema_50"].values
     rsi   = df["rsi_14"].values
     adx   = df["adx_14"].values
+    macd_hist_col = df["macd_hist"].values if "macd_hist" in df.columns else np.zeros(len(df))
     n     = len(df)
 
-    signals  = np.zeros(n, dtype=int)
+    signals   = np.zeros(n, dtype=int)
     last_buy  = -cooldown - 1
     last_sell = -cooldown - 1
 
     for i in range(1, n):
-        r = float(rsi[i])  if not np.isnan(rsi[i])  else 50.0
-        a = float(adx[i])  if not np.isnan(adx[i])  else 0.0
-        c = float(close[i])
-        e20 = float(ema20[i]) if not np.isnan(ema20[i]) else c
-        e50 = float(ema50[i]) if not np.isnan(ema50[i]) else c
+        r   = float(rsi[i])            if not np.isnan(rsi[i])           else 50.0
+        a   = float(adx[i])            if not np.isnan(adx[i])           else 0.0
+        c   = float(close[i])
+        e20 = float(ema20[i])          if not np.isnan(ema20[i])         else c
+        e50 = float(ema50[i])          if not np.isnan(ema50[i])         else c
+        mh  = float(macd_hist_col[i])  if not np.isnan(macd_hist_col[i]) else 0.0
 
-        # Type A: trend-following
-        buy_a  = c > e50 and r < rsi_buy  and (a > adx_min or r < 40)
-        sell_a = c < e50 and r > rsi_sell and (a > adx_min or r > 60)
+        # ── Multi-timeframe gate: 4h + Daily + VIX macro regime ─────────────
+        daily_buy_ok  = True
+        daily_sell_ok = True
+        if use_mtf:
+            try:
+                ts = df.index[i]
+                d_key = ts.date() if hasattr(ts, "date") else pd.Timestamp(ts, unit="ms").date()
+                dc = daily_ctx_lookup.get(d_key)  # None = date not in lookup
 
-        # Type B: extreme RSI reversal (no EMA condition)
-        buy_b  = r < 30
-        sell_b = r > 70
+                if dc is None:
+                    # Date not matched in daily context — bypass gate for this bar.
+                    # This handles timestamp mismatches (different yfinance/archive
+                    # formats between 1h and 1d data for the same symbol).
+                    daily_buy_ok  = True
+                    daily_sell_ok = True
+                else:
+                    d_bullish  = bool(dc.get("d_bullish",  False))
+                    d_bearish  = bool(dc.get("d_bearish",  False))
+                    vix_crisis = bool(dc.get("vix_crisis", False))
+                    # Training gate: daily trend alignment + VIX crisis only.
+                    daily_buy_ok  = d_bullish and not vix_crisis
+                    daily_sell_ok = d_bearish and not vix_crisis
+            except Exception:
+                pass
 
-        # Type C: momentum — strong ADX + EMA20 cross
-        buy_c  = a > 25 and c > e20 and c > e50
-        sell_c = a > 25 and c < e20 and c < e50
+        # Type A — Trend-following: EMA stack + ADX (no RSI filter for training).
+        # RSI excluded here so strongly trending assets (e.g. SOL in a downtrend
+        # where RSI stays < 45) still generate training examples. The labels
+        # (WIN/LOSS) teach the model when RSI context matters.
+        buy_a  = c > e20 and e20 > e50 and a > adx_min
+        sell_a = c < e20 and e20 < e50 and a > adx_min
 
-        want_buy  = buy_a  or buy_b  or buy_c
-        want_sell = sell_a or sell_b or sell_c
+        # Type C — Strong momentum: high ADX, RSI not at extreme (wide tolerance)
+        buy_c  = a > 28 and c > e20 and e20 > e50 and r < 70
+        sell_c = a > 28 and c < e20 and e20 < e50 and r > 30
+
+        # Type D — MACD+EMA confluence (no RSI filter for same reason as A)
+        buy_d  = mh > 0 and c > e50 and e20 > e50 and a > 15
+        sell_d = mh < 0 and c < e50 and e20 < e50 and a > 15
+
+        want_buy  = (buy_a  or buy_c  or buy_d)  and daily_buy_ok
+        want_sell = (sell_a or sell_c or sell_d) and daily_sell_ok
 
         if want_buy and (i - last_buy) > cooldown:
             signals[i] = 1
@@ -365,7 +508,7 @@ def build_ml_dataset(
     symbols: List[Tuple[str, str, str]] = None,
     limit: int = DEFAULT_TRAIN_LIMIT,
     sl_mult: float = 1.2,
-    tp_mult: float = 2.0,   # 2R target → ~40-45% win rate vs 29% at 3R
+    tp_mult: float = 2.0,   # 2R target → breakeven 37.5%, actual win ~37-40%
     max_bars: int = 72,     # more time to resolve → fewer timeouts
     sequence_length: int = 20,
 ) -> pd.DataFrame:
@@ -392,23 +535,35 @@ def build_ml_dataset(
                 logger.warning(f"[ML-Dataset] {sym}: insufficient data ({len(df) if df is not None else 0} bars)")
                 continue
 
-            # Compute indicators and generate relaxed training signals
+            # Daily trend context: fetch first so MTF gate applies during signal generation
+            daily_ctx_lookup: dict = {}
+            if tf in ("15m", "1h", "4h"):
+                daily_ctx_lookup = _build_daily_context(sym, asset_class)
+
+            # Compute indicators then generate MTF-gated signals
             df = compute_indicators(df)
-            df = _generate_training_signals(df, tf)
+            df = _generate_training_signals(df, tf, daily_ctx_lookup=daily_ctx_lookup, asset_class=asset_class)
             df = df.dropna(subset=["rsi_14", "ema_20", "ema_50", "adx_14", "atr_14"])
 
             signal_idx = df.index[df["signal"] != 0].tolist()
             logger.info(f"[ML-Dataset] {sym}/{tf}: {len(signal_idx)} signals found in {len(df)} bars")
 
+            # Pre-compute SMC for each signal bar (CRYPTO/MACRO only, ~100-bar slice)
+            smc_bar_cache: dict = {}
+            if asset_class in ("CRYPTO", "MACRO") and signal_idx:
+                try:
+                    from intelligence.technical_engine import get_smart_money_analysis as _get_smc
+                    for _pos in signal_idx:
+                        _i = df.index.get_loc(_pos)
+                        _start = max(0, _i - 100)
+                        smc_bar_cache[_i] = _get_smc(df.iloc[_start:_i + 1])
+                except Exception as _se:
+                    logger.debug(f"[ML-Dataset] SMC pre-compute failed for {sym}: {_se}")
+
             close_arr = df["Close"].values
             high_arr  = df["High"].values
             low_arr   = df["Low"].values
             atr_arr   = df["atr_14"].values
-
-            # Daily trend context: only useful for intraday timeframes
-            daily_ctx_lookup: dict = {}
-            if tf in ("15m", "1h", "4h"):
-                daily_ctx_lookup = _build_daily_context(sym, asset_class)
 
             # Pre-calculate features for all rows to speed up sequence synthesis
             feature_list = []
@@ -424,7 +579,10 @@ def build_ml_dataset(
                         dc_i = daily_ctx_lookup.get(d_key_i)
                     except Exception:
                         pass
-                feature_list.append(extract_features(df, i, symbol=sym, asset_class=asset_class, daily_context=dc_i))
+                feature_list.append(extract_features(
+                    df, i, symbol=sym, asset_class=asset_class,
+                    daily_context=dc_i, smc_context=smc_bar_cache.get(i),
+                ))
 
             feat_df = pd.DataFrame(feature_list)
 
@@ -516,62 +674,158 @@ def build_ml_dataset(
     return dataset
 
 
-def _load_paper_trade_outcomes() -> List[Dict]:
-    """Load closed paper trades that have SL/TP outcome labels."""
-    rows = []
+def _normalize_paper_symbol(symbol: str) -> str:
+    return _helper_normalize_paper_symbol(symbol)
+
+
+def _count_reason(report: Dict[str, Any], reason: str) -> None:
+    _helper_count_reason(report, reason)
+
+
+def _paper_feature_coverage(features: Dict[str, Any]) -> int:
+    return _helper_paper_feature_coverage(features, FEATURE_COLS)
+
+
+def _paper_label_quality_decision(row: sqlite3.Row, features: Dict[str, Any]) -> Dict[str, Any]:
+    from intelligence.ml.performance_feedback import paper_training_label_gate
+    from intelligence.ml.symbol_policy import get_symbol_policy
+
+    return _helper_paper_label_quality_decision(
+        row,
+        features,
+        feature_cols=FEATURE_COLS,
+        include_sources=PAPER_TRAIN_INCLUDE_SOURCES,
+        min_abs_pnl=PAPER_TRAIN_MIN_ABS_PNL,
+        label_gate_fn=paper_training_label_gate,
+        symbol_policy_fn=get_symbol_policy,
+    )
+
+
+def _scan_paper_trade_outcomes() -> Tuple[List[Dict], Dict[str, Any]]:
+    """Load closed paper trades and keep only labels that are safe for retraining."""
+    rows: List[Dict[str, Any]] = []
+    report: Dict[str, Any] = {
+        "available": True,
+        "policy": {
+            "include_sources": sorted(PAPER_TRAIN_INCLUDE_SOURCES),
+            "min_abs_pnl_for_timeout": PAPER_TRAIN_MIN_ABS_PNL,
+            "min_feature_coverage": max(8, min(len(FEATURE_COLS), 12)),
+        },
+        "included": 0,
+        "excluded": 0,
+        "reasons": {},
+        "by_source": {},
+        "by_symbol": {},
+        "examples": [],
+    }
     try:
-        con = sqlite3.connect(PAPER_DB_PATH)
+        con = sqlite3.connect(PAPER_DB_PATH, timeout=15)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA busy_timeout=15000")
         cur = con.cursor()
         cur.execute("""
-            SELECT symbol, side, entry_price, sl, tp, outcome, features_json, closed_at
+            SELECT id, symbol, side, entry_price, sl, tp, outcome, features_json,
+                   closed_at, pnl_usd, entry_source, close_reason
             FROM paper_trades
             WHERE status='CLOSED' AND outcome IS NOT NULL AND features_json IS NOT NULL
+            ORDER BY datetime(COALESCE(closed_at, opened_at)) ASC
         """)
         for r in cur.fetchall():
-            sym, side, entry, sl, tp, outcome, feat_json, _ = r
+            outcome = str(r["outcome"] or "").upper().strip()
             if outcome not in ("WIN", "LOSS"):
                 continue
             try:
-                feats = json.loads(feat_json or "{}")
+                feats = json.loads(r["features_json"] or "{}")
             except Exception:
                 feats = {}
-            feats["label"]  = 1 if outcome == "WIN" else 0
-            feats["symbol"] = sym
-            feats["side"]   = side
-            feats["entry"]  = entry
+            decision = _paper_label_quality_decision(r, feats)
+            source = decision["entry_source"]
+            symbol = decision["symbol"]
+            report["by_source"].setdefault(source, {"included": 0, "excluded": 0})
+            report["by_symbol"].setdefault(symbol, {"included": 0, "excluded": 0})
+
+            if not decision["include"]:
+                report["excluded"] += 1
+                report["by_source"][source]["excluded"] += 1
+                report["by_symbol"][symbol]["excluded"] += 1
+                for reason in decision["reasons"]:
+                    _count_reason(report, reason)
+                if len(report["examples"]) < 20:
+                    report["examples"].append({
+                        "trade_id": r["id"],
+                        "symbol": symbol,
+                        "side": decision["side"],
+                        "entry_source": source,
+                        "pnl_usd": round(float(decision["pnl_usd"]), 6),
+                        "reasons": decision["reasons"],
+                        "blockers": (decision.get("performance_gate") or {}).get("blockers", [])[:3],
+                    })
+                continue
+
+            feats["label"] = 1 if outcome == "WIN" else 0
+            feats["symbol"] = symbol
+            feats["side"] = decision["side"]
+            feats["entry"] = r["entry_price"]
+            feats["timeframe"] = feats.get("timeframe") or feats.get("focus_timeframe") or "paper"
+            feats["entry_source"] = source
             rows.append(feats)
+            report["included"] += 1
+            report["by_source"][source]["included"] += 1
+            report["by_symbol"][symbol]["included"] += 1
         con.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        report["available"] = False
+        report["error"] = str(exc)
+    return rows, report
+
+
+def _load_paper_trade_outcomes() -> List[Dict]:
+    """Load quality-filtered paper labels for ML retraining."""
+    global _LAST_PAPER_LABEL_QUALITY_REPORT
+    rows, report = _scan_paper_trade_outcomes()
+    _LAST_PAPER_LABEL_QUALITY_REPORT = report
     return rows
+
+
+def get_paper_label_quality_report(force_refresh: bool = False) -> Dict[str, Any]:
+    """Report which paper labels will be included or pruned from retraining."""
+    global _LAST_PAPER_LABEL_QUALITY_REPORT
+    if force_refresh or not _LAST_PAPER_LABEL_QUALITY_REPORT.get("available"):
+        _, report = _scan_paper_trade_outcomes()
+        _LAST_PAPER_LABEL_QUALITY_REPORT = report
+    return _LAST_PAPER_LABEL_QUALITY_REPORT
+
+
+def _cached_dataset_with_fresh_paper_labels() -> Optional[pd.DataFrame]:
+    """Use the saved historical dataset and refresh only paper labels for auto-retrain."""
+    if not DATASET_PATH.exists():
+        return None
+    try:
+        dataset = pd.read_parquet(DATASET_PATH)
+        if dataset is None or dataset.empty:
+            return None
+        mask = pd.Series(True, index=dataset.index)
+        if "timeframe" in dataset.columns:
+            mask &= dataset["timeframe"].astype(str).str.lower() != "paper"
+        if "entry_source" in dataset.columns:
+            mask &= dataset["entry_source"].isna()
+        dataset = dataset.loc[mask].copy()
+        paper_rows = _load_paper_trade_outcomes()
+        if paper_rows:
+            dataset = pd.concat([dataset, pd.DataFrame(paper_rows)], ignore_index=True)
+        logger.info(
+            "[AutoRetrain] Reusing cached dataset with %d quality paper labels",
+            len(paper_rows),
+        )
+        return dataset
+    except Exception as exc:
+        logger.warning(f"[AutoRetrain] Cached dataset reuse failed: {exc}")
+        return None
 
 
 def _build_dataset_report(dataset: pd.DataFrame) -> List[Dict[str, Any]]:
     """Summarize dataset quality per symbol/timeframe slice."""
-    if dataset is None or dataset.empty:
-        return []
-
-    required = {"symbol", "timeframe", "label"}
-    if not required.issubset(dataset.columns):
-        return []
-
-    report_rows: List[Dict[str, Any]] = []
-    grouped = dataset.groupby(["symbol", "timeframe"], dropna=False)
-    for (symbol, timeframe), frame in grouped:
-        labels = pd.to_numeric(frame["label"], errors="coerce").dropna()
-        if labels.empty:
-            continue
-        report_rows.append({
-            "symbol": str(symbol),
-            "timeframe": str(timeframe),
-            "samples": int(len(frame)),
-            "wins": int(labels.sum()),
-            "losses": int(len(labels) - labels.sum()),
-            "win_rate": round(float(labels.mean()), 4),
-        })
-
-    report_rows.sort(key=lambda row: (-row["samples"], row["symbol"], row["timeframe"]))
-    return report_rows
+    return _helper_build_dataset_report(dataset)
 
 
 def _build_sufficiency_status(
@@ -580,40 +834,13 @@ def _build_sufficiency_status(
     dataset_report: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Track whether data is sufficient enough to trust iterative model improvement."""
-    dataset_report = dataset_report or _build_dataset_report(dataset)
-    present_symbols = sorted({str(row["symbol"]) for row in dataset_report})
-    core_covered = [symbol for symbol in ML_CORE_SYMBOLS if symbol in present_symbols]
-    training_samples = int(len(dataset)) if dataset is not None else 0
-
-    paper_progress = min(outcomes_count / ML_SUFFICIENCY_TARGETS["paper_labels"], 1.0) if ML_SUFFICIENCY_TARGETS["paper_labels"] else 1.0
-    sample_progress = min(training_samples / ML_SUFFICIENCY_TARGETS["training_samples"], 1.0) if ML_SUFFICIENCY_TARGETS["training_samples"] else 1.0
-    core_progress = min(len(core_covered) / ML_SUFFICIENCY_TARGETS["core_symbols"], 1.0) if ML_SUFFICIENCY_TARGETS["core_symbols"] else 1.0
-    overall_progress = round(float((paper_progress + sample_progress + core_progress) / 3.0), 4)
-
-    return {
-        "targets": ML_SUFFICIENCY_TARGETS,
-        "current": {
-            "paper_labels": int(outcomes_count),
-            "training_samples": training_samples,
-            "core_symbols_covered": len(core_covered),
-        },
-        "progress": {
-            "paper_labels": round(float(paper_progress), 4),
-            "training_samples": round(float(sample_progress), 4),
-            "core_symbols": round(float(core_progress), 4),
-            "overall": overall_progress,
-        },
-        "core_symbols": {
-            "target": ML_CORE_SYMBOLS,
-            "covered": core_covered,
-            "missing": [symbol for symbol in ML_CORE_SYMBOLS if symbol not in core_covered],
-        },
-        "ready_for_improvement": bool(
-            outcomes_count >= ML_SUFFICIENCY_TARGETS["paper_labels"]
-            and training_samples >= ML_SUFFICIENCY_TARGETS["training_samples"]
-            and len(core_covered) >= ML_SUFFICIENCY_TARGETS["core_symbols"]
-        ),
-    }
+    return _helper_build_sufficiency_status(
+        dataset,
+        outcomes_count,
+        core_symbols=ML_CORE_SYMBOLS,
+        targets=ML_SUFFICIENCY_TARGETS,
+        dataset_report=dataset_report,
+    )
 
 
 def get_live_sufficiency_status(bundle: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -680,115 +907,70 @@ def _prune_weak_slices(
     min_losses: int = 6,
 ) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
     """Drop slices that are too thin or too one-sided to be stable."""
-    report = _build_dataset_report(dataset)
-    if not report:
-        return dataset, []
-
-    keep_keys = set()
-    pruned: List[Dict[str, Any]] = []
-    for row in report:
-        enough_samples = row["samples"] >= min_samples
-        enough_balance = row["wins"] >= min_wins and row["losses"] >= min_losses
-        if enough_samples and enough_balance:
-            keep_keys.add((row["symbol"], row["timeframe"]))
-        else:
-            reasons = []
-            if not enough_samples:
-                reasons.append(f"samples<{min_samples}")
-            if row["wins"] < min_wins:
-                reasons.append(f"wins<{min_wins}")
-            if row["losses"] < min_losses:
-                reasons.append(f"losses<{min_losses}")
-            pruned.append({**row, "reason": ", ".join(reasons)})
-
-    if not keep_keys:
-        return dataset, pruned
-
-    mask = dataset.apply(
-        lambda row: (str(row.get("symbol")), str(row.get("timeframe"))) in keep_keys,
-        axis=1,
+    return _helper_prune_weak_slices(
+        dataset,
+        min_samples=min_samples,
+        min_wins=min_wins,
+        min_losses=min_losses,
     )
-    filtered = dataset.loc[mask].copy()
-    return filtered, pruned
 
 
 def _build_calibration_profile(y_true: np.ndarray, y_prob: np.ndarray, bins: int = 6) -> Dict[str, Any]:
     """Create a simple quantile-based calibration map from holdout predictions."""
-    if len(y_true) == 0 or len(y_true) != len(y_prob):
-        return {"available": False}
-
-    order = np.argsort(y_prob)
-    sorted_true = y_true[order]
-    sorted_prob = y_prob[order]
-    edges = np.linspace(0, len(sorted_prob), bins + 1, dtype=int)
-    bucket_rows: List[Dict[str, Any]] = []
-
-    for start, end in zip(edges[:-1], edges[1:]):
-        if end <= start:
-            continue
-        p_slice = sorted_prob[start:end]
-        y_slice = sorted_true[start:end]
-        bucket_rows.append({
-            "pred_mean": round(float(np.mean(p_slice)), 4),
-            "actual_rate": round(float(np.mean(y_slice)), 4),
-            "count": int(len(p_slice)),
-        })
-
-    if not bucket_rows:
-        return {"available": False}
-
-    brier = float(np.mean((y_prob - y_true) ** 2))
-    ece = float(np.mean([abs(bucket["pred_mean"] - bucket["actual_rate"]) * bucket["count"] for bucket in bucket_rows]) / len(y_prob))
-    return {
-        "available": True,
-        "method": "quantile_bin_empirical_rate",
-        "bins": bucket_rows,
-        "brier_score": round(brier, 4),
-        "ece": round(ece, 4),
-    }
+    return _helper_build_calibration_profile(y_true, y_prob, bins=bins)
 
 
 def _apply_calibration(prob: float, calibration: Dict[str, Any]) -> float:
     """Map raw probability to empirical holdout win rate."""
-    if not calibration or not calibration.get("available"):
-        return float(np.clip(prob, 0.0, 1.0))
+    return _helper_apply_calibration(prob, calibration)
 
-    bins = calibration.get("bins") or []
-    if not bins:
-        return float(np.clip(prob, 0.0, 1.0))
 
-    pred_means = np.array([float(bucket["pred_mean"]) for bucket in bins], dtype=float)
-    actual_rates = np.array([float(bucket["actual_rate"]) for bucket in bins], dtype=float)
-    if len(pred_means) == 1:
-        return float(np.clip(actual_rates[0], 0.0, 1.0))
-
-    calibrated = float(np.interp(prob, pred_means, actual_rates, left=actual_rates[0], right=actual_rates[-1]))
-    return float(np.clip(calibrated, 0.0, 1.0))
+def _model_promotion_gate(acc: float, auc: float, walk_forward: Dict[str, Any]) -> Dict[str, Any]:
+    """Prevent weak retrains from replacing the production model."""
+    return _helper_model_promotion_gate(
+        acc,
+        auc,
+        walk_forward,
+        min_promotion_auc=ML_MODEL_MIN_PROMOTION_AUC,
+        min_promotion_accuracy=ML_MODEL_MIN_PROMOTION_ACCURACY,
+        accuracy_tolerance=ML_MODEL_PROMOTION_ACCURACY_TOLERANCE,
+        min_auc_improvement=ML_MODEL_PROMOTION_MIN_AUC_IMPROVEMENT,
+        max_accuracy_regression=ML_MODEL_PROMOTION_MAX_ACCURACY_REGRESSION,
+        model_exists=MODEL_PATH.exists(),
+        load_incumbent=_load_model,
+    )
 
 
 def _walk_forward_evaluate(
     base_model,
     X: np.ndarray,
     y: np.ndarray,
-    min_train_size: int = 200,
-    test_window: int = 80,
-    max_folds: int = 4,
+    min_train_size: int = 5000,
+    test_window: int = 3000,
+    max_folds: int = 6,
 ) -> Dict[str, Any]:
     """Evaluate with expanding-window folds to reduce one-split bias."""
-    if len(X) < (min_train_size + test_window):
+    # Adapt window sizes to available data — always do at least 3 folds
+    n = len(X)
+    if n < 1000:
+        return {"available": False, "folds": [], "summary": None}
+    # Scale down windows if dataset is smaller than defaults
+    effective_train = min(min_train_size, max(200, n // 8))
+    effective_test  = min(test_window,   max(80,  n // 20))
+    if n < (effective_train + effective_test):
         return {"available": False, "folds": [], "summary": None}
 
     from sklearn.base import clone
     from sklearn.metrics import accuracy_score, roc_auc_score
 
     folds: List[Dict[str, Any]] = []
-    train_end = min_train_size
+    train_end = effective_train
 
-    while train_end + test_window <= len(X) and len(folds) < max_folds:
+    while train_end + effective_test <= n and len(folds) < max_folds:
         X_train = X[:train_end]
         y_train = y[:train_end]
-        X_test = X[train_end:train_end + test_window]
-        y_test = y[train_end:train_end + test_window]
+        X_test = X[train_end:train_end + effective_test]
+        y_test = y[train_end:train_end + effective_test]
 
         class_counts = pd.Series(y_train).value_counts()
         sample_weights = np.array(
@@ -797,7 +979,10 @@ def _walk_forward_evaluate(
         )
 
         fold_model = clone(base_model)
-        fold_model.fit(X_train, y_train, clf__sample_weight=sample_weights)
+        try:
+            fold_model.fit(X_train, y_train, clf__sample_weight=sample_weights)
+        except TypeError:
+            fold_model.fit(X_train, y_train)
         y_pred = fold_model.predict(X_test)
         y_prob = fold_model.predict_proba(X_test)[:, 1]
         auc = roc_auc_score(y_test, y_prob) if len(set(y_test)) > 1 else 0.5
@@ -809,7 +994,7 @@ def _walk_forward_evaluate(
             "roc_auc": round(float(auc), 4),
             "win_rate_test": round(float(np.mean(y_test)), 4),
         })
-        train_end += test_window
+        train_end += effective_test
 
     if not folds:
         return {"available": False, "folds": [], "summary": None}
@@ -925,27 +1110,47 @@ def train_model(
     )
 
 
-    from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+    from sklearn.ensemble import (
+        HistGradientBoostingClassifier,
+        RandomForestClassifier,
+        VotingClassifier,
+    )
 
+    # HistGradientBoostingClassifier: native missing-value handling, faster than GBM,
+    # class_weight='balanced' handles the ~37% win-rate imbalance without double-weighting.
+    # RF with 200 trees + balanced weights + min_samples_leaf guards against overfitting.
     model = Pipeline([
         ("scaler", StandardScaler()),
         ("clf", VotingClassifier(
             estimators=[
-                ("gbm", GradientBoostingClassifier(
-                    n_estimators=100, max_depth=3, learning_rate=0.05,
-                    subsample=0.8, random_state=42
+                ("hgbm", HistGradientBoostingClassifier(
+                    max_iter=300,
+                    max_depth=5,
+                    learning_rate=0.04,
+                    min_samples_leaf=40,
+                    l2_regularization=0.2,
+                    class_weight="balanced",
+                    random_state=42,
                 )),
                 ("rf", RandomForestClassifier(
-                    n_estimators=100, max_depth=8, random_state=42,
-                    class_weight="balanced", n_jobs=-1
+                    n_estimators=200,
+                    max_depth=10,
+                    random_state=42,
+                    class_weight="balanced",
+                    n_jobs=-1,
+                    min_samples_leaf=20,
                 ))
             ],
             voting="soft"
         )),
     ])
 
-    logger.info(f"[ML-Train] Training Ensemble V3 on {len(X_train_ens)} samples...")
-    model.fit(X_train_ens, y_train, clf__sample_weight=sample_weights)
+    logger.info(f"[ML-Train] Training Ensemble V4 (HGBM+RF) on {len(X_train_ens)} samples...")
+    try:
+        model.fit(X_train_ens, y_train, clf__sample_weight=sample_weights)
+    except TypeError:
+        # HistGradientBoostingClassifier uses class_weight internally; sample_weight is optional
+        model.fit(X_train_ens, y_train)
     walk_forward = _walk_forward_evaluate(model, X_ens, y)
 
     # Neural V8 Training (Attention-GRU on temporal sequences)
@@ -966,16 +1171,36 @@ def train_model(
     calibration = _build_calibration_profile(y_test, y_prob)
     acc     = accuracy_score(y_test, y_pred)
     auc     = roc_auc_score(y_test, y_prob) if len(set(y_test)) > 1 else 0.5
+
+    # Isotonic regression calibrator — improves probability reliability (Brier score)
+    isotonic_calibrator = None
+    try:
+        from sklearn.isotonic import IsotonicRegression
+        _iso = IsotonicRegression(out_of_bounds="clip")
+        _iso.fit(y_prob, y_test)
+        isotonic_calibrator = _iso
+        iso_probs = _iso.transform(y_prob)
+        from sklearn.metrics import brier_score_loss
+        brier_before = brier_score_loss(y_test, y_prob)
+        brier_after  = brier_score_loss(y_test, iso_probs)
+        logger.info(f"[ML-Train] Isotonic calibration: Brier {brier_before:.4f} → {brier_after:.4f}")
+        calibration["brier_score"] = round(float(brier_after), 6)
+        calibration["brier_score_raw"] = round(float(brier_before), 6)
+    except Exception as e:
+        logger.warning(f"[ML-Train] Isotonic calibration failed: {e}")
     win_rate_train = float(np.mean(y_train))
     win_rate_test  = float(np.mean(y_test))
 
-    # Feature importances averaged from the ensemble (GBM + RF)
+    # Feature importances: HGBM exposes feature_importances_ only in sklearn >= 1.4
+    # Fall back to RF-only importances when unavailable (still meaningful)
     voting_clf = model.named_steps["clf"]
-    gbm = voting_clf.named_estimators_["gbm"]
-    rf  = voting_clf.named_estimators_["rf"]
+    hgbm = voting_clf.named_estimators_["hgbm"]
+    rf   = voting_clf.named_estimators_["rf"]
 
-    # Average the feature importances from both models
-    importances = (gbm.feature_importances_ + rf.feature_importances_) / 2.0
+    try:
+        importances = (hgbm.feature_importances_ + rf.feature_importances_) / 2.0
+    except AttributeError:
+        importances = rf.feature_importances_
 
     feat_imp   = sorted(
         [{"feature": available[i], "importance": round(float(importances[i]), 6)}
@@ -1025,10 +1250,40 @@ def train_model(
     except Exception:
         pass
 
+    paper_label_quality = get_paper_label_quality_report(force_refresh=False)
     dataset_report = _build_dataset_report(dataset)
     sufficiency = _build_sufficiency_status(dataset, _outcomes_count, dataset_report)
+    promotion_gate = _model_promotion_gate(acc, auc, walk_forward)
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not promotion_gate["promote"]:
+        logger.warning(
+            "[ML-Train] Rejected weak model promotion | blockers=%s | acc=%.1f%% auc=%.3f n=%d",
+            promotion_gate["blockers"],
+            acc * 100.0,
+            auc,
+            len(X_ens),
+        )
+        return {
+            "status": "rejected",
+            "reason": "promotion_gate_failed",
+            "promotion_gate": promotion_gate,
+            "n_samples": len(X_ens),
+            "accuracy": round(acc, 4),
+            "roc_auc": round(auc, 4),
+            "model_path": str(MODEL_PATH),
+        }
+
+    backup_path = None
+    if MODEL_PATH.exists():
+        backup_path = MODEL_PATH.with_name(
+            f"{MODEL_PATH.stem}.backup.{pd.Timestamp.now():%Y%m%d%H%M%S}{MODEL_PATH.suffix}"
+        )
+        try:
+            shutil.copy2(MODEL_PATH, backup_path)
+        except Exception as exc:
+            logger.warning(f"[ML-Train] Could not backup current model before promotion: {exc}")
+            backup_path = None
     with open(MODEL_PATH, "wb") as f:
         pickle.dump({
             "model":               model,
@@ -1049,9 +1304,12 @@ def train_model(
                 "pruned_count": len(pruned_slices),
                 "pruned": pruned_slices,
             },
+            "paper_label_quality":  paper_label_quality,
             "walk_forward":        walk_forward,
             "calibration":         calibration,
+            "isotonic_calibrator": isotonic_calibrator,
             "sufficiency":         sufficiency,
+            "promotion_gate":      promotion_gate,
             "accuracy":            round(acc, 4),
             "roc_auc":             round(auc, 4),
             "win_rate_train":      round(win_rate_train, 4),
@@ -1100,6 +1358,9 @@ def train_model(
         "win_rate":  round(win_rate_train, 4),
         "win_rate_test": round(win_rate_test, 4),
         "pruned_slices": len(pruned_slices),
+        "paper_label_quality": paper_label_quality,
+        "promotion_gate": promotion_gate,
+        "backup_model_path": str(backup_path) if backup_path else None,
         "calibration": calibration,
         "walk_forward": walk_forward,
         "sufficiency": sufficiency,
@@ -1158,7 +1419,14 @@ def predict_win_probability(features: Dict[str, float]) -> Dict[str, Any]:
     x_row        = np.array([[features.get(c, 0.0) for c in feat_cols]])
 
     raw_prob = float(model.predict_proba(x_row)[0][1])
-    calibrated_prob = _apply_calibration(raw_prob, bundle.get("calibration", {}))
+    iso_cal = bundle.get("isotonic_calibrator")
+    if iso_cal is not None:
+        try:
+            calibrated_prob = float(np.clip(iso_cal.transform([raw_prob])[0], 0.0, 1.0))
+        except Exception:
+            calibrated_prob = _apply_calibration(raw_prob, bundle.get("calibration", {}))
+    else:
+        calibrated_prob = _apply_calibration(raw_prob, bundle.get("calibration", {}))
 
     # Model freshness
     trained_at = bundle.get("trained_at", "")
@@ -1235,8 +1503,17 @@ def predict_with_neural_consensus(
     except Exception:
         pass
 
+    # Compute SMC context for CRYPTO/MACRO (used by both ensemble and neural features)
+    _smc_ctx = None
+    if asset_class in ("CRYPTO", "MACRO"):
+        try:
+            from intelligence.technical_engine import get_smart_money_analysis as _get_smc
+            _smc_ctx = _get_smc(df)
+        except Exception:
+            pass
+
     # 1. Ensemble V6 Opinion (Technical + Sentiment Snapshot)
-    features = extract_features(df, idx, side, symbol, asset_class, sentiment_score, daily_context=_daily_ctx)
+    features = extract_features(df, idx, side, symbol, asset_class, sentiment_score, daily_context=_daily_ctx, smc_context=_smc_ctx)
     v3_result = predict_win_probability(features)
 
     # 2. Neural V8 Opinion (Deep Sequence Analysis)
@@ -1251,7 +1528,7 @@ def predict_with_neural_consensus(
                 for i in range(idx - 19, idx + 1):
                     _ts_i = df.index[i]
                     _dc_i = _dc_lookup.get(_ts_i.date()) if _dc_lookup and hasattr(_ts_i, "date") else None
-                    seq_data.append(extract_features(df, i, symbol=symbol, asset_class=asset_class, daily_context=_dc_i))
+                    seq_data.append(extract_features(df, i, symbol=symbol, asset_class=asset_class, daily_context=_dc_i, smc_context=_smc_ctx if i == idx else None))
 
                 # Convert list of dicts to a 2D numpy array of values
                 seq_arr = np.array([[f.get(c, 0.0) for c in FEATURE_COLS] for f in seq_data])
@@ -1264,7 +1541,47 @@ def predict_with_neural_consensus(
         except Exception as ne:
             logger.debug(f"Neural inference failed: {ne}")
 
-    # 3. Decision Stacking
+    # 3. Multi-timeframe gate: 4h + Daily alignment + VIX macro regime
+    if _daily_ctx and v3_result.get("direction") in ("BUY", "SELL"):
+        direction    = v3_result["direction"]
+        d_bullish    = bool(_daily_ctx.get("d_bullish",   False))
+        d_bearish    = bool(_daily_ctx.get("d_bearish",   False))
+        h4_bullish   = bool(_daily_ctx.get("h4_bullish",  False))
+        h4_bearish   = bool(_daily_ctx.get("h4_bearish",  False))
+        vix_crisis   = bool(_daily_ctx.get("vix_crisis",  False))
+        vix_risk_off = bool(_daily_ctx.get("vix_risk_off", False))
+        vix_val      = float(_daily_ctx.get("vix", 0) or 0)
+
+        mtf_blocked = False
+        mtf_reason  = ""
+
+        if vix_crisis:
+            mtf_blocked = True
+            mtf_reason  = f"VIX crisis ({vix_val:.0f} > 35) — all signals blocked"
+        elif direction == "BUY":
+            if not d_bullish or not h4_bullish:
+                mtf_blocked = True
+                mtf_reason  = f"BUY blocked: daily={'✓' if d_bullish else '✗'} 4h={'✓' if h4_bullish else '✗'}"
+            elif vix_risk_off and asset_class.upper() == "CRYPTO":
+                mtf_blocked = True
+                mtf_reason  = f"CRYPTO BUY blocked: VIX risk-off ({vix_val:.0f} > 25)"
+        elif direction == "SELL":
+            if not d_bearish or not h4_bearish:
+                mtf_blocked = True
+                mtf_reason  = f"SELL blocked: daily={'✓' if d_bearish else '✗'} 4h={'✓' if h4_bearish else '✗'}"
+
+        if mtf_blocked:
+            v3_result.update({
+                "direction":       "HOLD",
+                "win_probability":  0.0,
+                "win_pct":          0.0,
+                "confidence":       0,
+                "mtf_blocked":      True,
+                "mtf_reason":       mtf_reason,
+            })
+            return v3_result
+
+    # 4. Decision Stacking
     final_prob = v3_result["win_probability"]
     neural_alignment = False
 
@@ -1285,6 +1602,29 @@ def predict_with_neural_consensus(
         "attention_impact": v8_weights,
         "hybrid_active":   True,
     })
+
+    # 5. Institutional Risk Checks (correlation, drawdown, funding rate, sizing)
+    try:
+        from .risk_manager import full_risk_check
+        atr_pct = float(features.get("atr_pct", 1.0))
+        vix_val = float((_daily_ctx or {}).get("vix", 0) or 0)
+        risk = full_risk_check(
+            symbol=symbol,
+            side=side,
+            win_probability=final_prob,
+            atr_pct=atr_pct,
+            vix=vix_val,
+            asset_class=asset_class,
+        )
+        v3_result["risk"] = risk
+        if not risk["ok"] and v3_result.get("direction") in ("BUY", "SELL"):
+            v3_result["direction"]       = "HOLD"
+            v3_result["win_probability"] = 0.0
+            v3_result["win_pct"]         = 0.0
+            v3_result["risk_blocked"]    = True
+            v3_result["risk_reason"]     = ", ".join(risk["blocked_by"])
+    except Exception as re:
+        logger.debug(f"Risk check failed: {re}")
 
     return v3_result
 
@@ -1411,13 +1751,24 @@ def _consider_auto_retrain():
         return
 
     reasons = status.get("reasons", [])
+    outcome_reasons = [reason for reason in reasons if reason != "model_age"]
+    if not outcome_reasons:
+        logger.info(
+            "[AutoRetrain] Model age warning only (%.2f days); waiting for new closed paper labels before retraining.",
+            float(status.get("model_age_days") or 0.0),
+        )
+        return
+
     logger.warning(f"[AutoRetrain] Triggering background retrain. Reasons: {reasons}")
 
     def _retrain_worker():
         global _AUTO_RETRAIN_RUNNING
         _AUTO_RETRAIN_RUNNING = True
         try:
-            result = train_model()
+            dataset = None
+            if str(os.getenv("ML_AUTO_RETRAIN_USE_CACHED_DATASET", "1")).strip().lower() not in {"0", "false", "no", "off"}:
+                dataset = _cached_dataset_with_fresh_paper_labels()
+            result = train_model(dataset=dataset) if dataset is not None else train_model()
             if "error" in result:
                 logger.error(f"[AutoRetrain] Background retrain failed: {result['error']}")
             else:

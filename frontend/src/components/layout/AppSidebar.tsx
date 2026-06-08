@@ -22,6 +22,7 @@ import {
   UserCircle,
   ClipboardList,
   FlaskConical,
+  DatabaseZap,
   LogOut
 } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -55,6 +56,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
         { id: 'Strategy Chat',       icon: MessageSquare     },
         { id: 'Risk & Alerts',       icon: ShieldAlert       },
         { id: 'Strategy Lab',        icon: FlaskConical      },
+        { id: 'RAG Ops',             icon: DatabaseZap       },
       ]
     }
   ];
@@ -172,7 +174,9 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ activeTab, setActiveTab,
         </div>
 
         <div className="flex flex-col gap-2">
-          <button className={`w-full group flex items-center justify-center gap-2.5 px-4 py-3 rounded-2xl border text-[10px] font-black transition-all duration-500 uppercase tracking-widest shadow-sm active:scale-95 ${
+          <button
+            onClick={() => { setActiveTab('Settings'); onNavClick?.(); }}
+            className={`w-full group flex items-center justify-center gap-2.5 px-4 py-3 rounded-2xl border text-[10px] font-black transition-all duration-500 uppercase tracking-widest shadow-sm active:scale-95 ${
             theme === 'dark' 
               ? 'bg-white/5 hover:bg-white/10 border-white/5 text-slate-400 hover:text-slate-200' 
               : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-900 shadow-sm shadow-slate-200/50 hover:shadow-md'

@@ -122,7 +122,7 @@ export const MarketStatusClock = () => {
       { id: 'forex', label: t('navbar.market_gold'), info: data.forex },
       { id: 'stocks', label: t('navbar.market_stocks'), info: data.stocks },
     ];
-    return markets[index] || markets[0];
+    return markets[index % markets.length];
   };
 
   const formatTime = (seconds: number) => {

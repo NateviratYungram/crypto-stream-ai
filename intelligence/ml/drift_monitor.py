@@ -23,10 +23,11 @@ _DEFAULT_BASELINE = {
 }
 
 
-def _load_baseline() -> Dict[str, Dict]:
-    if _STATS_PATH.exists():
+def _load_baseline(stats_path: Path | None = None) -> Dict[str, Dict]:
+    target_path = stats_path or _STATS_PATH
+    if target_path.exists():
         try:
-            with open(_STATS_PATH) as f:
+            with open(target_path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             logger.warning(f"[DriftMonitor] Could not load training_stats.json: {e}")
@@ -34,10 +35,10 @@ def _load_baseline() -> Dict[str, Dict]:
 
 
 class DriftMonitor:
-    def __init__(self, baseline: Dict[str, Dict] = None):
-        self.baseline = baseline if baseline is not None else _load_baseline()
+    def __init__(self, baseline: Dict[str, Dict] = None, history_limit: int = 100, stats_path: Path | None = None):
+        self.baseline = baseline if baseline is not None else _load_baseline(stats_path=stats_path)
         self.feature_history = {k: [] for k in self.baseline.keys()}
-        self.history_limit = 100
+        self.history_limit = history_limit
 
     def check_drift(self, current_features: Dict[str, Any]) -> Dict[str, Any]:
         """

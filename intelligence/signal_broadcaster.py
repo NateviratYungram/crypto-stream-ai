@@ -87,10 +87,7 @@ class SignalBroadcaster:
     # ── Message formatters ─────────────────────────────────────────────────────
 
     def format_trade_signal(self, state: dict) -> str:
-        """
-        Format an AI analysis result into a human-readable signal message.
-        Handles CryptoStream state field names.
-        """
+        """Format an AI analysis result into a human-readable Telegram signal message."""
         decision    = state.get("master_decision", "NO_TRADE")
         confidence  = state.get("master_confidence", 0)
         symbol      = state.get("symbol", "?")
@@ -114,13 +111,28 @@ class SignalBroadcaster:
         signal_grade = state.get("signal_grade", "")
         size_mult    = state.get("size_multiplier", 1.0)
 
+        # ML probability
+        ml_sig    = state.get("ml_signal", {})
+        ml_buy    = ml_sig.get("buy_pct", None)
+        ml_sell   = ml_sig.get("sell_pct", None)
+        ml_neural = ml_sig.get("neural_alignment", False)
+
+        # Confluence
+        confluence_score = state.get("confluence_score", None)
+        confluence_bd    = state.get("confluence_breakdown", "")
+
+        # Filter notes (MTF, funding, entry confirmation, cooldown)
+        filter_notes = state.get("filter_notes", [])
+
         # Intermarket context
         im         = state.get("intermarket", {})
         macro_bias = state.get("macro_bias") or im.get("macro_bias", "")
         vix_level  = im.get("vix", {}).get("level", "")
         dxy_trend  = im.get("dxy", {}).get("trend", "")
         fg_val     = im.get("fear_greed", {}).get("value", None)
-        funding    = im.get("funding", {}).get("bias", "")
+        funding    = im.get("funding", {})
+        fr_pct     = funding.get("rate_pct", None)
+        fr_bias    = funding.get("bias", "")
 
         grade_icon = {"A+": "🥇", "A": "🥈", "B": "🥉"}.get(signal_grade, "")
         macro_icon = {"RISK_ON": "🟢", "RISK_OFF": "🔴", "NEUTRAL": "🟡"}.get(macro_bias, "")
@@ -133,20 +145,38 @@ class SignalBroadcaster:
             dir_emoji = "⏳ HOLD"
 
         lines = [
-            f"[{dir_emoji}] {symbol} {timeframe}",
+            f"[{dir_emoji}] *{symbol}* {timeframe}",
             f"{'─' * 24}",
-            f"Confidence : {conf_pct:.1f}%",
+            f"Confidence : *{conf_pct:.1f}%*",
         ]
 
         if signal_grade:
-            lines.append(f"Grade      : {grade_icon} {signal_grade}  (size {size_mult:.0%})")
+            lines.append(f"Grade      : {grade_icon} *{signal_grade}*  (size {size_mult:.0%})")
 
         lines += [
-            f"Entry Zone : {entry_low} – {entry_high}",
-            f"Stop Loss  : {sl_price}",
-            f"Take Profit: TP1={tp1}  TP2={tp2}",
+            f"Entry Zone : `{entry_low} – {entry_high}`",
+            f"Stop Loss  : `{sl_price}`",
+            f"TP1 / TP2  : `{tp1}` / `{tp2}`",
             f"Risk/Reward: 1:{rr}",
         ]
+
+        # ML probability block
+        if ml_buy is not None or ml_sell is not None:
+            ml_parts = []
+            if ml_buy is not None:
+                ml_parts.append(f"Buy={ml_buy:.1f}%")
+            if ml_sell is not None:
+                ml_parts.append(f"Sell={ml_sell:.1f}%")
+            if ml_neural:
+                ml_parts.append("Neural✓")
+            lines.append(f"ML Prob    : {' | '.join(ml_parts)}")
+
+        # Confluence score
+        if confluence_score is not None:
+            cf_str = f"Confluence : {confluence_score:.0f}/100"
+            if confluence_bd:
+                cf_str += f"  [{confluence_bd[:60]}]"
+            lines.append(cf_str)
 
         if macro_bias:
             macro_parts = [f"{macro_icon} {macro_bias}"]
@@ -156,12 +186,18 @@ class SignalBroadcaster:
                 macro_parts.append(f"DXY={dxy_trend}")
             if fg_val is not None:
                 macro_parts.append(f"F&G={fg_val}")
-            if funding:
-                macro_parts.append(f"Funding={funding}")
+            if fr_pct is not None:
+                macro_parts.append(f"FR={fr_pct:.3f}%")
+            elif fr_bias:
+                macro_parts.append(f"Funding={fr_bias}")
             lines.append(f"Macro      : {' | '.join(macro_parts)}")
 
         if sentiment:
             lines.append(f"Sentiment  : {sentiment}")
+
+        # Filter notes — show which guards the signal passed/triggered
+        if filter_notes:
+            lines.append(f"Filters    : {' · '.join(filter_notes[:3])}")
 
         tv_sym = f"FX:{symbol}" if asset_class == "FOREX" else symbol
         if symbol == "GOLD":

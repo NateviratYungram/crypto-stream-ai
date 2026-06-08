@@ -2,7 +2,6 @@ import { useState, Suspense, lazy, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Search, Star, CreditCard, ChevronRight } from 'lucide-react';
 import { useMode } from '../contexts/ModeContext';
-import { useLanguage } from '../contexts/LanguageContext';
 import { TabSkeleton } from './TabSkeleton';
 
 // Lazy load sub-components for performance
@@ -15,7 +14,6 @@ const ALPHA_TERMINAL_SUBTAB_KEY = 'crypto_alpha_terminal_subtab';
 
 export const AlphaTerminal = ({ onAnalyze }: { onAnalyze?: (sym: string) => void }) => {
   const { theme } = useMode();
-  const { t } = useLanguage();
   const [activeSubTab, setActiveSubTab] = useState<SubTab>(() => {
     const stored = sessionStorage.getItem(ALPHA_TERMINAL_SUBTAB_KEY);
     return stored === 'WATCHLIST' || stored === 'BROKER' ? stored : 'SCREENER';

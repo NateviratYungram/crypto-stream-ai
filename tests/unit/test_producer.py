@@ -7,11 +7,12 @@ _producer and _avro_serializer are replaced with lightweight stubs.
 """
 import json
 import re
+from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
 
-import producer as prod
+from streaming import producer as prod
 
 # Minimal Binance trade WebSocket message (all required fields)
 _BINANCE_MSG = json.dumps({
@@ -89,15 +90,15 @@ def test_is_buyer_maker_is_bool():
     assert isinstance(record["is_buyer_maker"], bool)
 
 
-def test_price_is_string():
-    """Avro decimal fields are encoded as strings to preserve precision."""
+def test_price_is_decimal():
+    """Avro decimal fields are kept as Decimal values for serializer precision."""
     record = _capture_record()
-    assert isinstance(record["price"], str)
+    assert isinstance(record["price"], Decimal)
 
 
-def test_quantity_is_string():
+def test_quantity_is_decimal():
     record = _capture_record()
-    assert isinstance(record["quantity"], str)
+    assert isinstance(record["quantity"], Decimal)
 
 
 def test_ingested_at_matches_iso8601():
@@ -140,6 +141,17 @@ def test_produce_is_called_once_per_message():
     prod._producer.produce.assert_called_once()
 
 
+def test_logs_every_hundredth_message(monkeypatch):
+    prod.message_count = 99
+    info_messages = []
+    monkeypatch.setattr(prod.logger, "info", lambda *args, **kwargs: info_messages.append(args))
+
+    prod.on_message(None, _BINANCE_MSG)
+
+    assert prod.message_count == 100
+    assert any("Sent %d messages | last price: %s | symbol: %s" in call[0] for call in info_messages)
+
+
 # ── Fault tolerance ──────────────────────────────────────────────────────────
 
 def test_invalid_json_does_not_raise():
@@ -157,3 +169,107 @@ def test_message_count_unchanged_after_bad_message():
     """Failed messages must not increment the counter."""
     prod.on_message(None, "bad json")
     assert prod.message_count == 0
+
+
+def test_load_avro_schema_reads_file(monkeypatch):
+    monkeypatch.setattr(prod, "AVRO_SCHEMA_PATH", "fake.avsc")
+
+    class FakeFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return '{"type":"record"}'
+
+    monkeypatch.setattr("builtins.open", lambda path, mode: FakeFile())
+
+    assert prod._load_avro_schema() == '{"type":"record"}'
+
+
+def test_build_producer_creates_dependencies(monkeypatch):
+    created = {}
+    monkeypatch.setattr(prod, "_load_avro_schema", lambda: '{"type":"record"}')
+    monkeypatch.setattr(
+        prod,
+        "SchemaRegistryClient",
+        lambda config: created.setdefault("registry", config) or "registry-client",
+    )
+    monkeypatch.setattr(
+        prod,
+        "AvroSerializer",
+        lambda client, schema, to_dict: created.setdefault(
+            "serializer",
+            {"client": client, "schema": schema, "mapped": to_dict({"a": 1}, None)},
+        )
+        or "serializer",
+    )
+    monkeypatch.setattr(prod, "Producer", lambda config: created.setdefault("producer", config) or "producer-client")
+
+    producer, serializer = prod._build_producer()
+
+    assert producer == {"bootstrap.servers": prod.KAFKA_BROKER}
+    assert serializer["schema"] == '{"type":"record"}'
+    assert created["registry"] == {"url": prod.SCHEMA_REGISTRY_URL}
+
+
+def test_delivery_report_logs_only_on_error():
+    prod._delivery_report(None, MagicMock())
+    prod._delivery_report(RuntimeError("bad"), MagicMock(key=lambda: "123"))
+
+
+def test_on_close_flushes_producer():
+    prod.on_close(None, 1000, "closed")
+    prod._producer.flush.assert_called_once()
+
+
+def test_on_close_without_producer_does_not_raise():
+    prod._producer = None
+
+    prod.on_close(None, 1000, "closed")
+
+
+def test_on_open_and_on_error_do_not_raise():
+    prod.on_open(None)
+    prod.on_error(None, RuntimeError("oops"))
+
+
+def test_main_builds_websocket_and_flushes_on_interrupt(monkeypatch):
+    created = {}
+
+    class FakeWS:
+        def __init__(self, url, on_open, on_message, on_error, on_close):
+            created["url"] = url
+            created["handlers"] = (on_open, on_message, on_error, on_close)
+
+        def run_forever(self):
+            raise KeyboardInterrupt()
+
+    prod._producer = MagicMock()
+    monkeypatch.setattr(prod, "_build_producer", lambda: (prod._producer, MagicMock()))
+    monkeypatch.setattr(prod.websocket, "WebSocketApp", FakeWS)
+
+    prod.main()
+
+    assert created["url"] == prod.BINANCE_WS_URL
+    prod._producer.flush.assert_called_once()
+
+
+def test_main_does_not_flush_when_producer_missing(monkeypatch):
+    created = {}
+
+    class FakeWS:
+        def __init__(self, url, on_open, on_message, on_error, on_close):
+            created["url"] = url
+
+        def run_forever(self):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(prod, "_build_producer", lambda: (None, MagicMock()))
+    monkeypatch.setattr(prod.websocket, "WebSocketApp", FakeWS)
+
+    prod.main()
+
+    assert created["url"] == prod.BINANCE_WS_URL

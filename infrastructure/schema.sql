@@ -35,6 +35,28 @@ CREATE TABLE IF NOT EXISTS data_quality_log (
 -- Index for fast lookup by detection time (for daily DQ reports)
 CREATE INDEX IF NOT EXISTS idx_dq_detected_at ON data_quality_log (detected_at);
 
+-- Create table for statistical anomaly detection events.
+-- Populated by airflow/dags/anomaly_detection_dag.py from market_ohlcv.
+CREATE TABLE IF NOT EXISTS data_anomaly_events (
+    id             BIGSERIAL PRIMARY KEY,
+    event_key      VARCHAR(160) UNIQUE NOT NULL,
+    symbol         VARCHAR(30) NOT NULL,
+    timeframe      VARCHAR(5) NOT NULL,
+    event_ts       TIMESTAMPTZ NOT NULL,
+    anomaly_type   VARCHAR(60) NOT NULL,
+    severity       VARCHAR(20) NOT NULL,
+    score          DECIMAL(18, 6) NOT NULL,
+    metric_value   DECIMAL(28, 10),
+    baseline_value DECIMAL(28, 10),
+    details        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    detected_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_data_anomaly_events_recent
+    ON data_anomaly_events (detected_at DESC, severity);
+CREATE INDEX IF NOT EXISTS idx_data_anomaly_events_symbol_ts
+    ON data_anomaly_events (symbol, timeframe, event_ts DESC);
+
 -- Create table for Daily Aggregation Summary (populated by Airflow DAG)
 -- Banking Relevance: Mirrors the EOD (End-of-Day) Daily Summary Report
 -- that banks must produce and retain for regulatory review (ธปท., SEC).
@@ -228,6 +250,45 @@ CREATE INDEX IF NOT EXISTS idx_trade_memory_symbol
 -- Drop and recreate once table has > 1000 rows for best recall
 CREATE INDEX IF NOT EXISTS idx_trade_memory_embedding
     ON trade_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- ==========================================
+-- RAG Knowledge Base
+-- ==========================================
+-- Stores unstructured documents as searchable chunks. Embeddings use Gemini
+-- text-embedding-004 and pgvector for semantic retrieval; content_tsv provides
+-- keyword fallback when embedding generation is unavailable.
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id             BIGSERIAL PRIMARY KEY,
+    source_uri     TEXT UNIQUE NOT NULL,
+    title          TEXT NOT NULL,
+    source_type    VARCHAR(40) NOT NULL DEFAULT 'text',
+    content_sha256 CHAR(64) NOT NULL,
+    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    chunk_count    INTEGER NOT NULL DEFAULT 0,
+    ingested_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id             BIGSERIAL PRIMARY KEY,
+    document_id    BIGINT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+    chunk_index    INTEGER NOT NULL,
+    content        TEXT NOT NULL,
+    content_tsv    TSVECTOR GENERATED ALWAYS AS
+                   (to_tsvector('simple', coalesce(content, ''))) STORED,
+    embedding      vector(768),
+    token_estimate INTEGER NOT NULL,
+    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(document_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_documents_source_type
+    ON knowledge_documents (source_type, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_text
+    ON knowledge_chunks USING GIN (content_tsv);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding
+    ON knowledge_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- ==========================================
 -- yfinance Market OHLCV Store

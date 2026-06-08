@@ -228,15 +228,29 @@ TICKER_ALIASES: dict = {
     "SILVER":  "SI=F",
     "XAG":     "SI=F",
     "OIL":     "CL=F",
+    "USOIL":   "CL=F",
+    "WTI":     "CL=F",
     "CRUDE":   "CL=F",
     "NATGAS":  "NG=F",
     "COPPER":  "HG=F",
     # Indices
     "NASDAQ":  "^IXIC",
+    "NAS100":   "^NDX",
+    "US100":    "^NDX",
     "SP500":   "^GSPC",
+    "SPX":     "^GSPC",
+    "US500":   "^GSPC",
     "DOW":     "^DJI",
+    "US30":    "^DJI",
     "VIX":     "^VIX",
     "DXY":     "DX-Y.NYB",
+}
+
+# yfinance symbols that frequently return delisted/no-data responses. Keep these
+# out of live fallback loops so the agent does not waste latency on known misses.
+YFINANCE_DISABLED_TICKERS: set[str] = {
+    "MATIC-USD",
+    "UNI-USD",
 }
 
 # TradingView exchange prefix per ticker
@@ -318,12 +332,19 @@ MACRO_MAPPING = {
     "GOLD":   "GC=F",
     "SILVER": "SI=F",
     "OIL":    "CL=F",
+    "USOIL":  "CL=F",
+    "WTI":    "CL=F",
     "COPPER": "HG=F",
     "NATGAS": "NG=F",
     # Indices
     "NASDAQ": "^IXIC",
+    "NAS100": "^NDX",
+    "US100":  "^NDX",
     "SP500":  "^GSPC",
+    "SPX":    "^GSPC",
+    "US500":  "^GSPC",
     "DOW":    "^DJI",
+    "US30":   "^DJI",
     # Crypto (yfinance tickers)
     "BTC":    "BTC-USD",
     "ETH":    "ETH-USD",

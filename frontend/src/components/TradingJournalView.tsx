@@ -65,7 +65,6 @@ export const TradingJournalView = () => {
     if (filter === 'OPEN') return t.status === 'OPEN';
     if (filter === 'WIN')  return t.status === 'CLOSED' && (t.pnl_usd ?? 0) > 0;
     if (filter === 'LOSS') return t.status === 'CLOSED' && (t.pnl_usd ?? 0) <= 0;
-    return true;
   });
 
   const gradeColor = (wr: number) =>

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DollarSign, TrendingUp, TrendingDown, Target, Award, Zap } from 'lucide-react';
 import { useMode } from '../contexts/ModeContext';
-import { useWebSocket } from '../hooks/useWebSocket';
+import type { WSMessage } from '../hooks/useWebSocket';
 
 interface Signal {
   symbol: string;
@@ -24,16 +24,19 @@ interface Position {
 }
 
 const STARTING_EQUITY = 100000; // Institutional Base Allocation
+const EMPTY_SIGNALS: Signal[] = [];
 
 export const PnLTracker = ({
-  bootstrapSignals = [],
+  bootstrapSignals = EMPTY_SIGNALS,
   skipInitialFetch = false,
+  wsLastMessage = null,
 }: {
   bootstrapSignals?: Signal[]
   skipInitialFetch?: boolean
+  wsLastMessage?: WSMessage | null
 }) => {
   const { theme } = useMode();
-  const { lastMessage } = useWebSocket();
+  const lastMessage = wsLastMessage;
   const [positions, setPositions] = useState<Position[]>([]);
   const [sessionPnl, setSessionPnl] = useState(0);
   const [winCount, setWinCount] = useState(0);

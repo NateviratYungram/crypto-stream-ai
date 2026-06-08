@@ -31,7 +31,7 @@ Upsert on (series_id, date) — safe to re-run without duplication.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 import psycopg2
@@ -64,6 +64,10 @@ FRED_SERIES = [
     ("UNRATE",    "Unemployment Rate",                     "monthly"),
     ("M2SL",      "M2 Money Supply",                       "monthly"),
 ]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 DEFAULT_ARGS = {
     "owner":            "data-engineering-team",
@@ -108,7 +112,7 @@ def _fetch_series(series_id: str, lookback_days: int = 365) -> List[dict]:
     Download a FRED series as CSV and return list of {date, value} dicts.
     FRED public CSV endpoint requires no API key.
     """
-    observation_start = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    observation_start = (_utc_now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     params = {"id": series_id, "observation_start": observation_start}
 
     resp = requests.get(FRED_BASE_URL, params=params, timeout=30)
@@ -204,7 +208,7 @@ def validate_fred_data(**context):
     latest_date, total_rows = row
     log.info("FRED DFF latest date: %s | total rows: %d", latest_date, total_rows)
 
-    expected_latest = (datetime.utcnow() - timedelta(days=3)).date()
+    expected_latest = (_utc_now() - timedelta(days=3)).date()
     if latest_date and latest_date < expected_latest:
         log.warning(
             "FRED DFF data may be stale — latest: %s, expected >= %s",

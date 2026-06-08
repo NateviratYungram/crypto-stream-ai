@@ -44,17 +44,26 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
     # Internal connection strings used by Airflow DAGs
-    AIRFLOW_CONN_CRYPTO_POSTGRES: postgresql://user:password@postgres:5432/crypto_stream_db
+    AIRFLOW_CONN_CRYPTO_POSTGRES: postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}@postgres:5432/${POSTGRES_DB:-crypto_stream_db}
     AIRFLOW_CONN_KAFKA_DEFAULT: kafka://kafka:29092
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_NAME: ${POSTGRES_DB:-crypto_stream_db}
+    DB_USER: ${POSTGRES_USER:-user}
+    DB_PASS: ${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}
+    PYTHONPATH: /opt/airflow
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    ANOMALY_NOTIFY_CRITICAL: ${ANOMALY_NOTIFY_CRITICAL:-1}
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-key.json
     # OpenLineage — emits dataset-level lineage events to Marquez
-    AIRFLOW__LINEAGE__BACKEND: openlineage
     OPENLINEAGE_URL: http://marquez:5000
     OPENLINEAGE_NAMESPACE: crypto_stream
     # pip packages needed by DAGs
     _PIP_ADDITIONAL_REQUIREMENTS: "kafka-python psycopg2-binary pandas pyarrow apache-airflow-providers-google apache-airflow-providers-openlineage openlineage-airflow multitasking==0.0.9 yfinance==0.2.36 requests"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
+    - ./intelligence:/opt/airflow/intelligence:ro
     - ./datalake:/opt/datalake
     - ./gcp-key.json:/opt/airflow/gcp-key.json:ro
     - airflow_logs:/opt/airflow/logs
@@ -319,19 +328,64 @@ services:
       DB_USER: ${POSTGRES_USER:-user}
       DB_PASS: ${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}
       KAFKA_BROKER: kafka:29092
+      PAPER_TRADE_DB: /app/data/persistence.db
       REDIS_URL: redis://redis:6379/0
-    command: ["uvicorn", "chat_server:app", "--host", "0.0.0.0", "--port", "8888", "--reload"]
+      MCP_URL: http://mcp-server:8000
+      MCP_API_KEY: ${MCP_API_KEY:-CHANGE_ME_LOCAL_DEV_KEY}
+    # `--reload` inside Docker can leave only the reloader parent alive while the
+    # worker child dies, which makes the container look "up" but fail healthchecks.
+    command: ["uvicorn", "chat_server:app", "--host", "0.0.0.0", "--port", "8888"]
     volumes:
       - .:/app                    # LIVE CODE SYNC
-      - ./data:/app/data          # persist SQLite + ML models
+      - ${HOST_APP_DATA_DIR:-app_runtime_data}:/app/data  # default to Docker volume; override only for a non-cloud local path
       - ./datalake:/app/datalake  # data lake read access
     depends_on:
       postgres:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
       redis:
         condition: service_healthy
+      mcp-server:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8888/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - crypto-network
+
+  # mcp-server: read-only SQL/schema bridge used by the AI finance agent.
+  # Keeps natural-language answers grounded in the live PostgreSQL lakehouse.
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-crypto_stream_db}
+      DB_USER: ${POSTGRES_USER:-user}
+      DB_PASS: ${POSTGRES_PASSWORD:-CHANGE_ME_IN_ENV}
+      MCP_API_KEY: ${MCP_API_KEY:-CHANGE_ME_LOCAL_DEV_KEY}
+      MCP_RATE_LIMIT: ${MCP_RATE_LIMIT:-60/minute}
+    command: ["uvicorn", "mcp_server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -425,6 +479,7 @@ services:
     command: ["python", "/opt/streaming/lake_writer.py"]
     environment:
       KAFKA_BROKER: kafka:29092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
       DATALAKE_OUTPUT_PATH: /opt/datalake_output
       FLUSH_RECORD_LIMIT: 10
       FLUSH_TIME_LIMIT: 10
@@ -627,6 +682,7 @@ networks:
 # ── VOLUMES ─────────────────────────────────────────────────
 volumes:
   postgres_data:
+  app_runtime_data:
   airflow_logs:
   prometheus_data:
   grafana_data:

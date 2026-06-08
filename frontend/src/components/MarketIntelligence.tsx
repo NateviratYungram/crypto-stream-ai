@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { BarChart3, MessageSquare, Lightbulb, Calendar, Target } from 'lucide-react';
 import { useMode } from '../contexts/ModeContext';
 import { TabSkeleton } from './TabSkeleton';
+import type { WSMessage } from '../hooks/useWebSocket';
 
 const loadTrendsView = () => import('./TrendsView').then(m => ({ default: m.TrendsView }));
 const loadNewsSentimentHub = () => import('./NewsSentimentHub').then(m => ({ default: m.NewsSentimentHub }));
@@ -19,7 +20,12 @@ const TacticsHub = lazy(loadTacticsHub);
 type SubTab = 'TRENDS' | 'SENTIMENT' | 'TACTICS' | 'MACRO' | 'CALENDAR';
 const MARKET_INTEL_SUBTAB_KEY = 'crypto_market_intel_subtab';
 
-export const MarketIntelligence = () => {
+interface MarketIntelligenceProps {
+  wsStatus: 'connecting' | 'open' | 'closed';
+  wsLastMessage: WSMessage | null;
+}
+
+export const MarketIntelligence = ({ wsStatus, wsLastMessage }: MarketIntelligenceProps) => {
   const { theme } = useMode();
   const [activeSubTab, setActiveSubTab] = useState<SubTab>(() => {
     const stored = sessionStorage.getItem(MARKET_INTEL_SUBTAB_KEY);
@@ -50,19 +56,35 @@ export const MarketIntelligence = () => {
   }, [activeSubTab, visitedSubTabs]);
 
   useEffect(() => {
-    const preload = () => {
+    const preloadTactics = () => {
       void loadTacticsHub();
+    };
+    const preloadMacro = () => {
       void loadIntelligenceHub();
+    };
+    const preloadCalendar = () => {
       void loadEconomicCalendar();
     };
 
     if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      const idleId = window.requestIdleCallback(preload, { timeout: 1200 });
-      return () => window.cancelIdleCallback(idleId);
+      const idleId = window.requestIdleCallback(() => preloadTactics(), { timeout: 1200 });
+      const macroIdleId = window.requestIdleCallback(() => preloadMacro(), { timeout: 2200 });
+      const calendarIdleId = window.requestIdleCallback(() => preloadCalendar(), { timeout: 3200 });
+      return () => {
+        window.cancelIdleCallback(idleId);
+        window.cancelIdleCallback(macroIdleId);
+        window.cancelIdleCallback(calendarIdleId);
+      };
     }
 
-    const timer = window.setTimeout(preload, 250);
-    return () => window.clearTimeout(timer);
+    const timeoutId = window.setTimeout(preloadTactics, 900);
+    const macroTimeoutId = window.setTimeout(preloadMacro, 1400);
+    const calendarTimeoutId = window.setTimeout(preloadCalendar, 2000);
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.clearTimeout(macroTimeoutId);
+      window.clearTimeout(calendarTimeoutId);
+    };
   }, []);
 
   const prefetchTab = (tabId: SubTab) => {
@@ -120,10 +142,10 @@ export const MarketIntelligence = () => {
                       : 'absolute inset-0 -z-10 pointer-events-none overflow-hidden'
                   }`}
                 >
-                  {tabId === 'TRENDS' && <TrendsView />}
+                  {tabId === 'TRENDS' && <TrendsView wsStatus={wsStatus} />}
                   {tabId === 'SENTIMENT' && <NewsSentimentHub />}
                   {tabId === 'TACTICS' && <TacticsHub />}
-                  {tabId === 'MACRO' && <IntelligenceHub />}
+                  {tabId === 'MACRO' && <IntelligenceHub wsLastMessage={wsLastMessage} />}
                   {tabId === 'CALENDAR' && <EconomicCalendar />}
                 </motion.div>
               );

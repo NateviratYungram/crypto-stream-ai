@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { RefreshCcw, TrendingUp, TrendingDown, Zap, AlertTriangle, HelpCircle } from 'lucide-react';
+import { RefreshCcw, TrendingUp, TrendingDown, Zap, AlertTriangle } from 'lucide-react';
 import { useMode } from '../contexts/ModeContext';
 
 interface FundingRow {

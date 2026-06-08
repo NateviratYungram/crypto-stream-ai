@@ -23,6 +23,7 @@ interface CalendarEvent {
 
 type DayGroup = { date: string; label: string; events: CalendarEvent[] };
 type MacroWatch = { name: string; abbrev?: string; impact: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'; desc?: string };
+type DataQuality = 'live' | 'stale' | 'partial' | 'unavailable';
 const CALENDAR_CACHE_KEY = 'economic_calendar_cache_v1';
 
 const IMPACT_CONFIG: Record<string, { dot: string; badge: string; text: string; label: string }> = {
@@ -70,6 +71,7 @@ export const EconomicCalendarView = () => {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [tradingNote, setTradingNote] = useState('');
   const [sourceStatus, setSourceStatus] = useState<'live_feed' | 'watch_only' | 'error' | 'invalid_payload' | ''>('');
+  const [dataQuality, setDataQuality] = useState<DataQuality | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const applyCalendarData = useCallback((data: any) => {
@@ -77,6 +79,7 @@ export const EconomicCalendarView = () => {
     setMacroWatch(Array.isArray(data.macro_watch) ? data.macro_watch : []);
     setTradingNote(typeof data.trading_note === 'string' ? data.trading_note : '');
     setSourceStatus(typeof data.source_status === 'string' ? data.source_status : '');
+    setDataQuality((data?._meta?.data_quality as DataQuality | undefined) || data?.data_quality || null);
     setError(data.status === 'ERROR' ? (data.error || 'Calendar source unavailable.') : null);
 
     const map = new Map<string, CalendarEvent[]>();
@@ -99,7 +102,9 @@ export const EconomicCalendarView = () => {
       }));
 
     setDays(sorted);
-    setLastUpdated(new Date());
+    const rawUpdatedAt = typeof data?.updated_at === 'string' ? data.updated_at : data?._meta?.updated_at;
+    const parsedUpdatedAt = rawUpdatedAt ? new Date(rawUpdatedAt) : new Date();
+    setLastUpdated(Number.isNaN(parsedUpdatedAt.getTime()) ? new Date() : parsedUpdatedAt);
     const autoExpand = new Set<string>();
     sorted.forEach(d => { if (isToday(d.date) || isTomorrow(d.date)) autoExpand.add(d.date); });
     setExpanded(autoExpand);
@@ -300,13 +305,13 @@ export const EconomicCalendarView = () => {
                 </p>
               </div>
               <span className={`px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${
-                sourceStatus === 'live_feed'
+                dataQuality === 'live'
                   ? theme === 'dark' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-50 border-emerald-200 text-emerald-600'
-                  : sourceStatus === 'watch_only'
+                  : dataQuality === 'partial' || sourceStatus === 'watch_only'
                     ? theme === 'dark' ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-amber-50 border-amber-200 text-amber-600'
                     : theme === 'dark' ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : 'bg-rose-50 border-rose-200 text-rose-600'
               }`}>
-                {sourceStatus === 'live_feed' ? 'Live Feed' : sourceStatus === 'watch_only' ? 'Watch Only' : 'Source Error'}
+                {dataQuality === 'live' ? 'Live Feed' : dataQuality === 'stale' ? 'Snapshot' : dataQuality === 'partial' || sourceStatus === 'watch_only' ? 'Estimated' : 'Unavailable'}
               </span>
             </div>
             {error && (

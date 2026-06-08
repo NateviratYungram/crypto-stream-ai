@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime as dt_datetime
+from datetime import datetime as dt_datetime, timezone as dt_timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -16,6 +16,49 @@ import psycopg2.extras
 import yfinance as yf
 from dotenv import load_dotenv
 from google import genai as _genai
+from intelligence.tools.market_tool_primitives import (
+    _bias_from_label as _primitives_bias_from_label,
+    _build_chart_analysis as _primitives_build_chart_analysis,
+    _derive_trade_signal as _primitives_derive_trade_signal,
+    _safe_num as _primitives_safe_num,
+    calculate_trade_pnl as _primitives_calculate_trade_pnl,
+)
+from intelligence.tools.market_tool_response_helpers import (
+    _build_market_features_response as _response_build_market_features_response,
+    _build_market_opportunities_response as _response_build_market_opportunities_response,
+    _interpret_market_features as _response_interpret_market_features,
+)
+from intelligence.tools.market_tool_fundamentals_helpers import (
+    _summarize_stock_fundamentals as _fundamentals_summarize_stock_fundamentals,
+)
+from intelligence.tools.market_tool_history_helpers import (
+    _build_historical_ranking_insert_payload as _history_build_historical_ranking_insert_payload,
+    _build_live_historical_rankings_response as _history_build_live_historical_rankings_response,
+    _build_persisted_historical_rankings_response as _history_build_persisted_historical_rankings_response,
+    _historical_rankings_are_fresh as _history_historical_rankings_are_fresh,
+)
+from intelligence.tools.market_tool_index_helpers import (
+    _build_index_summary_response as _index_build_index_summary_response,
+    _normalize_index_requests as _index_normalize_index_requests,
+    _summarize_index_close_series as _index_summarize_index_close_series,
+)
+from intelligence.tools.market_tool_macro_helpers import (
+    _build_market_climate_response as _macro_build_market_climate_response,
+    _build_market_regime_response as _macro_build_market_regime_response,
+    _build_risk_parameters_response as _macro_build_risk_parameters_response,
+    _build_sector_rotation_response as _macro_build_sector_rotation_response,
+)
+from intelligence.tools.market_tool_opportunity_helpers import (
+    _absolute_change as _opportunities_absolute_change,
+    _build_opportunity_group as _opportunities_build_group,
+    _enrich_opportunity_stock as _opportunities_enrich_stock,
+    _liquid_stocks as _opportunities_liquid_stocks,
+)
+from intelligence.tools.market_tool_stats_helpers import (
+    _calculate_hurst_exponent as _stats_calculate_hurst_exponent,
+    _calculate_volatility_skew as _stats_calculate_volatility_skew,
+    _get_historical_stock_universe as _stats_get_historical_stock_universe,
+)
 
 from intelligence.agents.sentiment_agent import _fetch_rss_news
 from intelligence.backtest_crypto import run_crypto_backtest
@@ -34,6 +77,15 @@ from intelligence.mt5_connector import (
 )
 from intelligence.persistence_utils import (
     save_trade_draft,
+)
+from intelligence.ml.anomaly_store import (
+    connect as _anomaly_connect,
+    fetch_anomaly_events as _fetch_anomaly_events,
+    fetch_anomaly_summary as _fetch_anomaly_summary,
+)
+from intelligence.rag import (
+    ingest_knowledge_document as _rag_ingest_knowledge_document,
+    retrieve_knowledge_context as _rag_retrieve_knowledge_context,
 )
 from intelligence.technical_engine import (
     compute_indicators,
@@ -118,30 +170,14 @@ def _cache_get(key: str):
         return entry["val"]
     return None
 
+
 def _calculate_hurst_exponent(prices: List[float], max_lag: int = 20) -> float:
-    """Estimate Hurst Exponent to detect trend persistence vs mean reversion."""
-    import numpy as np
-    try:
-        if len(prices) < max_lag * 2:
-            return 0.5
-        lags = range(2, max_lag)
-        tau = [np.sqrt(np.std(np.subtract(prices[lag:], prices[:-lag]))) for lag in lags]
-        reg = np.polyfit(np.log(lags), np.log(tau), 1)
-        return reg[0] * 2.0
-    except Exception:
-        return 0.5
+    return _stats_calculate_hurst_exponent(prices, max_lag=max_lag)
+
 
 def _calculate_volatility_skew(prices: List[float]) -> float:
-    """Measure return skewness to detect asymmetric risk."""
-    import numpy as np
-    from scipy.stats import skew
-    try:
-        if len(prices) < 20:
-            return 0.0
-        returns = np.diff(np.log(prices))
-        return float(skew(returns))
-    except Exception:
-        return 0.0
+    return _stats_calculate_volatility_skew(prices)
+
 
 def _cache_set(key: str, val, ttl: int):
     """Store value with TTL in seconds in Redis (or local fallback)."""
@@ -319,6 +355,86 @@ def recall_memories(symbol: str, limit: int = 3, context: Optional[str] = None) 
     except Exception as e:
         logger.error(f"Error in recall_memories: {e}")
         return {"status": "ERROR", "error": str(e)}
+
+
+def ingest_knowledge_document(
+    source_uri: str,
+    content: str,
+    title: Optional[str] = None,
+    source_type: str = "text",
+) -> Dict[str, Any]:
+    """
+    Ingest unstructured text into the RAG knowledge base.
+    Chunks are embedded into PostgreSQL/pgvector when GEMINI_API_KEY is set.
+    """
+    return _rag_ingest_knowledge_document(
+        source_uri=source_uri,
+        content=content,
+        title=title,
+        source_type=source_type,
+    )
+
+
+def retrieve_knowledge_context(
+    query: str,
+    limit: int = 5,
+    source_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Retrieve RAG context from ingested knowledge documents.
+    Uses pgvector semantic search and falls back to keyword search.
+    """
+    return _rag_retrieve_knowledge_context(
+        query=query,
+        limit=limit,
+        source_type=source_type,
+    )
+
+
+def get_data_anomalies(
+    symbol: Optional[str] = None,
+    severity: Optional[str] = None,
+    hours: int = 24,
+    limit: int = 20,
+) -> Dict[str, Any]:
+    """
+    Retrieve recent market data anomaly events produced by the Airflow detector.
+    """
+    try:
+        conn = _anomaly_connect()
+        rows = _fetch_anomaly_events(
+            conn,
+            symbol=symbol,
+            severity=severity,
+            hours=hours,
+            limit=limit,
+        )
+        conn.close()
+
+        return {
+            "status": "SUCCESS",
+            "hours": hours,
+            "symbol": symbol.upper() if symbol else None,
+            "severity": severity.upper() if severity else None,
+            "anomaly_count": len(rows),
+            "anomalies": rows,
+        }
+    except Exception as e:
+        logger.error(f"Error in get_data_anomalies: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
+
+def get_data_anomaly_summary(hours: int = 24) -> Dict[str, Any]:
+    """Return aggregate anomaly counts for dashboards and AI context."""
+    try:
+        conn = _anomaly_connect()
+        payload = _fetch_anomaly_summary(conn, hours=hours)
+        conn.close()
+        return {"status": "SUCCESS", **payload}
+    except Exception as e:
+        logger.error(f"Error in get_data_anomaly_summary: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
 
 def get_news_impact(symbol: str = "BTC") -> Dict[str, Any]:
     """
@@ -499,42 +615,12 @@ def get_market_features(symbol: str) -> Dict[str, Any]:
         computed_date = row.get("date")
         if hasattr(computed_date, "isoformat"):
             computed_date = computed_date.isoformat()
-
-        def fmt_pct(v):
-            return f"{float(v)*100:+.2f}%" if v is not None else "N/A"
-        def fmt_corr(v):
-            return f"{float(v):.2f}" if v is not None else "N/A"
-
-        result = {
-            "symbol":       symbol.upper(),
-            "as_of":        computed_date,
-            "returns": {
-                "1d":  fmt_pct(row.get("return_1d")),
-                "7d":  fmt_pct(row.get("return_7d")),
-                "30d": fmt_pct(row.get("return_30d")),
-                "90d": fmt_pct(row.get("return_90d")),
-                "1y":  fmt_pct(row.get("return_365d")),
-            },
-            "volatility_annualized": {
-                "7d":  fmt_pct(row.get("volatility_7d")),
-                "30d": fmt_pct(row.get("volatility_30d")),
-                "90d": fmt_pct(row.get("volatility_90d")),
-            },
-            "correlation": {
-                "vs_sp500_30d": fmt_corr(row.get("corr_vs_sp500_30d")),
-                "vs_sp500_90d": fmt_corr(row.get("corr_vs_sp500_90d")),
-                "vs_btc_30d":   fmt_corr(row.get("corr_vs_btc_30d")),
-                "vs_btc_90d":   fmt_corr(row.get("corr_vs_btc_90d")),
-                "vs_gold_30d":  fmt_corr(row.get("corr_vs_gold_30d")),
-            },
-            "beta_vs_sp500":     fmt_corr(row.get("beta_vs_sp500")),
-            "price_position": {
-                "pct_from_52w_high": f"{float(row['pct_from_52w_high']):+.1f}%" if row.get("pct_from_52w_high") is not None else "N/A",
-                "pct_from_52w_low":  f"{float(row['pct_from_52w_low']):+.1f}%"  if row.get("pct_from_52w_low")  is not None else "N/A",
-            },
-            "relative_strength_vs_sp500_30d": fmt_pct(row.get("rel_strength_30d")),
-            "interpretation": _interpret_features(row, symbol),
-        }
+        result = _response_build_market_features_response(
+            symbol=symbol,
+            row=row,
+            computed_date=computed_date,
+            interpret_features_fn=_interpret_features,
+        )
         _cache_set(cache_key, result, ttl=3600)
         return result
     except Exception as e:
@@ -544,28 +630,7 @@ def get_market_features(symbol: str) -> Dict[str, Any]:
 
 def _interpret_features(row: dict, symbol: str) -> str:
     """Generate a plain-language summary of the features for the AI."""
-    parts = []
-    r30 = row.get("return_30d")
-    if r30 is not None:
-        parts.append(f"{symbol} returned {float(r30)*100:+.1f}% over the past 30 days")
-    vol30 = row.get("volatility_30d")
-    if vol30 is not None:
-        level = "highly volatile" if float(vol30) > 0.5 else "moderately volatile" if float(vol30) > 0.2 else "relatively stable"
-        parts.append(f"is {level} ({float(vol30)*100:.0f}% annualized vol)")
-    corr_sp500 = row.get("corr_vs_sp500_30d")
-    if corr_sp500 is not None:
-        c = float(corr_sp500)
-        coupling = "strongly correlated" if c > 0.7 else "moderately correlated" if c > 0.4 else "weakly correlated" if c > 0.1 else "decoupled"
-        parts.append(f"{coupling} with SP500 (r={c:.2f} over 30d)")
-    beta = row.get("beta_vs_sp500")
-    if beta is not None:
-        b = float(beta)
-        parts.append(f"beta vs SP500 = {b:.2f} ({'more' if b > 1 else 'less'} risky than market)")
-    rel = row.get("rel_strength_30d")
-    if rel is not None:
-        r = float(rel) * 100
-        parts.append(f"{'outperformed' if r > 0 else 'underperformed'} SP500 by {abs(r):.1f}pp over 30d")
-    return ". ".join(parts) + "." if parts else "Insufficient data for interpretation."
+    return _response_interpret_market_features(row, symbol)
 
 
 def get_market_regime() -> Dict[str, Any]:
@@ -658,6 +723,104 @@ def get_market_regime() -> Dict[str, Any]:
         return {"status": "ERROR", "error": str(e)}
 
 
+def get_index_historical_summary(years: int = 10, indices: list[str] | None = None) -> Dict[str, Any]:
+    """
+    Summarize long-term performance and current trend context for major equity indices.
+
+    Best for queries like:
+    - "10 ปีที่ผ่านมา NASDAQ 100, S&P 500, NASDAQ Composite เป็นยังไง?"
+    - "Compare US index performance over the last 5 years"
+    - "ภาพรวมย้อนหลังของดัชนีหุ้นสหรัฐ"
+    """
+    years = max(1, min(int(years or 10), 15))
+    requested = [str(item).upper().strip() for item in (indices or ["NASDAQ_100", "SP500", "NASDAQ_COMPOSITE"])]
+
+    alias_map = {
+        "NASDAQ_100": "NASDAQ_100",
+        "NASDAQ100": "NASDAQ_100",
+        "NDX": "NASDAQ_100",
+        "NASDAQ": "NASDAQ_COMPOSITE",
+        "NASDAQ_COMPOSITE": "NASDAQ_COMPOSITE",
+        "IXIC": "NASDAQ_COMPOSITE",
+        "SP500": "SP500",
+        "S&P500": "SP500",
+        "S&P 500": "SP500",
+        "GSPC": "SP500",
+    }
+    ticker_map = {
+        "NASDAQ_100": "^NDX",
+        "SP500": "^GSPC",
+        "NASDAQ_COMPOSITE": "^IXIC",
+    }
+    labels = {
+        "NASDAQ_100": "NASDAQ 100",
+        "SP500": "S&P 500",
+        "NASDAQ_COMPOSITE": "NASDAQ Composite",
+    }
+
+    normalized = _index_normalize_index_requests(
+        requested,
+        alias_map=alias_map,
+        ticker_map=ticker_map,
+        fallback=["NASDAQ_100", "SP500", "NASDAQ_COMPOSITE"],
+    )
+
+    cache_key = f"index_hist_summary:{years}:{','.join(normalized)}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        yf_symbols = [ticker_map[item] for item in normalized]
+        period = f"{years}y"
+        data = yf.download(
+            yf_symbols,
+            period=period,
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+        )
+        if data is None or data.empty:
+            return {"status": "ERROR", "error": "No historical index data returned"}
+
+        summaries = {}
+        ranking = []
+        for key in normalized:
+            ticker = ticker_map[key]
+            try:
+                if isinstance(data.columns, pd.MultiIndex):
+                    if ticker in data.columns.get_level_values(0):
+                        close = data[ticker]["Close"].dropna()
+                    else:
+                        close = pd.Series(dtype=float)
+                else:
+                    close = data["Close"].dropna()
+            except Exception:
+                close = pd.Series(dtype=float)
+
+            summary = _index_summarize_index_close_series(close, label=labels[key], ticker=ticker)
+            if not summary:
+                continue
+            summaries[key] = summary
+            ranking.append((key, summary["total_return_pct"] / 100.0))
+
+        if not summaries:
+            return {"status": "ERROR", "error": "Unable to compute index summaries from historical data"}
+
+        payload = _index_build_index_summary_response(
+            years=years,
+            summaries=summaries,
+            ranking=ranking,
+        )
+        _cache_set(cache_key, payload, ttl=1800)
+        return payload
+    except Exception as e:
+        logger.error(f"get_index_historical_summary error: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
+
 def get_top_movers(metric: str = "return_30d", direction: str = "top", limit: int = 10) -> Dict[str, Any]:
     """
     Rank all tracked symbols by a feature metric and return the top/bottom performers.
@@ -726,6 +889,438 @@ def get_top_movers(metric: str = "return_30d", direction: str = "top", limit: in
         return {"status": "ERROR", "error": str(e)}
 
 
+
+
+def _get_historical_stock_universe(universe: str) -> tuple[str, list[str]]:
+    return _stats_get_historical_stock_universe(universe, list(NASDAQ_100_TICKERS), list(SP500_TICKERS))
+
+
+def _ensure_historical_stock_summary_table() -> None:
+    conn = _get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_historical_rankings (
+                    symbol TEXT NOT NULL,
+                    yf_symbol TEXT NOT NULL,
+                    universe TEXT NOT NULL,
+                    years INTEGER NOT NULL,
+                    full_window_only BOOLEAN NOT NULL DEFAULT TRUE,
+                    as_of_date DATE,
+                    start_date DATE,
+                    end_date DATE,
+                    start_price DOUBLE PRECISION,
+                    end_price DOUBLE PRECISION,
+                    total_return_pct DOUBLE PRECISION,
+                    cagr_pct DOUBLE PRECISION,
+                    max_drawdown_pct DOUBLE PRECISION,
+                    source TEXT NOT NULL DEFAULT 'yfinance',
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (symbol, universe, years, full_window_only)
+                );
+                CREATE INDEX IF NOT EXISTS idx_stock_hist_rank_lookup
+                    ON stock_historical_rankings (universe, years, full_window_only, total_return_pct DESC);
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _persist_historical_stock_rankings(
+    rows: list[dict[str, Any]],
+    *,
+    years: int,
+    universe: str,
+    full_window_only: bool,
+    source: str = "yfinance",
+) -> int:
+    if not rows:
+        return 0
+
+    _ensure_historical_stock_summary_table()
+    conn = _get_db_conn()
+    inserted = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM stock_historical_rankings
+                WHERE universe = %s
+                  AND years = %s
+                  AND full_window_only = %s
+                """,
+                (universe, years, bool(full_window_only)),
+            )
+            payload = _history_build_historical_ranking_insert_payload(
+                rows,
+                years=years,
+                universe=universe,
+                full_window_only=bool(full_window_only),
+                source=source,
+            )
+            cur.executemany(
+                """
+                INSERT INTO stock_historical_rankings (
+                    symbol, yf_symbol, universe, years, full_window_only,
+                    as_of_date, start_date, end_date, start_price, end_price,
+                    total_return_pct, cagr_pct, max_drawdown_pct, source
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                payload,
+            )
+            inserted = len(payload)
+        conn.commit()
+    finally:
+        conn.close()
+    return inserted
+
+
+def _load_persisted_historical_stock_rankings(
+    *,
+    years: int,
+    direction: str,
+    limit: int,
+    universe: str,
+    full_window_only: bool,
+    max_age_hours: int = 24 * 14,
+) -> Optional[Dict[str, Any]]:
+    try:
+        _ensure_historical_stock_summary_table()
+        conn = _get_db_conn()
+    except Exception:
+        return None
+
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*)::int AS eligible_count,
+                    MAX(as_of_date) AS as_of_date,
+                    MAX(updated_at) AS updated_at
+                FROM stock_historical_rankings
+                WHERE universe = %s
+                  AND years = %s
+                  AND full_window_only = %s
+                """,
+                (universe, years, bool(full_window_only)),
+            )
+            meta = dict(cur.fetchone() or {})
+            if not _history_historical_rankings_are_fresh(meta, max_age_hours=max_age_hours):
+                return None
+
+            updated_at = meta.get("updated_at")
+            order_sql = "DESC" if direction == "top" else "ASC"
+            cur.execute(
+                f"""
+                SELECT
+                    symbol,
+                    yf_symbol,
+                    start_date,
+                    end_date,
+                    start_price,
+                    end_price,
+                    total_return_pct,
+                    cagr_pct,
+                    max_drawdown_pct
+                FROM stock_historical_rankings
+                WHERE universe = %s
+                  AND years = %s
+                  AND full_window_only = %s
+                ORDER BY total_return_pct {order_sql}, symbol ASC
+                LIMIT %s
+                """,
+                (universe, years, bool(full_window_only), limit),
+            )
+            rows = [dict(row) for row in cur.fetchall() or []]
+            return _history_build_persisted_historical_rankings_response(
+                meta=meta,
+                rows=rows,
+                years=years,
+                direction=direction,
+                universe=universe,
+                full_window_only=bool(full_window_only),
+            )
+    except Exception as e:
+        logger.warning(f"Failed to load persisted historical stock rankings: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def _compute_historical_stock_rankings(
+    *,
+    years: int,
+    raw_symbols: list[str],
+    full_window_only: bool,
+) -> Dict[str, Any]:
+    import math
+    import yfinance as yf
+
+    def _yf_equity_symbol(sym: str) -> str:
+        return str(sym or "").upper().replace(".", "-")
+
+    symbol_pairs = [(sym, _yf_equity_symbol(sym)) for sym in raw_symbols if sym]
+    yf_lookup = {yf_sym: orig for orig, yf_sym in symbol_pairs}
+    yf_symbols = [yf_sym for _, yf_sym in symbol_pairs]
+
+    expected_months = max(12, years * 12)
+    min_points = max(24, int(expected_months * 0.8))
+
+    chunks = [yf_symbols[i:i + 125] for i in range(0, len(yf_symbols), 125)]
+
+    def _download_chunk(chunk_symbols: list[str]):
+        return yf.download(
+            chunk_symbols,
+            period=f"{years}y",
+            interval="1mo",
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+        )
+
+    chunk_results: list[tuple[list[str], pd.DataFrame]] = []
+    from concurrent.futures import ThreadPoolExecutor, wait
+    with ThreadPoolExecutor(max_workers=min(4, len(chunks) or 1)) as ex:
+        futures = {ex.submit(_download_chunk, chunk): chunk for chunk in chunks}
+        done, pending = wait(futures, timeout=45)
+        for future in pending:
+            future.cancel()
+        for future in done:
+            try:
+                data = future.result()
+            except Exception:
+                data = None
+            if data is not None and not data.empty:
+                chunk_results.append((futures[future], data))
+
+    if not chunk_results:
+        return {"status": "ERROR", "error": "No historical stock data returned"}
+
+    rankings = []
+    excluded = []
+    as_of = None
+    seen_symbols = set()
+    for chunk_symbols, data in chunk_results:
+        for yf_sym in chunk_symbols:
+            orig_sym = yf_lookup.get(yf_sym, yf_sym)
+            if orig_sym in seen_symbols:
+                continue
+            seen_symbols.add(orig_sym)
+            try:
+                if isinstance(data.columns, pd.MultiIndex):
+                    if yf_sym not in data.columns.get_level_values(0):
+                        excluded.append({"symbol": orig_sym, "reason": "missing"})
+                        continue
+                    close = data[yf_sym]["Close"].dropna()
+                else:
+                    close = data["Close"].dropna()
+            except Exception:
+                close = pd.Series(dtype=float)
+
+            if close.empty or len(close) < min_points:
+                excluded.append({"symbol": orig_sym, "reason": "insufficient_history"})
+                continue
+
+            start_dt = close.index[0]
+            end_dt = close.index[-1]
+            if as_of is None or end_dt > as_of:
+                as_of = end_dt
+
+            observed_years = max((end_dt - start_dt).days / 365.25, 0.25)
+            if full_window_only and observed_years < (years - 0.75):
+                excluded.append({"symbol": orig_sym, "reason": "partial_window"})
+                continue
+
+            start_price = float(close.iloc[0])
+            end_price = float(close.iloc[-1])
+            if start_price <= 0 or math.isclose(start_price, 0.0):
+                excluded.append({"symbol": orig_sym, "reason": "bad_start_price"})
+                continue
+
+            running_max = close.cummax()
+            drawdown = (close / running_max) - 1.0
+            total_return = (end_price / start_price) - 1.0
+            cagr = (end_price / start_price) ** (1.0 / observed_years) - 1.0
+            rankings.append({
+                "symbol": orig_sym,
+                "yf_symbol": yf_sym,
+                "start_date": start_dt.strftime("%Y-%m-%d"),
+                "end_date": end_dt.strftime("%Y-%m-%d"),
+                "start_price": round(start_price, 2),
+                "end_price": round(end_price, 2),
+                "total_return_pct": round(total_return * 100, 2),
+                "cagr_pct": round(cagr * 100, 2),
+                "max_drawdown_pct": round(float(drawdown.min()) * 100, 2) if not drawdown.empty else 0.0,
+            })
+
+    if not rankings:
+        return {
+            "status": "ERROR",
+            "error": "No stocks met the requested historical window",
+            "excluded_count": len(excluded),
+        }
+
+    return {
+        "status": "SUCCESS",
+        "as_of": as_of.strftime("%Y-%m-%d") if as_of is not None else None,
+        "rankings": rankings,
+        "eligible_count": len(rankings),
+        "excluded_count": len(excluded),
+    }
+
+
+def refresh_historical_stock_rankings(
+    years_list: list[int] | None = None,
+    full_window_only: bool = True,
+) -> Dict[str, Any]:
+    """
+    Build and persist historical stock rankings for 1Y/3Y/5Y/10Y style queries.
+    This is meant for backfill/nightly refresh jobs so chat can read summaries from Postgres.
+    """
+    normalized_years = []
+    for item in (years_list or [1, 3, 5, 10]):
+        try:
+            normalized_years.append(max(1, min(int(item), 15)))
+        except Exception:
+            continue
+    normalized_years = sorted(set(normalized_years))
+    combined_universe, combined_symbols = _get_historical_stock_universe("COMBINED")
+    sp500_set = set(_get_historical_stock_universe("SP500")[1])
+    nasdaq_set = set(_get_historical_stock_universe("NASDAQ100")[1])
+
+    summary_runs = []
+    for years in normalized_years:
+        computed = _compute_historical_stock_rankings(
+            years=years,
+            raw_symbols=combined_symbols,
+            full_window_only=bool(full_window_only),
+        )
+        if computed.get("status") != "SUCCESS":
+            summary_runs.append({
+                "years": years,
+                "status": "ERROR",
+                "error": computed.get("error"),
+            })
+            continue
+
+        all_rows = list(computed.get("rankings") or [])
+        persisted = {
+            "COMBINED": _persist_historical_stock_rankings(
+                all_rows,
+                years=years,
+                universe=combined_universe,
+                full_window_only=bool(full_window_only),
+            ),
+            "SP500": _persist_historical_stock_rankings(
+                [row for row in all_rows if row["symbol"] in sp500_set],
+                years=years,
+                universe="SP500",
+                full_window_only=bool(full_window_only),
+            ),
+            "NASDAQ100": _persist_historical_stock_rankings(
+                [row for row in all_rows if row["symbol"] in nasdaq_set],
+                years=years,
+                universe="NASDAQ100",
+                full_window_only=bool(full_window_only),
+            ),
+        }
+        summary_runs.append({
+            "years": years,
+            "status": "SUCCESS",
+            "as_of": computed.get("as_of"),
+            "eligible_count": computed.get("eligible_count"),
+            "excluded_count": computed.get("excluded_count"),
+            "persisted_rows": persisted,
+        })
+
+    return {
+        "status": "SUCCESS",
+        "full_window_only": bool(full_window_only),
+        "runs": summary_runs,
+    }
+
+
+def get_historical_stock_rankings(
+    years: int = 10,
+    direction: str = "top",
+    limit: int = 10,
+    universe: str = "COMBINED",
+    full_window_only: bool = True,
+) -> Dict[str, Any]:
+    """
+    Rank tracked US stocks by total return over a multi-year window.
+
+    Best for:
+    - "หุ้น 10 ตัวแรกที่ขึ้นมากที่สุดใน 10 ปี"
+    - "top 10 best-performing stocks over the last 10 years"
+    - "10 ตัวที่ลงมากที่สุดใน 10 ปี"
+
+    Universe:
+    - COMBINED: deduped NASDAQ 100 + S&P 500 tracked names
+    - NASDAQ100
+    - SP500
+    """
+    years = max(1, min(int(years or 10), 15))
+    limit = max(1, min(int(limit or 10), 50))
+    direction = "bottom" if str(direction or "").lower() in {"bottom", "loser", "losers", "worst", "down"} else "top"
+    universe, raw_symbols = _get_historical_stock_universe(universe)
+
+    cache_key = f"hist_stock_rank:{years}:{direction}:{limit}:{universe}:{int(full_window_only)}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        persisted = _load_persisted_historical_stock_rankings(
+            years=years,
+            direction=direction,
+            limit=limit,
+            universe=universe,
+            full_window_only=bool(full_window_only),
+        )
+        if persisted:
+            _cache_set(cache_key, persisted, ttl=1800)
+            return persisted
+
+        computed = _compute_historical_stock_rankings(
+            years=years,
+            raw_symbols=raw_symbols,
+            full_window_only=bool(full_window_only),
+        )
+        if computed.get("status") != "SUCCESS":
+            return computed
+
+        rankings = list(computed.get("rankings") or [])
+        rankings.sort(key=lambda item: item["total_return_pct"], reverse=(direction == "top"))
+        _persist_historical_stock_rankings(
+            rankings,
+            years=years,
+            universe=universe,
+            full_window_only=bool(full_window_only),
+        )
+        payload = _history_build_live_historical_rankings_response(
+            rankings=rankings,
+            years=years,
+            direction=direction,
+            universe=universe,
+            full_window_only=bool(full_window_only),
+            as_of=computed.get("as_of"),
+            eligible_count=computed.get("eligible_count"),
+            excluded_count=computed.get("excluded_count"),
+            limit=limit,
+        )
+        _cache_set(cache_key, payload, ttl=1800)
+        return payload
+    except Exception as e:
+        logger.error(f"get_historical_stock_rankings error: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
+
 def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
     """
     Fetch fundamental data for value investing analysis with aggressive timeouts.
@@ -767,6 +1362,7 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
     t.join(timeout=3.5) # Don't wait more than 3.5s
 
     info = result.get('info', {})
+    return _fundamentals_summarize_stock_fundamentals(ticker, info, result)
 
     # Fallback price from SQLite if YF fails
     price = info.get("currentPrice") or info.get("regularMarketPrice") or result.get('price_sq')
@@ -882,204 +1478,22 @@ def _get_stock_fundamentals(ticker: str) -> Dict[str, Any]:
 
 
 
+
+
 def _safe_num(value: Any, default: Optional[float] = None, digits: int = 4) -> Optional[float]:
-    try:
-        num = float(value)
-        if pd.isna(num):
-            return default
-        return round(num, digits)
-    except Exception:
-        return default
+    return _primitives_safe_num(value, default=default, digits=digits)
 
 
 def _build_chart_analysis(df_with_indicators: pd.DataFrame) -> Dict[str, Any]:
-    if df_with_indicators is None or len(df_with_indicators) < 2:
-        return {}
-
-    try:
-        last = df_with_indicators.iloc[-1]
-        prev = df_with_indicators.iloc[-2]
-
-        rsi_val = _safe_num(last.get("rsi_14"))
-        macd_hist = _safe_num(last.get("macd_hist"))
-        macd_hist_prev = _safe_num(prev.get("macd_hist"))
-        ema20 = _safe_num(last.get("ema_20"))
-        ema50 = _safe_num(last.get("ema_50"))
-        ema200 = _safe_num(last.get("ema_200"))
-        price_now = _safe_num(last.get("Close"))
-        atr = _safe_num(last.get("atr_14"))
-
-        recent_high = _safe_num(df_with_indicators["High"].tail(20).max(), digits=2)
-        recent_low = _safe_num(df_with_indicators["Low"].tail(20).min(), digits=2)
-
-        rsi_signal = (
-            "OVERSOLD (โซนซื้อ)" if rsi_val is not None and rsi_val < 35 else
-            "OVERBOUGHT (โซนขาย)" if rsi_val is not None and rsi_val > 70 else
-            "NEUTRAL"
-        )
-
-        macd_cross = None
-        if macd_hist is not None and macd_hist_prev is not None:
-            if macd_hist > 0 and macd_hist_prev <= 0:
-                macd_cross = "BULLISH_CROSS (สัญญาณซื้อ)"
-            elif macd_hist < 0 and macd_hist_prev >= 0:
-                macd_cross = "BEARISH_CROSS (สัญญาณขาย)"
-            else:
-                macd_cross = "BULLISH_MOMENTUM" if macd_hist > 0 else "BEARISH_MOMENTUM"
-
-        ema_trend = (
-            "BULLISH (ราคาเหนือ EMA20 > EMA50)" if price_now and ema20 and ema50 and price_now > ema20 > ema50 else
-            "BEARISH (ราคาต่ำกว่า EMA20 < EMA50)" if price_now and ema20 and ema50 and price_now < ema20 < ema50 else
-            "SIDEWAYS"
-        )
-
-        buy_zone_low = recent_low
-        buy_zone_high = round(recent_low * 1.02, 2) if recent_low else None
-        sell_zone_low = round(recent_high * 0.98, 2) if recent_high else None
-        sell_zone_high = recent_high
-
-        action_summary = "WATCH: รอราคาเข้าโซนที่ชัดเจนก่อน"
-        if rsi_val is not None and price_now and recent_low and rsi_val < 40 and price_now < recent_low * 1.03:
-            action_summary = "BUY_ZONE: ราคาใกล้แนวรับ + RSI Oversold"
-        elif rsi_val is not None and price_now and recent_high and rsi_val > 65 and price_now > recent_high * 0.97:
-            action_summary = "SELL_ZONE: ราคาใกล้แนวต้าน + RSI Overbought"
-
-        return {
-            "rsi": {"value": rsi_val, "signal": rsi_signal},
-            "macd": {"histogram": macd_hist, "signal": macd_cross},
-            "ema_trend": ema_trend,
-            "ema20": ema20,
-            "ema50": ema50,
-            "ema200": ema200,
-            "support_20bar": recent_low,
-            "resistance_20bar": recent_high,
-            "chart_buy_zone": {
-                "low": buy_zone_low,
-                "high": buy_zone_high,
-                "note": "โซนซื้อทางเทคนิค (แนวรับรอบ 20 แท่ง)"
-            },
-            "chart_sell_zone": {
-                "low": sell_zone_low,
-                "high": sell_zone_high,
-                "note": "โซนขายทางเทคนิค (แนวต้านรอบ 20 แท่ง)"
-            },
-            "atr": atr,
-            "action_summary": action_summary,
-        }
-    except Exception as exc:
-        logger.warning(f"Chart analysis builder failed: {exc}")
-        return {}
+    return _primitives_build_chart_analysis(df_with_indicators)
 
 
 def _bias_from_label(raw: Any) -> str:
-    if raw is None:
-        return "NEUTRAL"
-
-    text = str(raw).upper()
-    bullish_tokens = ["BULL", "BUY", "LONG", "ACCUMULATION", "OVERSOLD"]
-    bearish_tokens = ["BEAR", "SELL", "SHORT", "DISTRIBUTION", "OVERBOUGHT"]
-
-    if any(token in text for token in bullish_tokens):
-        return "BULLISH"
-    if any(token in text for token in bearish_tokens):
-        return "BEARISH"
-    return "NEUTRAL"
+    return _primitives_bias_from_label(raw)
 
 
 def _derive_trade_signal(analysis: Dict[str, Any], ml_stats: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    bull_score = 0
-    bear_score = 0
-    evidence: List[str] = []
-    blockers: List[str] = []
-
-    def add_vote(label: str, weight: int, detail: str) -> None:
-        nonlocal bull_score, bear_score
-        if label == "BULLISH":
-            bull_score += weight
-            evidence.append(f"BULLISH x{weight}: {detail}")
-        elif label == "BEARISH":
-            bear_score += weight
-            evidence.append(f"BEARISH x{weight}: {detail}")
-
-    chart = analysis.get("chart_analysis", {})
-    htf = analysis.get("higher_timeframe", {})
-    smc = analysis.get("smart_money", analysis.get("price_structure", {}))
-    structure = smc.get("structure", {}) if isinstance(smc.get("structure"), dict) else {}
-    historical = analysis.get("historical_pulse", {})
-    whale = analysis.get("whale_pulse", {})
-    retail = analysis.get("retail_fomo", {})
-    ema_data = analysis.get("ema", {})
-
-    htf_bias = _bias_from_label(htf.get("bias"))
-    structure_bias = _bias_from_label(structure.get("structure"))
-    bos_bias = _bias_from_label(structure.get("last_bos"))
-    ema_bias = _bias_from_label(ema_data.get("signal") or chart.get("ema_trend"))
-    chart_bias = _bias_from_label(chart.get("action_summary"))
-    historical_bias = _bias_from_label(historical.get("statistical_bias"))
-    whale_bias = _bias_from_label(whale.get("bias"))
-    retail_bias = _bias_from_label(retail.get("institutional_bias"))
-    ml_bias = _bias_from_label((ml_stats or {}).get("side"))
-
-    add_vote(htf_bias, 3, f"higher timeframe bias = {htf.get('bias', 'N/A')}")
-    add_vote(structure_bias, 2, f"market structure = {structure.get('structure', 'N/A')}")
-    add_vote(bos_bias, 2, f"last BOS = {structure.get('last_bos', 'N/A')}")
-    add_vote(ema_bias, 2, f"EMA trend = {ema_data.get('signal') or chart.get('ema_trend') or 'N/A'}")
-    add_vote(chart_bias, 1, f"chart action = {chart.get('action_summary', 'N/A')}")
-    add_vote(historical_bias, 1, f"historical pulse = {historical.get('statistical_bias', 'N/A')}")
-    add_vote(whale_bias, 1, f"whale bias = {whale.get('bias', 'N/A')}")
-    add_vote(retail_bias, 1, f"retail contrarian bias = {retail.get('institutional_bias', 'N/A')}")
-    add_vote(ml_bias, 2, f"institutional ML side = {(ml_stats or {}).get('side', 'N/A')}")
-
-    raw_ml_prob = (ml_stats or {}).get("neural_win_probability")
-    ml_prob = _safe_num(raw_ml_prob, default=None) if isinstance(raw_ml_prob, (int, float)) else None
-    raw_edge_score = (ml_stats or {}).get("edge_score")
-    edge_score = _safe_num(raw_edge_score, default=None) if isinstance(raw_edge_score, (int, float)) else None
-    htf_adx = _safe_num(htf.get("adx"), default=0.0)
-
-    leader = "BULLISH" if bull_score > bear_score else "BEARISH" if bear_score > bull_score else "NEUTRAL"
-    leader_score = max(bull_score, bear_score)
-    diff = abs(bull_score - bear_score)
-
-    if htf_bias == "NEUTRAL":
-        blockers.append("Higher timeframe bias is neutral")
-    if htf_adx < 18:
-        blockers.append(f"HTF ADX is weak at {htf_adx}")
-    if leader_score < 5:
-        blockers.append("Confluence score is still too light")
-    if diff <= 1:
-        blockers.append("Bull/Bear evidence is too close")
-    if isinstance(ml_prob, (int, float)) and 0.48 <= ml_prob <= 0.52:
-        blockers.append(f"ML probability is undecided at {ml_prob:.2f}")
-    elif not isinstance(ml_prob, (int, float)):
-        blockers.append("ML model is unavailable for this setup")
-
-    if leader_score >= 6 and diff >= 2:
-        action = "BUY" if leader == "BULLISH" else "SELL"
-    elif leader_score >= 5 and diff >= 2 and htf_bias == leader:
-        action = "BUY" if leader == "BULLISH" else "SELL"
-    elif leader_score >= 5 and diff >= 1 and htf_bias == leader and structure_bias == leader and isinstance(ml_prob, (int, float)) and ml_prob >= 0.50:
-        action = "BUY" if leader == "BULLISH" else "SELL"
-    else:
-        action = "HOLD"
-
-    confidence = 48 + (leader_score * 4) + (diff * 6)
-    if action == "HOLD":
-        confidence = 40 + (leader_score * 3)
-    if edge_score is not None:
-        confidence += int((edge_score - 0.5) * 30)
-    confidence = max(35, min(92, confidence))
-
-    return {
-        "action": action,
-        "bias": leader,
-        "bull_score": bull_score,
-        "bear_score": bear_score,
-        "confidence": confidence,
-        "evidence": evidence,
-        "blockers": blockers,
-        "ml_probability": ml_prob,
-        "edge_score": edge_score,
-    }
+    return _primitives_derive_trade_signal(analysis, ml_stats=ml_stats)
 
 
 def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = "CRYPTO") -> Dict[str, Any]:
@@ -1095,6 +1509,25 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
 
         if df is None or df.empty:
             return {"error": f"No data found for {symbol}. Try a different ticker or check if the market is open."}
+        if "is_speculative" in df.columns or df.attrs.get("market_status") == "NO_DATA":
+            return {
+                "status": "NO_DATA",
+                "symbol": symbol.upper(),
+                "asset_class": asset_class.upper(),
+                "error": f"No reliable live data found for {symbol}.",
+                "market_status": df.attrs.get("market_status", "NO_DATA"),
+                "last_update": df.attrs.get("last_update", ""),
+            }
+        if len(df) < 30:
+            return {
+                "status": "NO_DATA",
+                "symbol": symbol.upper(),
+                "asset_class": asset_class.upper(),
+                "error": f"Not enough candles to analyze {symbol} reliably.",
+                "candles": len(df),
+                "market_status": df.attrs.get("market_status", "UNKNOWN"),
+                "last_update": df.attrs.get("last_update", ""),
+            }
 
         df_with_indicators = compute_indicators(df)
         summary = get_indicator_summary(df_with_indicators, symbol=symbol)
@@ -1305,29 +1738,37 @@ def get_market_analysis(symbol: str, timeframe: str = "15m", asset_class: str = 
                 logger.warning(f"HTF fetch failed for {symbol}/{htf}: {htf_err}")
 
         # ── Historical Pulse (Stats for Logic Refinement) ─────────────────────
-        try:
-            # 1. Past Trade Memories (Statistics)
-            memories = recall_memories(symbol, limit=5)
-            past_trades = memories.get("past_trades", [])
-            wins = len([m for m in past_trades if m.get("outcome") == "WIN"])
-            losses = len([m for m in past_trades if m.get("outcome") == "LOSS"])
-
-            # 2. ML Probability (Math Logic)
-            # Import inside function to avoid circular dependencies
-            from intelligence.ml.feature_extractor import extract_features
-            from intelligence.ml.signal_model import predict_win_probability
-
-            features = extract_features(df_with_indicators, -1, symbol=symbol, asset_class=asset_class)
-            ml_res = predict_win_probability(features)
-
+        if asset_class.upper() == "STOCK":
             summary["historical_pulse"] = {
-                "past_performance": f"{wins} Wins / {losses} Losses (from last 5 memories)",
-                "ml_win_probability": f"{ml_res.get('win_pct', 50.0)}%",
-                "statistical_bias": "BULLISH" if ml_res.get('win_probability', 0.5) > 0.55 else "BEARISH" if ml_res.get('win_probability', 0.5) < 0.45 else "NEUTRAL",
-                "logic_note": "Trust newest levels for entry, but use these stats for confidence sizing."
+                "past_performance": "Skipped for stocks",
+                "ml_win_probability": "N/A",
+                "statistical_bias": "N/A",
+                "logic_note": "Equity analysis here uses price structure, valuation, and recent news instead of the crypto/FX trade-memory model."
             }
-        except Exception as h_err:
-            logger.warning(f"Historical pulse computation skipped for {symbol}: {h_err}")
+        else:
+            try:
+                # 1. Past Trade Memories (Statistics)
+                memories = recall_memories(symbol, limit=5)
+                past_trades = memories.get("past_trades", [])
+                wins = len([m for m in past_trades if m.get("outcome") == "WIN"])
+                losses = len([m for m in past_trades if m.get("outcome") == "LOSS"])
+
+                # 2. ML Probability (Math Logic)
+                # Import inside function to avoid circular dependencies
+                from intelligence.ml.feature_extractor import extract_features
+                from intelligence.ml.signal_model import predict_win_probability
+
+                features = extract_features(df_with_indicators, -1, symbol=symbol, asset_class=asset_class)
+                ml_res = predict_win_probability(features)
+
+                summary["historical_pulse"] = {
+                    "past_performance": f"{wins} Wins / {losses} Losses (from last 5 memories)",
+                    "ml_win_probability": f"{ml_res.get('win_pct', 50.0)}%",
+                    "statistical_bias": "BULLISH" if ml_res.get('win_probability', 0.5) > 0.55 else "BEARISH" if ml_res.get('win_probability', 0.5) < 0.45 else "NEUTRAL",
+                    "logic_note": "Trust newest levels for entry, but use these stats for confidence sizing."
+                }
+            except Exception as h_err:
+                logger.warning(f"Historical pulse computation skipped for {symbol}: {h_err}")
 
         return summary
     except Exception as e:
@@ -1596,7 +2037,7 @@ def sync_deep_history(symbol: str, years: int = 10) -> Dict[str, Any]:
         return {"error": str(e), "symbol": symbol}
 
 # Persistent Persistence DB path
-PERSISTENCE_DB = "persistence.db"
+PERSISTENCE_DB = os.getenv("PAPER_TRADE_DB", "data/persistence.db")
 
 def prepare_mt5_trade_draft(symbol: str, side: str, volume: float, sl: Optional[float] = None, tp: Optional[float] = None, session_id: str = "default") -> Dict[str, Any]:
     """
@@ -1904,45 +2345,87 @@ def get_mt5_account_summary() -> Dict[str, Any]:
 
 def _scan_basket(tickers: list) -> list:
     """
-    Download 1-day % change for a basket of tickers using PARALLEL threads.
-    Each ticker is fetched concurrently (max 8 threads) with a 6s timeout.
+    Download 24h % change for a crypto basket.
+
+    Use Binance's bulk ticker endpoint first. The previous yfinance-per-symbol
+    path could hang long enough to make the chat tool exceed its 18s budget.
     Returns a list of dicts sorted by change_percent descending.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    import yfinance as yf
+    import requests
 
     basket = [t for t in tickers if t]
     if not basket:
         return []
 
-    def _fetch_one(ticker: str):
+    symbol_map = {
+        ticker.replace("-USD", "USDT"): ticker.replace("-USD", "")
+        for ticker in basket
+    }
+
+    try:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbols": json.dumps(list(symbol_map.keys()), separators=(",", ":"))},
+            timeout=4,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for item in data:
+            binance_symbol = item.get("symbol", "")
+            display_symbol = symbol_map.get(binance_symbol)
+            if not display_symbol:
+                continue
+            results.append({
+                "symbol": display_symbol,
+                "exchange": "BINANCE",
+                "current_price": round(float(item.get("lastPrice") or 0), 4),
+                "change_percent": round(float(item.get("priceChangePercent") or 0), 2),
+                "volume": round(float(item.get("quoteVolume") or 0), 2),
+                "market_state": "REGULAR (24/7 Crypto)",
+                "data_source": "Binance 24hr ticker",
+            })
+        return sorted(results, key=lambda x: x.get("change_percent", 0), reverse=True)
+    except Exception as batch_error:
+        logger.warning(f"Binance bulk crypto scan failed ({batch_error}); trying per-symbol fallback")
+
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+
+    def _fetch_one(binance_symbol: str):
         try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="2d", interval="1d", auto_adjust=True, timeout=6)
-            if hist.empty or len(hist) < 2:
-                return None
-            last_price = float(hist["Close"].iloc[-1])
-            prev_price = float(hist["Close"].iloc[-2])
-            if prev_price == 0:
-                return None
-            change_pct = ((last_price - prev_price) / prev_price) * 100
+            resp = requests.get(
+                "https://api.binance.com/api/v3/ticker/24hr",
+                params={"symbol": binance_symbol},
+                timeout=3,
+            )
+            resp.raise_for_status()
+            item = resp.json()
             return {
-                "symbol": ticker.replace("-USD", ""),
-                "exchange": "CRYPTO",
-                "current_price": round(last_price, 4),
-                "change_percent": round(change_pct, 2),
+                "symbol": symbol_map.get(binance_symbol, binance_symbol.replace("USDT", "")),
+                "exchange": "BINANCE",
+                "current_price": round(float(item.get("lastPrice") or 0), 4),
+                "change_percent": round(float(item.get("priceChangePercent") or 0), 2),
+                "volume": round(float(item.get("quoteVolume") or 0), 2),
+                "market_state": "REGULAR (24/7 Crypto)",
+                "data_source": "Binance 24hr ticker",
             }
         except Exception:
             return None
 
     results = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(_fetch_one, ticker): ticker for ticker in basket}
-        for future in as_completed(futures, timeout=15):
-            result = future.result()
-            if result:
-                results.append(result)
+    executor = ThreadPoolExecutor(max_workers=8)
+    try:
+        futures = {executor.submit(_fetch_one, symbol): symbol for symbol in symbol_map}
+        try:
+            completed = as_completed(futures, timeout=8)
+            for future in completed:
+                result = future.result()
+                if result:
+                    results.append(result)
+        except FuturesTimeoutError:
+            logger.warning("Crypto basket scan timed out; returning partial results")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     return sorted(results, key=lambda x: x.get("change_percent", 0), reverse=True)
 
@@ -2046,55 +2529,27 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
     MIN_VOLUME = 500_000
 
     def _liquid(stocks):
-        def _parse_vol(v):
-            if isinstance(v, (int, float)):
-                return v
-            if isinstance(v, str):
-                v_clean = v.replace("N/A", "0")
-                if "M" in v_clean:
-                    return float(v_clean.replace("M", "")) * 1_000_000
-                if "K" in v_clean:
-                    return float(v_clean.replace("K", "")) * 1_000
-                try:
-                    return float(v_clean)
-                except Exception:
-                    return 0
-            return 0
-        return [s for s in stocks if _parse_vol(s.get("volume", 0)) >= MIN_VOLUME]
+        return _opportunities_liquid_stocks(stocks, min_volume=MIN_VOLUME)
 
     def _abs_change(x):
-        try:
-            return abs(float(str(x.get("change_percent") or x.get("percent_change") or 0).replace("%", "")))
-        except Exception:
-            return 0.0
+        return _opportunities_absolute_change(x)
 
     def _enrich(stock, group_name, fetch_news: bool = False):
-        """Add group label (and optionally news headlines) to a stock dict."""
-        if not stock:
-            return None
-        stock = dict(stock)
-        stock["group"] = group_name
-        if fetch_news:
-            try:
-                stock["news_headlines"] = [n["title"] for n in _fetch_rss_news(stock["symbol"])[:3]] or ["No news found."]
-            except Exception:
-                stock["news_headlines"] = ["News unavailable."]
-        return stock
+        return _opportunities_enrich_stock(
+            stock,
+            group_name,
+            fetch_news=fetch_news,
+            news_fetcher=_fetch_rss_news,
+        )
 
     def _build_group(name, gainers, losers, fetch_news: bool = False):
-        """Build a self-contained group result with its own hero."""
-        g = gainers[0] if gainers else None
-        loser = losers[0] if losers else None
-        g = _enrich(g, name, fetch_news=fetch_news)
-        loser = _enrich(loser, name, fetch_news=fetch_news)
-        return {
-            "group_name": name,
-            "top_gainer": g,
-            "top_loser":  loser,
-            # Hero for chart = top gainer of this group
-            "hero_symbol":   g["symbol"]   if g else (loser["symbol"]   if loser else None),
-            "hero_exchange": g["exchange"]  if g else (loser["exchange"] if loser else None),
-        }
+        return _opportunities_build_group(
+            name,
+            gainers,
+            losers,
+            fetch_news=fetch_news,
+            news_fetcher=_fetch_rss_news,
+        )
 
     try:
         logger.info(f"Tool: Scanning live market opportunities — asset_class={asset_class}")
@@ -2135,24 +2590,40 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
 
             # Fetch gainers and losers IN PARALLEL to halve wait time
             from concurrent.futures import ThreadPoolExecutor
-            from concurrent.futures import TimeoutError as FuturesTimeoutError
-            with ThreadPoolExecutor(max_workers=2) as _ex:
-                _g_future = _ex.submit(_fetch_yf_screener, "day_gainers", 50)
-                _l_future = _ex.submit(_fetch_yf_screener, "day_losers", 50)
-                try:
-                    all_gainers = [s for s in _g_future.result(timeout=10) if s.get("change_percent", 0) > 0]
-                except FuturesTimeoutError:
-                    all_gainers = []
-                try:
-                    all_losers = [s for s in _l_future.result(timeout=10) if s.get("change_percent", 0) < 0]
-                except FuturesTimeoutError:
-                    all_losers = []
+            from concurrent.futures import wait
+            _ex = ThreadPoolExecutor(max_workers=2)
+            try:
+                futures = {
+                    _ex.submit(_fetch_yf_screener, "day_gainers", 50): "gainers",
+                    _ex.submit(_fetch_yf_screener, "day_losers", 50): "losers",
+                }
+                done, pending = wait(futures, timeout=6)
+                all_gainers = []
+                all_losers = []
+                for future in pending:
+                    future.cancel()
+                if pending:
+                    pending_names = ", ".join(sorted(futures[f] for f in pending))
+                    logger.warning(f"YF screener timed out for {pending_names}; returning partial market scan")
+                for future in done:
+                    kind = futures[future]
+                    try:
+                        rows = future.result()
+                    except Exception as yf_error:
+                        logger.warning(f"YF {kind} failed ({yf_error}); continuing without that side")
+                        rows = []
+                    if kind == "gainers":
+                        all_gainers = [s for s in rows if s.get("change_percent", 0) > 0]
+                    else:
+                        all_losers = [s for s in rows if s.get("change_percent", 0) < 0]
+            finally:
+                _ex.shutdown(wait=False, cancel_futures=True)
 
             # NASDAQ 100 — top 100 large-cap non-financial NASDAQ stocks
             # fetch_news=True only here (the most important group) — 2 calls max
             nq100_g = _liquid([s for s in all_gainers if s["symbol"] in nq100_list])
             nq100_l = _liquid([s for s in all_losers  if s["symbol"] in nq100_list])
-            groups["NASDAQ_100"] = _build_group("NASDAQ 100", nq100_g, nq100_l, fetch_news=True)
+            groups["NASDAQ_100"] = _build_group("NASDAQ 100", nq100_g, nq100_l, fetch_news=False)
 
             # S&P 500 — news skipped to keep response time fast
             sp500_g = _liquid([s for s in all_gainers if s["symbol"] in sp500_list])
@@ -2170,49 +2641,10 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
             groups["NASDAQ_COMPOSITE"] = _build_group("NASDAQ Composite", composite_g, composite_l, fetch_news=False)
 
         # ── Chart hero: prefer NASDAQ 100 gainer, then S&P 500, then others ──────
-        hero_priority = ["NASDAQ_100", "SP500", "NASDAQ_COMPOSITE", "CRYPTO"]
-        hero_symbol   = None
-        hero_exchange = None
-        hero_loser    = None
-        hero_loser_ex = None
-        for key in hero_priority:
-            if key in groups:
-                g = groups[key]
-                if not hero_symbol and g.get("top_gainer"):
-                    hero_symbol   = g["top_gainer"]["symbol"]
-                    hero_exchange = g["top_gainer"].get("exchange")
-                if not hero_loser and g.get("top_loser"):
-                    hero_loser    = g["top_loser"]["symbol"]
-                    hero_loser_ex = g["top_loser"].get("exchange")
-            if hero_symbol and hero_loser:
-                break
-
-        return {
-            "data_source":  "Yahoo Finance Screener (realtime)",
-            "fetched_at":   fetched_at,
-            "confidence":   "HIGH — live data, volume-filtered (>500K shares), index membership verified",
-            "groups":       groups,
-            # Top-level heroes for chart routing
-            "hero_symbol":          hero_symbol,
-            "hero_exchange":        hero_exchange,
-            "hero_loser":           hero_loser,
-            "hero_loser_exchange":  hero_loser_ex,
-            "instruction": (
-                "CRITICAL PRESENTATION RULES:\n"
-                "1. Each group in 'groups' is INDEPENDENT — present them in SEPARATE sections.\n"
-                "   Do NOT mix stocks from different groups.\n"
-                "2. Group keys: NASDAQ_100, SP500, NASDAQ_COMPOSITE, CRYPTO\n"
-                "   • NASDAQ_100: top 100 large-cap non-financial NASDAQ stocks\n"
-                "   • SP500: 500 largest US companies across all exchanges\n"
-                "   • NASDAQ_COMPOSITE: all other NASDAQ-listed stocks (smaller, higher risk)\n"
-                "   • CRYPTO: top cryptocurrencies by market cap\n"
-                "3. For each group show: top_gainer and top_loser with symbol, name, change_percent,\n"
-                "   current_price, volume, market_state, and news_headlines.\n"
-                "4. market_state: REGULAR = market hours | PRE = pre-market | POST = after-hours\n"
-                "5. Always show fetched_at timestamp and data_source for transparency.\n"
-                "6. Volume confirms liquidity — always mention it. Format: 14.3M, 850K, etc."
-            ),
-        }
+        return _response_build_market_opportunities_response(
+            fetched_at=fetched_at,
+            groups=groups,
+        )
     except Exception as e:
         logger.error(f"Error in get_market_opportunities: {e}")
         return {"error": str(e)}
@@ -2257,50 +2689,13 @@ def get_sector_rotation() -> Dict[str, Any]:
                     change = ((s_data.iloc[-1] - s_data.iloc[0]) / s_data.iloc[0]) * 100
                     perf[name] = round(change, 2)
 
-        # Sort sectors
-        sorted_perf = sorted(perf.items(), key=lambda x: x[1], reverse=True)
-
-        sector_result = {
-            "instruction": "Identify which sectors are attracting institutional capital (Leading) and which are being sold (Lagging).",
-            "leading_sectors": sorted_perf[:3],
-            "lagging_sectors": sorted_perf[-3:],
-            "full_rotation": sorted_perf,
-            "market_summary": "Institutional flow favors " + sorted_perf[0][0] if sorted_perf else "Neutral"
-        }
+        sector_result = _macro_build_sector_rotation_response(perf)
         _cache_set("sector_rotation", sector_result, ttl=900)  # 15 min cache
         return sector_result
     except Exception as e:
         logger.error(f"Error in get_sector_rotation: {e}")
         return {"error": str(e)}
 
-def calculate_risk_parameters(account_size: float, entry: float, stop_loss: float, risk_pct: float = 1.0) -> Dict[str, Any]:
-    """
-    Calculates institutional position sizing and risk parameters for a trade.
-    risk_pct defaults to 1.0% of the account.
-    """
-    try:
-        if entry == stop_loss:
-            return {"error": "Entry and Stop Loss cannot be the same price."}
-
-        risk_amount = account_size * (risk_pct / 100)
-        distance = abs(entry - stop_loss)
-        position_size = risk_amount / distance
-
-        # Calculate R:R assuming a standard 1:2 target if TP not provided
-        suggested_tp = entry + (distance * 2) if entry > stop_loss else entry - (distance * 2)
-
-        return {
-            "account_size": account_size,
-            "risk_percentage": f"{risk_pct}%",
-            "risk_amount_dollars": round(risk_amount, 2),
-            "position_size": round(position_size, 4),
-            "distance_to_sl": round(distance, 4),
-            "trade_instructions": f"To risk {risk_pct}% (${round(risk_amount, 2)}), enter at {entry} with a {round(position_size, 4)} lot/share size. SL at {stop_loss}.",
-            "suggested_tp_1_2": round(suggested_tp, 4)
-        }
-    except Exception as e:
-        logger.error(f"Error in calculate_risk_parameters: {e}")
-        return {"error": str(e)}
 
 # Contract size per lot for common instruments
 _CONTRACT_SIZES: Dict[str, float] = {
@@ -2321,6 +2716,7 @@ _CONTRACT_SIZES: Dict[str, float] = {
     "SPX500": 50.0,
 }
 
+
 def calculate_trade_pnl(
     symbol: str,
     action: str,
@@ -2329,57 +2725,15 @@ def calculate_trade_pnl(
     target_price: float,
     account_balance: Optional[float] = None
 ) -> Dict[str, Any]:
-    """
-    Calculate profit or loss (in USD) for an open or hypothetical trade.
-    - action: 'BUY' or 'SELL'
-    - target_price: price at SL, TP, or current market price
-    - Returns: pnl_usd, pips/points moved, risk_pct of account (if balance given)
-    """
-    try:
-        sym_upper = symbol.strip().upper()
-        contract_size = _CONTRACT_SIZES.get(sym_upper, _CONTRACT_SIZES["DEFAULT_FX"])
-        # Override: if symbol looks like forex pair (6-char alphabetic), use forex contract size
-        if len(sym_upper) == 6 and sym_upper.isalpha() and sym_upper not in _CONTRACT_SIZES:
-            contract_size = _CONTRACT_SIZES["DEFAULT_FX"]
+    return _primitives_calculate_trade_pnl(
+        symbol=symbol,
+        action=action,
+        volume=volume,
+        entry_price=entry_price,
+        target_price=target_price,
+        account_balance=account_balance,
+    )
 
-        action_upper = action.strip().upper()
-        if action_upper == "BUY":
-            pnl_per_lot = (target_price - entry_price) * contract_size
-        elif action_upper == "SELL":
-            pnl_per_lot = (entry_price - target_price) * contract_size
-        else:
-            return {"error": f"Invalid action: {action}. Must be BUY or SELL."}
-
-        pnl_usd = round(pnl_per_lot * volume, 2)
-        points_moved = round(abs(target_price - entry_price), 4)
-        direction_label = "profit" if pnl_usd > 0 else "loss"
-
-        result: Dict[str, Any] = {
-            "symbol": sym_upper,
-            "action": action_upper,
-            "volume_lots": volume,
-            "entry_price": entry_price,
-            "target_price": target_price,
-            "points_moved": points_moved,
-            "contract_size_per_lot": contract_size,
-            "pnl_usd": pnl_usd,
-            "direction": direction_label,
-            "summary": (
-                f"{action_upper} {volume} lot {sym_upper}: "
-                f"if price moves from {entry_price} to {target_price} "
-                f"({points_moved} pts), P&L = {'+'if pnl_usd>=0 else ''}{pnl_usd} USD ({direction_label})"
-            )
-        }
-
-        if account_balance and account_balance > 0:
-            result["pct_of_balance"] = round(abs(pnl_usd) / account_balance * 100, 2)
-            result["balance_after"] = round(account_balance + pnl_usd, 2)
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error in calculate_trade_pnl: {e}")
-        return {"error": str(e)}
 
 def get_market_climate() -> Dict[str, Any]:
     """
@@ -2402,42 +2756,7 @@ def get_market_climate() -> Dict[str, Any]:
         dxy = dxy_hist['Close'].iloc[-1] if not dxy_hist.empty else 102.5
         tnx = tnx_hist['Close'].iloc[-1] if not tnx_hist.empty else 4.2
 
-        # Normalized Risk Components (0-100)
-        # VIX: 10 is low, 20 is median, 30+ is high
-        vix_score = min(100, max(0, (vix - 10) / 25 * 100))
-        # DXY: 95 is low, 100 is neutral, 105+ is high
-        dxy_score = min(100, max(0, (dxy - 95) / 10 * 100))
-        # TNX: 3% is low, 4.5% is high (for current market regime)
-        tnx_score = min(100, max(0, (tnx - 3.0) / 2.0 * 100))
-
-        # Strategic Weighted Risk Score
-        global_risk_score = (vix_score * 0.4) + (dxy_score * 0.3) + (tnx_score * 0.3)
-
-        regime = "NEUTRAL"
-        threat_level = "LOW"
-        color = "emerald"
-
-        if global_risk_score > 70:
-            regime, threat_level, color = "EXTREME TURBULENCE", "DANGER", "rose"
-        elif global_risk_score > 50:
-            regime, threat_level, color = "RISK OFF", "ALERT", "amber"
-        elif global_risk_score < 30:
-            regime, threat_level, color = "RISK ON", "OPTIMAL", "emerald"
-
-        summary = f"Vol: {vix:.2f} | DXY: {dxy:.2f} | 10Y: {tnx:.2f}%"
-
-        climate_result = {
-            "global_risk_score": round(global_risk_score, 2),
-            "regime": regime,
-            "threat_level": threat_level,
-            "color": color,
-            "indicators": {
-                "vix": round(vix, 2),
-                "dxy": round(dxy, 2),
-                "tnx_yield": round(tnx, 2)
-            },
-            "summary": summary
-        }
+        climate_result = _macro_build_market_climate_response(float(vix), float(dxy), float(tnx))
         _cache_set("market_climate", climate_result, ttl=600)  # 10 min cache
         return climate_result
     except Exception as e:
@@ -2572,8 +2891,7 @@ def get_working_memory(session_id: str = "default") -> Dict[str, Any]:
     """Retrieve the AI's persistent cognitive state and grand strategy for the active session."""
     import sqlite3
     try:
-        # Assuming persistence.db is in the root directory (one level up from this file, but since this runs from project root, it's just 'persistence.db')
-        conn = sqlite3.connect("persistence.db")
+        conn = sqlite3.connect(PERSISTENCE_DB)
         cursor = conn.cursor()
         cursor.execute("SELECT memory, emotion, updated_at FROM working_memory WHERE session_id = ?", (session_id,))
         row = cursor.fetchone()
@@ -2595,7 +2913,7 @@ def update_working_memory(memory: str = None, emotion: str = None, session_id: s
     import sqlite3
     from datetime import datetime
     try:
-        conn = sqlite3.connect("persistence.db")
+        conn = sqlite3.connect(PERSISTENCE_DB)
         cursor = conn.cursor()
         now = datetime.now().isoformat()
 
@@ -2648,7 +2966,7 @@ def set_smart_alert(condition: str, target_symbol: str, message: str) -> Dict[st
     import sqlite3
     from datetime import datetime
     try:
-        conn = sqlite3.connect("persistence.db")
+        conn = sqlite3.connect(PERSISTENCE_DB)
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO active_alerts (symbol, condition, message, created_at) VALUES (?, ?, ?, ?)",
@@ -2831,7 +3149,7 @@ def analyze_trade_performance() -> Dict[str, Any]:
         # Compute score 0-100
         score = min(100, max(0, int(win_rate) + (20 if total_pnl > 0 else -10) - (max_consec_loss * 3)))
 
-        conn = sqlite3.connect("persistence.db")
+        conn = sqlite3.connect(PERSISTENCE_DB)
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO trade_reviews (review_text, win_rate, score, created_at) VALUES (?, ?, ?, ?)",
@@ -3954,20 +4272,22 @@ def generate_weekly_report() -> Dict[str, Any]:
     """
     try:
         from datetime import timedelta
-        week_ago = (dt_datetime.utcnow() - timedelta(days=7)).isoformat()
+        now_utc = dt_datetime.now(dt_timezone.utc)
+        # Use a date boundary for the weekly window so early-day trades from
+        # seven days ago are still included in the report.
+        week_ago_date = (now_utc - timedelta(days=7)).date().isoformat()
 
         # ── Pull closed trades from SQLite ──
         trade_rows: list = []
         try:
-            con = sqlite3.connect(os.getenv("TRADE_LOG_DB", "persistence.db"))
-            cur = con.cursor()
-            cur.execute(
-                "SELECT symbol, side, entry_price, exit_price, pnl_usd, status, timestamp "
-                "FROM trades WHERE timestamp >= ? ORDER BY timestamp DESC",
-                (week_ago,)
-            )
-            trade_rows = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
-            con.close()
+            with sqlite3.connect(os.getenv("TRADE_LOG_DB", PERSISTENCE_DB)) as con:
+                cur = con.cursor()
+                cur.execute(
+                    "SELECT symbol, side, entry_price, exit_price, pnl_usd, status, timestamp "
+                    "FROM trades WHERE timestamp >= ? ORDER BY timestamp DESC",
+                    (week_ago_date,)
+                )
+                trade_rows = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
         except Exception:
             pass
 
@@ -4012,7 +4332,7 @@ def generate_weekly_report() -> Dict[str, Any]:
             recommendations.append("ผลงานดี — ทำต่อไปตาม process และ risk management เดิม")
 
         result = {
-            "report_period": f"{week_ago[:10]} → {dt_datetime.utcnow().date()}",
+            "report_period": f"{week_ago_date} → {now_utc.date()}",
             "performance_grade": grade,
             "summary": {
                 "total_trades":   len(closed),
@@ -4038,7 +4358,7 @@ def generate_weekly_report() -> Dict[str, Any]:
 
 
 # ── 7. Paper Trading Mode ────────────────────────────────────
-_PAPER_DB = os.getenv("PAPER_TRADE_DB", "persistence.db")
+_PAPER_DB = os.getenv("PAPER_TRADE_DB", "data/persistence.db")
 
 def paper_trade(action: str, symbol: str = "", side: str = "BUY",
                 volume: float = 1.0, price: Optional[float] = None,
@@ -4077,7 +4397,7 @@ def paper_trade(action: str, symbol: str = "", side: str = "BUY",
                 INSERT INTO paper_trades (id,symbol,side,volume,entry_price,current_price,pnl_usd,status,opened_at)
                 VALUES (?,?,?,?,?,?,?,?,?)
             """, (tid, symbol.upper(), side.upper(), volume, price, price, 0.0, "OPEN",
-                  dt_datetime.utcnow().isoformat()))
+                  dt_datetime.now(dt_timezone.utc).isoformat()))
             con.commit()
             con.close()
             return {
@@ -4118,7 +4438,7 @@ def paper_trade(action: str, symbol: str = "", side: str = "BUY",
                 UPDATE paper_trades
                 SET status='CLOSED', current_price=?, pnl_usd=?, closed_at=?
                 WHERE id=?
-            """, (price, round(pnl,2), dt_datetime.utcnow().isoformat(), trade_id))
+            """, (price, round(pnl,2), dt_datetime.now(dt_timezone.utc).isoformat(), trade_id))
             con.commit()
             con.close()
             return {
@@ -4768,11 +5088,45 @@ def get_trading_tactics(symbol: str) -> dict:
         return {"error": str(e), "symbol": symbol}
 
 
+def calculate_risk_parameters(account_size: float, entry: float, stop_loss: float, risk_pct: float = 1.0) -> Dict[str, Any]:
+    """
+    Calculate optimal lot size and position parameters for a trade.
+    Institutional safety: uses fractional Kelly and variance-adjusted sizing.
+    """
+    try:
+        # Core calculation logic
+        res = calculate_crypto_risk(
+            entry_price=entry,
+            stop_loss_price=stop_loss,
+            account_balance_usdt=account_size,
+            risk_percent=risk_pct
+        )
+
+        if "error" in res:
+            return {"status": "ERROR", "message": res["error"]}
+
+        # Get advice and scenarios
+        advice = get_risk_advice_thai(res)
+        scenarios = calculate_position_scenarios(entry, stop_loss, account_size)
+
+        return {
+            "status": "SUCCESS",
+            "calculation": res,
+            "thai_advice": advice,
+            "risk_table": scenarios,
+            "recommendation": f"เทรด {res['direction']} ที่ราคา {entry} โดยใช้ขนาด {res['position_size_units']:.6f} units (Value: ${res['position_value_usdt']:.2f})"
+        }
+    except Exception as e:
+        logger.error(f"Error in calculate_risk_parameters: {e}")
+        return {"status": "ERROR", "message": str(e)}
+
 # Export tools list for Gemini
 MARKET_TOOLS = [
     get_market_analysis,
     get_macro_sentiment,
     get_news_impact,
+    get_index_historical_summary,
+    get_historical_stock_rankings,
     remember_trade,
     recall_memories,
     run_strategy_backtest,
@@ -4811,37 +5165,6 @@ MARKET_TOOLS = [
     run_custom_screener,
 ]
 
-def calculate_risk_parameters(account_size: float, entry: float, stop_loss: float, risk_pct: float = 1.0) -> Dict[str, Any]:
-    """
-    Calculate optimal lot size and position parameters for a trade.
-    Institutional safety: uses fractional Kelly and variance-adjusted sizing.
-    """
-    try:
-        # Core calculation logic
-        res = calculate_crypto_risk(
-            entry_price=entry,
-            stop_loss_price=stop_loss,
-            account_balance_usdt=account_size,
-            risk_percent=risk_pct
-        )
-
-        if "error" in res:
-            return {"status": "ERROR", "message": res["error"]}
-
-        # Get advice and scenarios
-        advice = get_risk_advice_thai(res)
-        scenarios = calculate_position_scenarios(entry, stop_loss, account_size)
-
-        return {
-            "status": "SUCCESS",
-            "calculation": res,
-            "thai_advice": advice,
-            "risk_table": scenarios,
-            "recommendation": f"เทรด {res['direction']} ที่ราคา {entry} โดยใช้ขนาด {res['position_size_units']:.6f} units (Value: ${res['position_value_usdt']:.2f})"
-        }
-    except Exception as e:
-        logger.error(f"Error in calculate_risk_parameters: {e}")
-        return {"status": "ERROR", "message": str(e)}
 
 def execute_mt5_trade(
     symbol: str,
@@ -4860,58 +5183,78 @@ def execute_mt5_trade(
     Includes an institutional-grade symbol normalization layer to handle
     broker-specific naming conventions (e.g., BTC -> BTCUSD).
     """
-    from intelligence.mt5_connector import initialize_mt5, mt5_execute_trade
+    from intelligence.ml.readiness import live_execution_gate
+    from intelligence.mt5_connector import (
+        _MT5_AVAILABLE,
+        initialize_mt5,
+        mt5_execute_trade,
+        resolve_broker_symbol,
+        validate_live_order_request,
+    )
     try:
         import MetaTrader5 as mt5
     except ImportError:
-        return {"error": "MetaTrader5 not available"}
+        mt5 = None
 
 
     # ── Symbol Normalization ──
     norm_sym = symbol.upper().strip()
 
-    # Check if direct match exists
-    if initialize_mt5():
-        # Check direct symbol
-        if mt5.symbol_info(norm_sym) is None:
-            # Try intelligence mapping (e.g. BTC -> BTCUSD)
-            if norm_sym in ["BTC", "ETH", "SOL", "BNB"]:
-                norm_sym = f"{norm_sym}USD"
-            elif norm_sym in ["GOLD", "XAU"]:
-                # Try XAUUSD or GOLD
-                if mt5.symbol_info("XAUUSD"):
-                    norm_sym = "XAUUSD"
-                elif mt5.symbol_info("GOLD"):
-                    norm_sym = "GOLD"
-            elif norm_sym in ["OIL", "WTI", "BRENT"]:
-                if mt5.symbol_info("WTIUSD"):
-                    norm_sym = "WTIUSD"
-                elif mt5.symbol_info("CRUDE"):
-                    norm_sym = "CRUDE"
+    preflight = validate_live_order_request(
+        symbol=norm_sym,
+        action=side,
+        volume=volume,
+        sl=sl,
+        tp=tp,
+        price=price,
+    )
+    if not preflight["passed"]:
+        return {
+            "status": "GUARD_BLOCKED",
+            "message": "Live order blocked by MT5 preflight checks.",
+            "preflight": preflight,
+        }
 
-            # Final check - if still not found, try to search for it as a prefix/suffix
-            if mt5.symbol_info(norm_sym) is None:
-                all_symbols = [s.name for s in mt5.symbols_get()]
-                for s in all_symbols:
-                    if s.startswith(norm_sym) or norm_sym in s:
-                        norm_sym = s
-                        break
+    ready, readiness_report = live_execution_gate({"symbol": norm_sym, "timeframe": "1h"})
+    if not ready:
+        return {
+            "status": "BLOCKED",
+            "message": "Live order blocked by ML/paper-trade readiness gate.",
+            "readiness": readiness_report,
+        }
 
-        logger.info(f"MT5: Normalized symbol {symbol} -> {norm_sym}")
-        return mt5_execute_trade(
-            symbol=norm_sym,
-            action=side,
-            volume=volume,
-            price=price,
-            sl=sl,
-            tp=tp,
-            comment=comment,
-            order_kind=order_kind,
-            filling_policy=filling_policy,
-            deviation=deviation,
-        )
+    if not initialize_mt5():
+        return {"status": "ERROR", "message": "Failed to initialize MT5 or MT5 bridge."}
 
-    return {"status": "ERROR", "message": "Failed to initialize MT5 for symbol normalization."}
+    resolved = resolve_broker_symbol(norm_sym)
+    if resolved.get("status") != "SUCCESS":
+        return {
+            "status": "ERROR",
+            "message": "Unable to resolve a live broker symbol before execution.",
+            "resolution": resolved,
+        }
+    norm_sym = resolved["symbol"]
+
+    if _MT5_AVAILABLE and mt5 is not None and mt5.symbol_info(norm_sym) is None:
+        all_symbols = [s.name for s in mt5.symbols_get()]
+        for candidate in all_symbols:
+            if candidate.startswith(norm_sym) or norm_sym in candidate:
+                norm_sym = candidate
+                break
+
+    logger.info(f"MT5: Normalized symbol {symbol} -> {norm_sym}")
+    return mt5_execute_trade(
+        symbol=norm_sym,
+        action=side,
+        volume=volume,
+        price=price,
+        sl=sl,
+        tp=tp,
+        comment=comment,
+        order_kind=order_kind,
+        filling_policy=filling_policy,
+        deviation=deviation,
+    )
 
 def send_telegram_alert(message: str) -> Dict[str, Any]:
     """

@@ -69,7 +69,18 @@ def _partition_path(dt: datetime) -> str:
 
 
 def _output_filename(dt: datetime) -> str:
-    return f"trades_{dt.strftime('%Y%m%d_%H%M%S')}.parquet"
+    return f"trades_{dt.strftime('%Y%m%d_%H%M%S_%f')}.parquet"
+
+
+def _should_flush(buffer: list, last_flush: float, now_ts: float) -> tuple[bool, str | None]:
+    elapsed = now_ts - last_flush
+    record_limit_hit = len(buffer) >= FLUSH_RECORD_LIMIT
+    time_limit_hit = elapsed >= FLUSH_TIME_LIMIT
+    if record_limit_hit:
+        return True, "record_limit"
+    if time_limit_hit:
+        return True, "time_limit"
+    return False, None
 
 
 # ── Flush ─────────────────────────────────────────────────────────────────────
@@ -127,6 +138,14 @@ def _deserialize(msg, deserializer: AvroDeserializer) -> dict | None:
         return None
 
 
+def _handle_message(msg, deserializer: AvroDeserializer, buffer: list) -> bool:
+    record = _deserialize(msg, deserializer)
+    if record is None:
+        return False
+    buffer.append(record)
+    return True
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -148,7 +167,8 @@ def main() -> None:
             msg = consumer.poll(timeout=1.0)
 
             if msg is None:
-                if buffer and (time.time() - last_flush) >= FLUSH_TIME_LIMIT:
+                should_flush, _trigger = _should_flush(buffer, last_flush, time.time())
+                if buffer and should_flush:
                     flush_to_parquet(buffer, datetime.now(timezone.utc))
                     buffer     = []
                     last_flush = time.time()
@@ -159,18 +179,13 @@ def main() -> None:
                     continue
                 raise KafkaException(msg.error())
 
-            record = _deserialize(msg, deserializer)
-            if record is None:
+            if not _handle_message(msg, deserializer, buffer):
                 continue
 
-            buffer.append(record)
-
-            elapsed          = time.time() - last_flush
-            record_limit_hit = len(buffer) >= FLUSH_RECORD_LIMIT
-            time_limit_hit   = elapsed >= FLUSH_TIME_LIMIT
-
-            if record_limit_hit or time_limit_hit:
-                trigger = "record_limit" if record_limit_hit else "time_limit"
+            now_ts = time.time()
+            elapsed = now_ts - last_flush
+            should_flush, trigger = _should_flush(buffer, last_flush, now_ts)
+            if should_flush:
                 logger.info(
                     "Flush [%s] | buffer=%d | elapsed=%.0fs",
                     trigger, len(buffer), elapsed,

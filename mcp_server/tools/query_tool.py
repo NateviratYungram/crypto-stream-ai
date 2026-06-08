@@ -2,6 +2,7 @@ import requests
 from pydantic import BaseModel, Field
 import json
 import logging
+import os
 
 # ---------------------------------------------------------------------------
 # Logging Setup

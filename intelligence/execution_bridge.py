@@ -22,6 +22,9 @@ import os
 import uuid
 from datetime import datetime, timezone
 
+from intelligence.ml.performance_feedback import paper_entry_performance_gate
+from intelligence.ml.readiness import live_execution_gate
+from intelligence.ml.symbol_policy import get_symbol_policy
 from intelligence.mt5_connector import (
     _MT5_AVAILABLE,
     initialize_mt5,
@@ -157,6 +160,7 @@ def execute_signal(
     tp_data         = state.get("take_profit", {})
     rr              = state.get("risk_reward_ratio", 0)
     reasoning       = state.get("master_reasoning", "")
+    side            = "BUY" if master_decision == "LONG" else "SELL" if master_decision == "SHORT" else ""
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -177,7 +181,34 @@ def execute_signal(
         }
 
     # ── Buy-and-Hold Protection (Mode B Rules) ────────────────────────────────
+    performance_gate = paper_entry_performance_gate(symbol, side, "signal_feed_analysis")
+    if not bool(performance_gate.get("ok", True)):
+        return {
+            "status": "BLOCKED",
+            "reason": "Paper-performance gate blocked this symbol/side from new execution.",
+            "performance_gate": performance_gate,
+            "timestamp": timestamp,
+        }
+    symbol_policy = get_symbol_policy(symbol, side, force_refresh=True)
+    if symbol_policy.get("action") == "block":
+        return {
+            "status": "BLOCKED",
+            "reason": "Symbol-side policy blocked this execution.",
+            "symbol_policy": symbol_policy,
+            "timestamp": timestamp,
+        }
+
     # Check if the asset is a Stock or if the user's focus is Strategic Value
+    if not dry_run and not confirmation_required:
+        ready, readiness_report = live_execution_gate(state)
+        if not ready:
+            return {
+                "status": "BLOCKED",
+                "reason": "ML readiness gate blocked live execution",
+                "readiness": readiness_report,
+                "timestamp": timestamp,
+            }
+
     is_stock = False
 
     # Check indicator summary or symbol list for stock indicators
@@ -292,6 +323,10 @@ def execute_signal(
     # Position sizing — apply signal grade multiplier from master agent tiering
     size_mult        = float(state.get("size_multiplier", 1.0))
     signal_grade     = state.get("signal_grade", "A+")
+    policy_mult      = float(symbol_policy.get("size_multiplier", 1.0) or 1.0)
+    if symbol_policy.get("action") == "reduce":
+        signal_grade = f"{signal_grade} / policy-reduced"
+    size_mult        = size_mult * policy_mult
     effective_risk   = risk_pct * size_mult
 
     contract_size = _get_contract_size(mt5_symbol)
@@ -314,6 +349,7 @@ def execute_signal(
         "signal_grade":  signal_grade,
         "size_mult":     size_mult,
         "risk_pct":      effective_risk,
+        "symbol_policy": symbol_policy,
         "risk_usd":      round(account_balance * effective_risk / 100, 2),
         "rr":            rr,
         "confidence":    round(float(confidence) * 100 if float(confidence) <= 1 else float(confidence), 1),

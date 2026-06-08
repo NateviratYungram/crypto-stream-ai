@@ -15,8 +15,12 @@ interface Alert {
   user_id?: string
   symbol: string
   condition: string
+  price?: number
+  timeframe?: string
+  entry_source?: string
   message: string
   status: 'ACTIVE' | 'FIRED' | 'DISMISSED'
+  triggered_at?: string
   created_at: string
 }
 
@@ -26,6 +30,11 @@ interface TradeReview {
   win_rate: number
   score: number
   created_at: string
+}
+
+interface TelegramStatus {
+  configured: boolean
+  missing: string[]
 }
 
 function ScoreRing({ score, theme }: { score: number; theme: 'light' | 'dark' }) {
@@ -171,6 +180,9 @@ export function AlertsReviewsView() {
   const [reviews, setReviews] = useState<TradeReview[]>([])
   const [tab,     setTab]     = useState<'alerts' | 'ml_signals' | 'reviews'>('ml_signals')
   const [loading, setLoading] = useState(true)
+  const [testingTelegram, setTestingTelegram] = useState(false)
+  const [telegramToast, setTelegramToast] = useState<{ type: 'ok' | 'err'; message: string } | null>(null)
+  const [telegramStatus, setTelegramStatus] = useState<TelegramStatus | null>(null)
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
@@ -183,6 +195,10 @@ export function AlertsReviewsView() {
       ])
       setAlerts(ar.alerts  || [])
       setReviews(rr.reviews || [])
+      const tg = await fetch('/api/notifications/telegram/status', { headers: HEADERS() })
+        .then(r => r.json())
+        .catch(() => null)
+      setTelegramStatus(tg)
     } catch (e) {
       console.error('Dashboard fetch error', e)
     } finally {
@@ -199,6 +215,32 @@ export function AlertsReviewsView() {
   const dismissAlert = async (id: number) => {
     await fetch(`/api/alerts/${id}`, { method: 'DELETE', headers: HEADERS() })
     setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'DISMISSED' } : a))
+  }
+
+  const testTelegram = async () => {
+    setTestingTelegram(true)
+    try {
+      const res = await fetch('/api/notifications/telegram/test', {
+        method: 'POST',
+        headers: {
+          ...HEADERS(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.detail || 'Telegram test failed')
+      setTelegramToast({ type: 'ok', message: 'Telegram test sent successfully' })
+      setTelegramStatus({ configured: true, missing: [] })
+    } catch (error) {
+      setTelegramToast({
+        type: 'err',
+        message: error instanceof Error ? error.message : 'Telegram test failed',
+      })
+    } finally {
+      setTestingTelegram(false)
+      window.setTimeout(() => setTelegramToast(null), 3200)
+    }
   }
 
   const userAlerts = alerts.filter(a => a.user_id !== 'ml_scanner')
@@ -220,25 +262,73 @@ export function AlertsReviewsView() {
     <div className={`flex flex-col h-full p-6 gap-6 overflow-y-auto transition-colors duration-500 ${
       theme === 'dark' ? 'bg-slate-950' : 'bg-slate-50'
     }`}>
+      <AnimatePresence>
+        {telegramToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className={`fixed top-4 right-4 z-[9999] flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-bold ${
+              telegramToast.type === 'ok'
+                ? (theme === 'dark' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-white border-emerald-200 text-emerald-700 shadow-lg shadow-emerald-100')
+                : (theme === 'dark' ? 'bg-rose-500/10 border-rose-500/20 text-rose-300' : 'bg-white border-rose-200 text-rose-700 shadow-lg shadow-rose-100')
+            }`}
+          >
+            {telegramToast.type === 'ok' ? <CheckCircle className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+            {telegramToast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className={`text-2xl font-black tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>Intelligence Center</h1>
           <p className={`${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'} text-sm mt-0.5`}>ML Signals · Smart Alerts · AI Trade Reviews</p>
+          {telegramStatus && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-widest ${
+                telegramStatus.configured
+                  ? (theme === 'dark' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700')
+                  : (theme === 'dark' ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-700')
+              }`}>
+                <Bell className="w-3 h-3" />
+                {telegramStatus.configured ? 'Telegram Configured' : 'Telegram Missing Config'}
+              </span>
+              {!telegramStatus.configured && telegramStatus.missing.length > 0 && (
+                <span className={`text-[10px] font-bold ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
+                  Missing: {telegramStatus.missing.join(', ')}
+                </span>
+              )}
+            </div>
+          )}
         </div>
-        <button
-          onClick={fetchAll}
-          disabled={loading}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-semibold transition-all ${
-            theme === 'dark' 
-              ? 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500' 
-              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:border-slate-300 shadow-sm'
-          }`}
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={testTelegram}
+            disabled={testingTelegram}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-semibold transition-all ${
+              theme === 'dark'
+                ? 'bg-blue-500/10 border-blue-500/20 text-blue-300 hover:text-white hover:border-blue-400/40'
+                : 'bg-white border-blue-200 text-blue-700 hover:text-blue-900 hover:border-blue-300 shadow-sm'
+            } disabled:opacity-60`}
+          >
+            <Bell className={`w-4 h-4 ${testingTelegram ? 'animate-pulse' : ''}`} />
+            {testingTelegram ? 'Sending Test...' : 'Test Telegram'}
+          </button>
+          <button
+            onClick={fetchAll}
+            disabled={loading}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-semibold transition-all ${
+              theme === 'dark'
+                ? 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
+                : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:border-slate-300 shadow-sm'
+            }`}
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Disclaimer */}
@@ -375,14 +465,39 @@ export function AlertsReviewsView() {
                     <span className={`font-black text-sm ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{alert.symbol}</span>
                     <StatusBadge status={alert.status} theme={theme} />
                   </div>
-                  <p className={`text-sm font-mono px-2 py-0.5 rounded-lg inline-block ${
-                    theme === 'dark' ? 'text-slate-300 bg-slate-800/50' : 'text-slate-700 bg-slate-100'
-                  }`}>{alert.condition}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className={`text-sm font-mono px-2 py-0.5 rounded-lg inline-block ${
+                      theme === 'dark' ? 'text-slate-300 bg-slate-800/50' : 'text-slate-700 bg-slate-100'
+                    }`}>{alert.condition}</p>
+                    {typeof alert.price === 'number' && alert.price > 0 && (
+                      <p className={`text-sm font-mono px-2 py-0.5 rounded-lg inline-block ${
+                        theme === 'dark' ? 'text-blue-300 bg-blue-500/10' : 'text-blue-700 bg-blue-50'
+                      }`}>${alert.price.toFixed(2)}</p>
+                    )}
+                    {alert.timeframe && (
+                      <p className={`text-[11px] font-black uppercase tracking-widest px-2 py-1 rounded-lg inline-block ${
+                        theme === 'dark' ? 'text-violet-300 bg-violet-500/10' : 'text-violet-700 bg-violet-50'
+                      }`}>{alert.timeframe}</p>
+                    )}
+                  </div>
                   <p className={`text-xs mt-1.5 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>{alert.message}</p>
                   <p className={`text-[10px] mt-1 flex items-center gap-1 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
                     <Clock className="w-3 h-3" />
                     {new Date(alert.created_at).toLocaleString('th-TH')}
                   </p>
+                  {alert.status === 'FIRED' && alert.triggered_at && (
+                    <p className={`text-[10px] mt-1 flex items-center gap-1 font-bold ${
+                      theme === 'dark' ? 'text-amber-400' : 'text-amber-600'
+                    }`}>
+                      <Zap className="w-3 h-3" />
+                      Triggered {new Date(alert.triggered_at).toLocaleString('th-TH')}
+                    </p>
+                  )}
+                  {alert.entry_source && (
+                    <p className={`text-[10px] mt-1 font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                      {alert.entry_source.replaceAll('_', ' ')}
+                    </p>
+                  )}
                 </div>
                 {alert.status !== 'DISMISSED' && (
                   <button

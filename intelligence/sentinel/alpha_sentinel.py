@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any, Callable
 
 from intelligence.mt5_connector import mt5_modify_position
 from intelligence.tools.market_tools import get_market_analysis
@@ -8,21 +9,78 @@ from services.notification_service import NotificationService
 logger = logging.getLogger(__name__)
 
 
+def _asset_class_for_symbol(symbol: str) -> str:
+    return "CRYPTO" if symbol in ["BTC", "ETH", "SOL"] else "MACRO"
+
+
+def _is_high_confidence_opportunity(analysis: dict[str, Any]) -> bool:
+    whale = analysis.get("whale_pulse", {})
+    ml = float(analysis.get("win_probability", 0) or 0)
+    return (ml >= 0.80) or (bool(whale.get("injections", False)) and ml >= 0.70)
+
+
+def _detect_counter_wall_threat(position, whale: dict[str, Any], mt5_module) -> bool:
+    current_price = position.price_current
+    entry_price = position.price_open
+    is_buy = position.type == mt5_module.POSITION_TYPE_BUY
+
+    if is_buy:
+        return any(
+            float(wall["price"]) < current_price and float(wall["price"]) > entry_price
+            for wall in whale.get("walls", {}).get("sell", [])
+        )
+    return any(
+        float(wall["price"]) > current_price and float(wall["price"]) < entry_price
+        for wall in whale.get("walls", {}).get("buy", [])
+    )
+
+
+def _is_position_in_profit(position, mt5_module) -> bool:
+    is_buy = position.type == mt5_module.POSITION_TYPE_BUY
+    return position.price_current > position.price_open if is_buy else position.price_current < position.price_open
+
+
+def _already_at_break_even(position, mt5_module) -> bool:
+    if not position.sl:
+        return False
+    is_buy = position.type == mt5_module.POSITION_TYPE_BUY
+    return (position.sl >= position.price_open) if is_buy else (position.sl <= position.price_open)
+
+
 class AlphaSentinel:
     """
     Alex's proactive monitoring core.
     Scans for institutional setups and actively guards open trades.
     """
 
-    def __init__(self, interval_seconds: int = 900):
+    def __init__(
+        self,
+        interval_seconds: int = 900,
+        notifier: Any | None = None,
+        analysis_fn: Callable[..., dict[str, Any]] | None = None,
+        modify_position_fn: Callable[..., dict[str, Any]] | None = None,
+        mt5_loader: Callable[[], Any] | None = None,
+    ):
         self.interval = interval_seconds
-        self.notifier = NotificationService()
-        self.target_symbols = ["BTC", "ETH", "SOL", "GOLD", "USOIL", "NAS100", "SPX"]
+        self.notifier = notifier or NotificationService()
+        self.analysis_fn = analysis_fn or get_market_analysis
+        self.modify_position_fn = modify_position_fn or mt5_modify_position
+        self.mt5_loader = mt5_loader or self._default_mt5_loader
+        self.target_symbols = ["BTC", "ETH", "SOL", "GOLD", "OIL", "NASDAQ", "SP500"]
         self.active_scans = {}
+
+    def _default_mt5_loader(self):
+        import MetaTrader5 as mt5
+
+        return mt5
+
+    async def _run_analysis(self, symbol: str, timeframe: str, asset_class: str) -> dict[str, Any]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.analysis_fn, symbol, timeframe, asset_class)
 
     async def run(self):
         """Main Sentinel loop."""
-        logger.info(f"Alpha Sentinel active. Interval: {self.interval}s")
+        logger.info("Alpha Sentinel active. Interval: %ss", self.interval)
         while True:
             try:
                 await self.scan_for_alpha()
@@ -31,7 +89,7 @@ class AlphaSentinel:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"AlphaSentinel: Loop error: {e}")
+                logger.error("AlphaSentinel: Loop error: %s", e)
                 await asyncio.sleep(60)
 
     async def scan_for_alpha(self):
@@ -39,30 +97,17 @@ class AlphaSentinel:
         logger.info("Sentinel: Scanning for alpha opportunities...")
         for symbol in self.target_symbols:
             try:
-                asset_class = "CRYPTO" if symbol in ["BTC", "ETH", "SOL"] else "MACRO"
-                loop = asyncio.get_event_loop()
-                analysis = await loop.run_in_executor(
-                    None,
-                    get_market_analysis,
-                    symbol,
-                    "15m",
-                    asset_class,
-                )
-
-                whale = analysis.get("whale_pulse", {})
-                ml = analysis.get("win_probability", 0)
-                high_conf = (ml >= 0.80) or (whale.get("injections", False) and ml >= 0.70)
-
-                if high_conf and analysis.get("signal") in ["BUY", "SELL"]:
+                analysis = await self._run_analysis(symbol, "15m", _asset_class_for_symbol(symbol))
+                if _is_high_confidence_opportunity(analysis) and analysis.get("signal") in ["BUY", "SELL"]:
                     await self.notify_alpha(symbol, analysis)
             except Exception as e:
-                logger.error(f"Sentinel: Failed to scan {symbol}: {e}")
+                logger.error("Sentinel: Failed to scan %s: %s", symbol, e)
 
     async def guard_active_trades(self):
         """Monitors open MT5 positions and moves SL to break-even when threatened."""
         try:
             try:
-                import MetaTrader5 as mt5
+                mt5 = self.mt5_loader()
             except ImportError:
                 logger.warning("Sentinel: MetaTrader5 not available. Guarding skipped.")
                 return
@@ -75,47 +120,23 @@ class AlphaSentinel:
             if not positions:
                 return
 
-            loop = asyncio.get_event_loop()
             for pos in positions:
                 symbol = pos.symbol
                 ticket = pos.ticket
-                analysis = await loop.run_in_executor(
-                    None,
-                    get_market_analysis,
-                    symbol,
-                    "15m",
-                    "AUTO",
-                )
-
+                analysis = await self._run_analysis(symbol, "15m", "AUTO")
                 whale = analysis.get("whale_pulse", {})
-                current_price = pos.price_current
-                entry_price = pos.price_open
-                is_buy = pos.type == mt5.POSITION_TYPE_BUY
-                is_in_profit = current_price > entry_price if is_buy else current_price < entry_price
+                threat_detected = _detect_counter_wall_threat(pos, whale, mt5)
+                is_in_profit = _is_position_in_profit(pos, mt5)
+                already_at_be = _already_at_break_even(pos, mt5)
 
-                if is_buy:
-                    threat_detected = any(
-                        float(wall["price"]) < current_price and float(wall["price"]) > entry_price
-                        for wall in whale.get("walls", {}).get("sell", [])
-                    )
-                else:
-                    threat_detected = any(
-                        float(wall["price"]) > current_price and float(wall["price"]) < entry_price
-                        for wall in whale.get("walls", {}).get("buy", [])
-                    )
-
-                already_at_break_even = bool(
-                    pos.sl and ((pos.sl >= entry_price) if is_buy else (pos.sl <= entry_price))
-                )
-
-                if threat_detected and is_in_profit and not already_at_break_even:
-                    result = mt5_modify_position(ticket=ticket, sl=entry_price, tp=pos.tp or 0.0)
+                if threat_detected and is_in_profit and not already_at_be:
+                    result = self.modify_position_fn(ticket=ticket, sl=pos.price_open, tp=pos.tp or 0.0)
                     if result.get("status") == "SUCCESS":
                         msg = (
                             f"*RISK GUARDIAN ACTIONED*\n"
                             f"Symbol: {symbol} (Ticket: {ticket})\n"
                             f"Threat: Large whale counter-wall detected.\n"
-                            f"Action: Stop Loss moved to break-even at {entry_price:.5f}."
+                            f"Action: Stop Loss moved to break-even at {pos.price_open:.5f}."
                         )
                     else:
                         msg = (
@@ -127,7 +148,7 @@ class AlphaSentinel:
                         )
                     await self.notifier.broadcast(msg)
         except Exception as e:
-            logger.error(f"Sentinel: Guarding failed: {e}")
+            logger.error("Sentinel: Guarding failed: %s", e)
 
     async def notify_alpha(self, symbol: str, analysis: dict):
         """Broadcasts a high-confluence opportunity."""

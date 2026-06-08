@@ -4,6 +4,7 @@ gcp-key.json
 *.json
 !package.json
 !tsconfig.json
+!monitoring/grafana/dashboards/*.json
 
 # Logs & Diagnostics
 *.log
@@ -44,6 +45,7 @@ report.txt
 
 # IDE & OS
 .vscode/
+.vs/
 .idea/
 .DS_Store
 Thumbs.db
@@ -53,6 +55,9 @@ scratch/
 static/
 *.pytest_cache/
 htmlcov/
+coverage/
+.coverage
+coverage.xml
 
 # Runtime Cache
 cache/
@@ -61,3 +66,8 @@ cache/
 # Internal Review Docs
 CRITICAL_FIXES_APPLIED.md
 ENTERPRISE_CODE_REVIEW.md
+
+# Local presentation and review artifacts
+server.log.*
+pptx-review-extract/
+notebooklm-export/

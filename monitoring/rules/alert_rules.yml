@@ -114,3 +114,44 @@ groups:
         annotations:
           summary: "PostgreSQL connections near limit ({{ $value }}/100)"
           description: "Connection pool is nearly exhausted. New writes from Flink may fail."
+
+      # RAG OPS: COST / LATENCY / QUALITY
+      - alert: RagLatencyP95High
+        expr: cryptostream_rag_latency_p95_ms{tenant_id="public"} > 2000
+        for: 5m
+        labels:
+          severity: warning
+          team: ai-engineering
+        annotations:
+          summary: "RAG p95 latency is above 2 seconds"
+          description: "Public tenant RAG p95 latency is {{ $value }} ms. Check embedding provider latency, PostgreSQL load, and reranker candidate limits."
+
+      - alert: RagHourlyEstimatedCostHigh
+        expr: increase(cryptostream_rag_estimated_cost_usd_total{tenant_id="public"}[1h]) > 0.05
+        for: 0m
+        labels:
+          severity: warning
+          team: ai-engineering
+        annotations:
+          summary: "RAG estimated embedding cost is above hourly budget"
+          description: "Estimated RAG embedding cost increased by more than $0.05 in the last hour. Review query volume and cache opportunities."
+
+      - alert: RagNegativeFeedbackRatioHigh
+        expr: cryptostream_rag_feedback_negative_ratio > 0.30
+        for: 10m
+        labels:
+          severity: warning
+          team: ai-engineering
+        annotations:
+          summary: "RAG negative feedback ratio is high"
+          description: "{{ $value | humanizePercentage }} of recorded RAG feedback is negative. Review the RAG Ops annotation queue and improve weak documents."
+
+      - alert: RagRetrievalSpike
+        expr: increase(cryptostream_rag_retrievals_total{tenant_id="public"}[5m]) > 300
+        for: 0m
+        labels:
+          severity: warning
+          team: ai-engineering
+        annotations:
+          summary: "RAG retrieval traffic spike"
+          description: "More than 300 public tenant RAG retrievals were recorded in 5 minutes. Check for runaway clients or unexpected automation."

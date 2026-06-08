@@ -3,10 +3,10 @@ import { Brain, Target, Cpu, ShieldCheck } from 'lucide-react';
 import { HoverGlowCard } from './HoverGlowCard';
 import { SignalFeed } from './SignalFeed';
 import { PnLTracker } from './PnLTracker';
-import { useWebSocket } from '../hooks/useWebSocket';
 import { useEffect, useState } from 'react';
 import { FinancialTerm } from './Tooltip';
 import { useMode } from '../contexts/ModeContext';
+import type { WSMessage } from '../hooks/useWebSocket';
 
 interface Signal {
   symbol: string;
@@ -42,7 +42,13 @@ const REGIME_RULES = (signals: Signal[], theme: 'light' | 'dark') => {
   };
 };
 
-export const IntelligenceHub = () => {
+export const IntelligenceHub = ({
+  wsLastMessage,
+  wsStatus = 'closed',
+}: {
+  wsLastMessage: WSMessage | null;
+  wsStatus?: 'connecting' | 'open' | 'closed';
+}) => {
   const [signals, setSignals] = useState<Signal[]>(() => {
     try {
       const raw = sessionStorage.getItem('intelligence_signals_cache_v1');
@@ -73,16 +79,17 @@ export const IntelligenceHub = () => {
       return null;
     }
   });
-  const { status, lastMessage } = useWebSocket();
   const { isRetail, theme } = useMode();
+  const lastMessage = wsLastMessage;
 
   // One-shot HTTP fetch on mount (fast first load before WS sends data)
   useEffect(() => {
+    if (signals.length > 0) return;
     fetch('/api/signals')
       .then(r => r.json())
       .then(json => { if (json.signals?.length > 0) setSignals(json.signals); })
       .catch(() => {});
-  }, []);
+  }, [signals.length]);
 
   // Real-time WebSocket signal updates — replaces the 30s polling loop
   useEffect(() => {
@@ -241,7 +248,7 @@ export const IntelligenceHub = () => {
         <HoverGlowCard className={`lg:col-span-2 p-6 rounded-[1.5rem] border min-h-[480px] transition-all duration-500 ${
           theme === 'dark' ? 'border-white/10 bg-slate-900/60' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40'
         }`}>
-          <SignalFeed bootstrapSignals={signals} skipInitialFetch />
+          <SignalFeed bootstrapSignals={signals} skipInitialFetch wsLastMessage={wsLastMessage} />
         </HoverGlowCard>
 
         {/* PnL Tracker — takes 1/3 */}
@@ -249,7 +256,7 @@ export const IntelligenceHub = () => {
           <HoverGlowCard className={`p-4 rounded-[1.5rem] border transition-all duration-500 ${
             theme === 'dark' ? 'border-white/10 bg-slate-900/60' : 'border-slate-200 bg-white shadow-xl shadow-slate-200/40'
           }`}>
-            <PnLTracker bootstrapSignals={signals} skipInitialFetch />
+            <PnLTracker bootstrapSignals={signals} skipInitialFetch wsLastMessage={wsLastMessage} />
           </HoverGlowCard>
 
           {/* Infrastructure status widget */}
@@ -262,7 +269,7 @@ export const IntelligenceHub = () => {
             </div>
             <div className="space-y-3">
               {[
-                { label: 'WebSocket', ok: status === 'open' },
+                { label: 'WebSocket', ok: wsStatus === 'open' },
                 { label: 'Signal Engine', ok: signals.length > 0 },
                 // These now reflect REAL system health from the backend broadcast
                 { label: 'DB Metrics', ok: dbOk === true, pending: dbOk === null },

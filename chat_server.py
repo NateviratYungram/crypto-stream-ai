@@ -15,8 +15,140 @@ import json
 import logging
 import logging.handlers
 import requests
+import copy
 import re
 import sys
+import hashlib
+import shutil
+import tempfile
+import unicodedata
+from chat_server_query_helpers import (
+    _extract_historical_years as _query_extract_historical_years,
+    _extract_index_history_targets as _query_extract_index_history_targets,
+    _extract_stock_history_direction as _query_extract_stock_history_direction,
+    _extract_stock_history_universe as _query_extract_stock_history_universe,
+    _is_broad_stock_history_query as _query_is_broad_stock_history_query,
+    _is_capability_question as _query_is_capability_question,
+    _is_explicit_stock_ranking_request as _query_is_explicit_stock_ranking_request,
+    _is_ranked_stock_history_query as _query_is_ranked_stock_history_query,
+    _is_stock_top_performer_history_question as _query_is_stock_top_performer_history_question,
+    _normalize_query_text as _query_normalize_query_text,
+)
+from chat_server_symbol_helpers import (
+    TRADE_SYMBOL_ALIASES as _helper_trade_symbol_aliases_map,
+    _canonical_trade_symbol as _helper_canonical_trade_symbol,
+    _telegram_extract_symbol as _helper_telegram_extract_symbol,
+    _telegram_symbols_from_text as _helper_telegram_symbols_from_text,
+    _trade_symbol_aliases as _helper_trade_symbol_aliases,
+    resolve_trade_symbol as _helper_resolve_trade_symbol,
+)
+from chat_server_telegram_helpers import (
+    _telegram_extract_profile_patch as _helper_telegram_extract_profile_patch,
+    _telegram_format_readiness as _helper_telegram_format_readiness,
+    _telegram_profile_text as _helper_telegram_profile_text,
+)
+from chat_server_signal_helpers import (
+    _telegram_format_signal as _helper_telegram_format_signal,
+)
+from chat_server_best_setup_helpers import (
+    _daily_risk_guard_summary as _helper_daily_risk_guard_summary,
+    _build_best_setup_metrics as _helper_build_best_setup_metrics,
+    _build_setup_feedback_summary as _helper_build_setup_feedback_summary,
+    _build_trade_memory_document as _helper_build_trade_memory_document,
+    _best_setup_cache_key as _helper_best_setup_cache_key,
+    _best_setup_entry_decision as _helper_best_setup_entry_decision,
+    _best_setup_int_env as _helper_best_setup_int_env,
+    _best_setup_recommendations as _helper_best_setup_recommendations,
+    _best_setup_risk_summary as _helper_best_setup_risk_summary,
+    _best_setup_run_id as _helper_best_setup_run_id,
+    _best_outcome_label as _helper_best_outcome_label,
+    _best_setup_score_explain as _helper_best_setup_score_explain,
+    _parse_percent_like as _helper_parse_percent_like,
+    _pre_graph_rag_readiness_summary as _helper_pre_graph_rag_readiness_summary,
+    _telegram_format_feedback as _helper_telegram_format_feedback,
+    _trade_memory_sync_error as _helper_trade_memory_sync_error,
+    _trade_memory_sync_skip as _helper_trade_memory_sync_skip,
+    _trade_memory_sync_success as _helper_trade_memory_sync_success,
+)
+from chat_server_format_helpers import (
+    _format_historical_stock_rankings as _helper_format_historical_stock_rankings,
+    _format_index_historical_summary as _helper_format_index_historical_summary,
+)
+from chat_server_payload_helpers import (
+    _calendar_has_content as _helper_calendar_has_content,
+    _etf_flows_has_content as _helper_etf_flows_has_content,
+    _has_non_empty_sequence as _helper_has_non_empty_sequence,
+    _market_indices_has_content as _helper_market_indices_has_content,
+    _market_sentiment_has_content as _helper_market_sentiment_has_content,
+    _market_stocks_has_content as _helper_market_stocks_has_content,
+    _metric_label as _helper_metric_label,
+    _metric_number as _helper_metric_number,
+    _payload_updated_at as _helper_payload_updated_at,
+    _utc_now_iso as _helper_utc_now_iso,
+    _with_data_quality as _helper_with_data_quality,
+)
+from chat_server_cache_helpers import (
+    _cache_health_summary as _helper_cache_health_summary,
+    _cache_ttl_for as _helper_cache_ttl_for,
+    _is_persistent_market_cache_key as _helper_is_persistent_market_cache_key,
+    _market_cache_snapshot_path as _helper_market_cache_snapshot_path,
+    _read_market_cache_snapshot as _helper_read_market_cache_snapshot,
+    _write_market_cache_snapshot as _helper_write_market_cache_snapshot,
+)
+from chat_server_wallet_helpers import (
+    _build_eth_assets as _helper_build_eth_assets,
+    _build_eth_portfolio_result as _helper_build_eth_portfolio_result,
+    _is_eth_address as _helper_is_eth_address,
+)
+from chat_server_paper_helpers import (
+    _num as _helper_num,
+    _paper_summary as _helper_paper_summary,
+    _serialize_paper_trade as _helper_serialize_paper_trade,
+)
+from chat_server_news_helpers import (
+    _estimate_news_bias as _helper_estimate_news_bias,
+    _extract_news_watch_symbol as _helper_extract_news_watch_symbol,
+    _make_news_watch_hash as _helper_make_news_watch_hash,
+    _news_watch_aliases as _helper_news_watch_aliases,
+    _score_news_watch_article as _helper_score_news_watch_article,
+)
+from chat_server_graph_helpers import (
+    _best_paper_entry_reason as _helper_best_paper_entry_reason,
+    _build_best_alternative_candidates_payload as _helper_build_best_alternative_candidates_payload,
+    _build_trade_graph_guard_result as _helper_build_trade_graph_guard_result,
+    _build_signal_snapshot_metrics as _helper_build_signal_snapshot_metrics,
+    _build_signal_snapshot_record as _helper_build_signal_snapshot_record,
+    _format_best_alternative_report as _helper_format_best_alternative_report,
+    _format_open_best_paper_blocked_exception as _helper_format_open_best_paper_blocked_exception,
+    _format_open_best_paper_result as _helper_format_open_best_paper_result,
+    _format_trade_graph_report as _helper_format_trade_graph_report,
+    _format_why_setup_report as _helper_format_why_setup_report,
+    _precheck_open_best_paper_payload as _helper_precheck_open_best_paper_payload,
+    _resolve_best_paper_volume as _helper_resolve_best_paper_volume,
+    _current_market_regime as _helper_current_market_regime,
+    _setup_node_key as _helper_setup_node_key,
+    _signal_outcome_label as _helper_signal_outcome_label,
+    _signal_snapshot_id as _helper_signal_snapshot_id,
+    _trade_graph_key as _helper_trade_graph_key,
+)
+from chat_server_telegram_format_helpers import (
+    _telegram_blocked_trade_keyboard as _helper_telegram_blocked_trade_keyboard,
+    _telegram_extract_blockers as _helper_telegram_extract_blockers,
+    _telegram_format_blocked_detail as _helper_telegram_format_blocked_detail,
+    _telegram_format_blocked_trade as _helper_telegram_format_blocked_trade,
+    _telegram_format_mt5_snapshot as _helper_telegram_format_mt5_snapshot,
+    _telegram_format_paper_dashboard as _helper_telegram_format_paper_dashboard,
+    _telegram_trade_keyboard as _helper_telegram_trade_keyboard,
+)
+from chat_server_signal_list_helpers import (
+    _build_price_delta_fallback_signals as _helper_build_price_delta_fallback_signals,
+    _filter_signal_rows as _helper_filter_signal_rows,
+)
+from chat_server_alert_helpers import (
+    _build_best_confirmation_alert_request as _helper_build_best_confirmation_alert_request,
+    _build_best_entry_alert_request as _helper_build_best_entry_alert_request,
+    _telegram_parse_alert_request as _helper_telegram_parse_alert_request,
+)
 
 # Fix Windows console encoding for emojis
 if sys.platform == "win32":
@@ -27,25 +159,82 @@ if sys.platform == "win32":
         pass
 
 from contextlib import asynccontextmanager
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 # ── Rotating log (never grows unbounded, never committed to git) ────────────
+class SecretRedactionFilter(logging.Filter):
+    _PATTERNS = [
+        re.compile(r"bot\d+:[A-Za-z0-9_-]{20,}"),
+        re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{20,}\b"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        try:
+            from dotenv import load_dotenv as _load_dotenv
+            _load_dotenv()
+        except Exception:
+            pass
+        env_names = [
+            "TELEGRAM_BOT_TOKEN",
+            "GEMINI_API_KEY",
+            "APP_API_KEY",
+            "MCP_API_KEY",
+            "JWT_SECRET_KEY",
+        ]
+        self._secrets = [
+            value
+            for value in (os.environ.get(name) for name in env_names)
+            if value and len(value) >= 8 and value.lower() not in {"demo", "changeme"}
+        ]
+
+    def _redact(self, value):
+        if not isinstance(value, (str, bytes)):
+            return value
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8")
+            except Exception:
+                return value
+        text = str(value)
+        for pattern in self._PATTERNS:
+            text = pattern.sub("[REDACTED_SECRET]", text)
+        for secret in self._secrets:
+            text = text.replace(secret, "[REDACTED_SECRET]")
+        return text
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._redact(record.msg)
+        if record.args:
+            if isinstance(record.args, dict):
+                record.args = {key: self._redact(value) for key, value in record.args.items()}
+            else:
+                record.args = tuple(self._redact(arg) for arg in record.args)
+        return True
+
+
+_secret_redaction_filter = SecretRedactionFilter()
 log_handler = logging.handlers.RotatingFileHandler(
     "server.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8" # 5MB × 3 = 15MB max
 )
+log_handler.addFilter(_secret_redaction_filter)
+stream_handler = logging.StreamHandler()
+stream_handler.addFilter(_secret_redaction_filter)
 logging.basicConfig(
-    handlers=[log_handler, logging.StreamHandler()],
+    handlers=[log_handler, stream_handler],
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     force=True,
 )
 logger = logging.getLogger("cryptostream")
 logger.info("=== CryptoStream AI Server Starting ===")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -117,7 +306,13 @@ async def run_agent_tool_async(name, args):
             kwargs = args if isinstance(args, dict) else {}
             
             # Execute synchronously in a thread pool
-            timeout_seconds = 35.0 if name == "get_trading_tactics" else 18.0
+            timeout_overrides = {
+                "get_market_analysis": 35.0,
+                "get_trading_tactics": 35.0,
+                "get_index_historical_summary": 35.0,
+                "get_historical_stock_rankings": 120.0,
+            }
+            timeout_seconds = timeout_overrides.get(name, 18.0)
             res = await asyncio.wait_for(
                 loop.run_in_executor(None, functools.partial(func, **kwargs)),
                 timeout=timeout_seconds
@@ -159,10 +354,12 @@ BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "frontend", "dist")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-MCP_API_KEY    = os.environ.get("MCP_API_KEY", "")
+MCP_API_KEY    = os.environ.get("MCP_API_KEY", "CHANGE_ME_LOCAL_DEV_KEY")
 APP_API_KEY    = os.environ.get("APP_API_KEY", "")
+APP_ENV        = (os.environ.get("APP_ENV") or os.environ.get("ENVIRONMENT") or "development").strip().lower()
+ALLOW_DEMO_API_KEY = (os.environ.get("ALLOW_DEMO_API_KEY", "1" if APP_ENV in {"development", "dev", "local", "test"} else "0").strip().lower() in {"1", "true", "yes", "on"})
 KAFKA_BROKER   = os.environ.get("KAFKA_BROKER", "localhost:9092")
-MCP_URL        = "http://localhost:8000"
+MCP_URL        = os.environ.get("MCP_URL", "http://localhost:8000")
 MODEL_ID       = os.environ.get("MODEL_ID", "gemini-2.5-flash")
 CHAT_RATE_LIMIT   = os.environ.get("CHAT_RATE_LIMIT",   "15/minute")   # AI chat
 MARKET_RATE_LIMIT = os.environ.get("MARKET_RATE_LIMIT", "60/minute")   # market data endpoints
@@ -179,7 +376,11 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY must be set in .env")
 
 if not APP_API_KEY:
-    logger.warning("⚠️  APP_API_KEY not set — API endpoints are unprotected!")
+    if APP_ENV in {"development", "dev", "local", "test"}:
+        logger.warning("⚠️  APP_API_KEY not set — local development mode will rely on demo access only.")
+    else:
+        logger.error("❌ APP_API_KEY missing in non-development environment")
+        raise RuntimeError("APP_API_KEY must be set outside development/test environments")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -214,15 +415,376 @@ def get_db_conn():
     finally:
         get_db_pool().putconn(conn)
 
+
+def _check_socket(name: str, target: str, timeout: float = 2.0) -> Dict[str, Any]:
+    """Lightweight TCP readiness check for internal Docker services."""
+    import socket
+
+    host, _, port_text = target.partition(":")
+    try:
+        with socket.create_connection((host, int(port_text)), timeout=timeout):
+            return {"status": "ok", "target": target}
+    except Exception as exc:
+        return {"status": "error", "target": target, "error": str(exc)}
+
+
+def _readiness_db_connect():
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        connect_timeout=2,
+    )
+
+
+def _check_datalake() -> Dict[str, Any]:
+    root = os.environ.get("DATALAKE_READ_PATH", os.path.join(BASE_DIR, "datalake"))
+    try:
+        if not os.path.isdir(root):
+            return {"status": "error", "path": root, "error": "data lake path does not exist"}
+        now = datetime.now(timezone.utc)
+        candidate_days = [now - timedelta(days=offset) for offset in range(3)]
+        checked_partitions = []
+        for day in candidate_days:
+            partition = os.path.join(
+                root,
+                f"year={day:%Y}",
+                f"month={day:%m}",
+                f"day={day:%d}",
+            )
+            checked_partitions.append(os.path.relpath(partition, root))
+            if not os.path.isdir(partition):
+                continue
+            with os.scandir(partition) as entries:
+                for entry in entries:
+                    if entry.is_file() and entry.name.endswith(".parquet"):
+                        stat = entry.stat()
+                        return {
+                            "status": "ok",
+                            "path": root,
+                            "partition": os.path.relpath(partition, root),
+                            "sample_file": entry.name,
+                            "sample_modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                        }
+        return {"status": "error", "path": root, "checked_partitions": checked_partitions}
+    except Exception as exc:
+        return {"status": "error", "path": root, "error": str(exc)}
+
+
+def _check_rag_vector() -> Dict[str, Any]:
+    conn = None
+    try:
+        conn = _readiness_db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS chunks,
+                       COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS embedded_chunks
+                FROM knowledge_chunks
+                """
+            )
+            chunks, embedded_chunks = cur.fetchone()
+        status = "ok" if embedded_chunks else "error"
+        return {"status": status, "chunks": int(chunks), "embedded_chunks": int(embedded_chunks)}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+    finally:
+        if conn:
+            conn.close()
+
+
+def _check_anomaly_pipeline(hours: int = 72) -> Dict[str, Any]:
+    conn = None
+    try:
+        conn = _readiness_db_connect()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS event_count
+                FROM data_anomaly_events
+                WHERE detected_at >= NOW() - (%s || ' hours')::interval
+                """,
+                (hours,),
+            )
+            event_count = int(cur.fetchone()["event_count"])
+            cur.execute(
+                """
+                SELECT symbol, COUNT(*) AS count
+                FROM data_anomaly_events
+                WHERE detected_at >= NOW() - (%s || ' hours')::interval
+                GROUP BY symbol
+                ORDER BY count DESC, symbol
+                LIMIT 5
+                """,
+                (hours,),
+            )
+            top_symbols = [dict(row) for row in cur.fetchall()]
+        return {
+            "status": "ok",
+            "hours": hours,
+            "event_count": event_count,
+            "top_symbols": top_symbols,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+    finally:
+        if conn:
+            conn.close()
+
+
+def _check_lineage() -> Dict[str, Any]:
+    url = os.environ.get("MARQUEZ_URL", "http://marquez:5000")
+    try:
+        response = requests.get(f"{url.rstrip('/')}/api/v1/namespaces", timeout=2)
+        response.raise_for_status()
+        payload = response.json()
+        return {
+            "status": "ok",
+            "url": url,
+            "namespace_count": len(payload.get("namespaces", [])),
+        }
+    except Exception as exc:
+        return {"status": "error", "url": url, "error": str(exc)}
+
+
+def _check_mt5_runtime() -> Dict[str, Any]:
+    cached = GLOBAL_ACCOUNT_CACHE.get("summary", {})
+    cached_at = GLOBAL_ACCOUNT_CACHE.get("updated_at", 0)
+    cache_age = time.time() - cached_at if cached_at else None
+    if cached and cache_age is not None and cache_age <= 60:
+        return {
+            "status": "ok",
+            "connected": True,
+            "live_execution_enabled": bool(cached.get("bridge_live_trading_enabled", not os.getenv("MT5_BRIDGE_URL"))),
+            "source": "cache",
+            "cache_age_seconds": round(cache_age, 1),
+            "account": cached,
+            "positions_count": len(GLOBAL_ACCOUNT_CACHE.get("positions", [])),
+        }
+
+    try:
+        from intelligence.mt5_connector import get_mt5_account_info, get_mt5_positions
+
+        account = get_mt5_account_info()
+        if "error" in account:
+            return {"status": "not_ready", "connected": False, "error": account["error"]}
+        positions = get_mt5_positions()
+        GLOBAL_ACCOUNT_CACHE["summary"] = account
+        GLOBAL_ACCOUNT_CACHE["positions"] = positions
+        GLOBAL_ACCOUNT_CACHE["updated_at"] = time.time()
+        GLOBAL_ACCOUNT_CACHE["connected"] = True
+        return {
+            "status": "ok",
+            "connected": True,
+            "live_execution_enabled": bool(account.get("bridge_live_trading_enabled", not os.getenv("MT5_BRIDGE_URL"))),
+            "source": "direct",
+            "account": account,
+            "positions_count": len(positions),
+        }
+    except Exception as exc:
+        return {"status": "not_ready", "connected": False, "error": str(exc)}
+
+
+def _check_ai_trading_quality() -> Dict[str, Any]:
+    try:
+        from intelligence.ml.trading_quality_gate import get_trading_quality_gate
+
+        gate = get_trading_quality_gate(force_refresh=True)
+        return {
+            "status": "ok" if gate.get("live_ready") else "not_ready",
+            "live_ready": bool(gate.get("live_ready")),
+            "mode": gate.get("mode"),
+            "blockers": gate.get("blockers", []),
+            "paper_label_progress": gate.get("paper_label_progress", {}),
+            "model_quality": gate.get("model_quality", {}),
+            "paper_quality": gate.get("paper_quality", {}),
+        }
+    except Exception as exc:
+        return {"status": "error", "live_ready": False, "error": str(exc)}
+
+
+def build_system_readiness() -> Dict[str, Any]:
+    checks: Dict[str, Any] = {}
+
+    conn = None
+    try:
+        conn = _readiness_db_connect()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        checks["postgres"] = {"status": "ok"}
+    except Exception as exc:
+        checks["postgres"] = {"status": "error", "error": str(exc)}
+    finally:
+        if conn:
+            conn.close()
+
+    try:
+        schema = _get_schema()
+        checks["mcp"] = {"status": "ok" if schema else "error", "url": MCP_URL}
+    except Exception as exc:
+        checks["mcp"] = {"status": "error", "url": MCP_URL, "error": str(exc)}
+
+    checks["kafka"] = _check_socket("kafka", KAFKA_BROKER)
+    checks["rag_vector"] = _check_rag_vector()
+    checks["anomaly_pipeline"] = _check_anomaly_pipeline(hours=72)
+    checks["data_lake"] = _check_datalake()
+    checks["lineage"] = _check_lineage()
+
+    telegram = notifier.telegram_status()
+    checks["telegram"] = {
+        "status": "ok" if telegram.get("configured") else "not_configured",
+        **telegram,
+    }
+    checks["mt5"] = _check_mt5_runtime()
+    checks["ai_trading_quality"] = _check_ai_trading_quality()
+
+    core_names = [
+        "postgres",
+        "mcp",
+        "kafka",
+        "rag_vector",
+        "anomaly_pipeline",
+        "data_lake",
+        "lineage",
+    ]
+    external_names = ["telegram", "mt5", "ai_trading_quality"]
+    all_names = core_names + external_names
+    ok_count = sum(1 for name in all_names if checks[name].get("status") == "ok")
+
+    core_ready = all(checks[name].get("status") == "ok" for name in core_names)
+    ready_for_notifications = checks["telegram"].get("status") == "ok"
+    ready_for_live_trading = (
+        checks["mt5"].get("connected") is True
+        and checks["mt5"].get("live_execution_enabled", True) is True
+        and checks["ai_trading_quality"].get("live_ready") is True
+    )
+    ready_for_mt5_execution = (
+        checks["mt5"].get("connected") is True
+        and checks["mt5"].get("live_execution_enabled", True) is True
+    )
+
+    next_actions = []
+    if not ready_for_notifications:
+        next_actions.append("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, then restart chat-server.")
+    if not ready_for_live_trading:
+        if not ready_for_mt5_execution:
+            next_actions.append("Install/log in to MetaTrader5 and start the MT5 bridge before enabling live trading.")
+        else:
+            next_actions.append("Keep live orders blocked until ML and paper-trade quality gates pass.")
+    if not core_ready:
+        next_actions.append("Fix any core check with status=error before exposing the app to users.")
+
+    return {
+        "status": "ok" if core_ready else "degraded",
+        "overall_percent": round((ok_count / len(all_names)) * 100),
+        "ready_for_users": core_ready,
+        "ready_for_analysis": core_ready,
+        "ready_for_notifications": ready_for_notifications,
+        "ready_for_live_trading": ready_for_live_trading,
+        "ready_for_mt5_execution": ready_for_mt5_execution,
+        "ready_for_live_ai_trading": ready_for_live_trading,
+        "core_ready": core_ready,
+        "external_ready": ready_for_notifications and ready_for_mt5_execution,
+        "checks": checks,
+        "next_actions": next_actions,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def format_readiness_for_chat(readiness: Dict[str, Any]) -> str:
+    checks = readiness.get("checks", {})
+    core_ready = readiness.get("core_ready")
+    notification_ready = readiness.get("ready_for_notifications")
+    trading_ready = readiness.get("ready_for_live_trading")
+    mt5_execution_ready = readiness.get("ready_for_mt5_execution")
+    overall = readiness.get("overall_percent")
+    anomaly_count = checks.get("anomaly_pipeline", {}).get("event_count", 0)
+    rag_chunks = checks.get("rag_vector", {}).get("embedded_chunks", 0)
+    lake_sample = checks.get("data_lake", {}).get("sample_file", "latest partition not found")
+
+    core_text = "พร้อม" if core_ready else "ยังไม่พร้อมครบ"
+    telegram_text = "พร้อม" if notification_ready else "ยังไม่พร้อม: ขาด TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"
+    mt5_check = checks.get("mt5", {})
+    if trading_ready:
+        mt5_text = "พร้อม"
+    elif mt5_execution_ready:
+        ai_gate = checks.get("ai_trading_quality", {})
+        mt5_text = (
+            "MT5 bridge พร้อม แต่ AI live-trading gate ยังบล็อกอยู่: "
+            f"{', '.join(ai_gate.get('blockers', [])[:6]) or 'quality gate not ready'}"
+        )
+    elif mt5_check.get("connected") and not mt5_check.get("live_execution_enabled", True):
+        mt5_text = "เชื่อมต่อบัญชีแล้ว แต่ยังปิด live execution: set MT5_BRIDGE_ENABLE_LIVE_TRADING=1"
+    else:
+        mt5_text = f"ยังไม่พร้อม: {mt5_check.get('error', 'MT5 ยังไม่ connected')}"
+
+    return (
+        f"ผลตรวจระบบล่าสุด: {overall}%\n"
+        f"- Core AI/data platform: {core_text} (Postgres, MCP, Kafka, RAG vector, anomaly pipeline, data lake, lineage)\n"
+        f"- RAG: พร้อมใช้งานแบบ vector แล้ว มี embedded chunks {rag_chunks} ชิ้น\n"
+        f"- Anomaly pipeline: พร้อม มีข้อมูลตรวจล่าสุด {anomaly_count} events ใน 72 ชั่วโมง\n"
+        f"- Data lake: พร้อม มีตัวอย่างไฟล์ล่าสุด {lake_sample}\n"
+        f"- Telegram notification: {telegram_text}\n"
+        f"- MT5 live trading: {mt5_text}\n\n"
+        "สรุป: พร้อมตอบ user และวิเคราะห์จริงแล้ว แต่ live trading/Telegram จะนับเป็น 100% ได้ก็ต่อเมื่อใส่ secret/เชื่อมต่อโปรแกรมจริงครบก่อนครับ"
+    )
+
 # ==========================================
 # Persistence DB (SQLite) for History
 # ==========================================
-PERSISTENCE_DB = os.path.join(BASE_DIR, "persistence.db")
+DEFAULT_PERSISTENCE_DB = os.path.join(BASE_DIR, "data", "persistence.db")
+LEGACY_PERSISTENCE_DB = os.path.join(BASE_DIR, "persistence.db")
+PERSISTENCE_DB = os.environ.get("PAPER_TRADE_DB") or DEFAULT_PERSISTENCE_DB
+PERSISTENCE_DB_FALLBACK = os.path.join(tempfile.gettempdir(), "crypto-stream-ai", "persistence.db")
+_ACTIVE_PERSISTENCE_DB = PERSISTENCE_DB
+
+
+def _ensure_persistence_db_path() -> None:
+    db_dir = os.path.dirname(PERSISTENCE_DB)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+    if (
+        os.path.abspath(PERSISTENCE_DB) != os.path.abspath(LEGACY_PERSISTENCE_DB)
+        and not os.path.exists(PERSISTENCE_DB)
+        and os.path.exists(LEGACY_PERSISTENCE_DB)
+    ):
+        shutil.copy2(LEGACY_PERSISTENCE_DB, PERSISTENCE_DB)
+        logger.info("Migrated legacy persistence DB to %s", PERSISTENCE_DB)
+
+
+def _activate_persistence_fallback(reason: Exception | str) -> str:
+    global _ACTIVE_PERSISTENCE_DB
+
+    fallback_dir = os.path.dirname(PERSISTENCE_DB_FALLBACK)
+    if fallback_dir:
+        os.makedirs(fallback_dir, exist_ok=True)
+
+    if (
+        os.path.abspath(_ACTIVE_PERSISTENCE_DB) != os.path.abspath(PERSISTENCE_DB_FALLBACK)
+        and not os.path.exists(PERSISTENCE_DB_FALLBACK)
+        and os.path.exists(PERSISTENCE_DB)
+    ):
+        try:
+            shutil.copy2(PERSISTENCE_DB, PERSISTENCE_DB_FALLBACK)
+        except Exception as exc:
+            logger.warning("Persistence fallback copy failed: %s", exc)
+
+    _ACTIVE_PERSISTENCE_DB = PERSISTENCE_DB_FALLBACK
+    logger.warning(
+        "SQLite persistence switched to temp fallback at %s due to %s",
+        PERSISTENCE_DB_FALLBACK,
+        reason,
+    )
+    return _ACTIVE_PERSISTENCE_DB
 
 def init_persistence_db():
     """Ensure SQLite tables exist and are synchronized with current schema."""
     import sqlite3
     try:
+        _ensure_persistence_db_path()
         conn = sqlite3.connect(PERSISTENCE_DB)
         cursor = conn.cursor()
         
@@ -358,8 +920,13 @@ def init_persistence_db():
                 user_id TEXT,
                 symbol TEXT,
                 condition TEXT,
+                price REAL,
+                timeframe TEXT,
+                entry_source TEXT,
                 message TEXT,
+                meta_json TEXT,
                 status TEXT DEFAULT 'ACTIVE',
+                triggered_at DATETIME,
                 created_at DATETIME
             )
         """)
@@ -409,6 +976,175 @@ def init_persistence_db():
                 label_source TEXT
             )
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_user_profiles (
+                chat_id TEXT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                preferred_symbols_json TEXT,
+                default_lot REAL,
+                risk_pct REAL,
+                language TEXT,
+                answer_style TEXT,
+                notes TEXT,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_trade_confirmations (
+                id TEXT PRIMARY KEY,
+                chat_id TEXT,
+                symbol TEXT,
+                side TEXT,
+                volume REAL,
+                sl REAL,
+                tp REAL,
+                price REAL,
+                request_json TEXT,
+                status TEXT DEFAULT 'PENDING',
+                result_json TEXT,
+                created_at DATETIME,
+                expires_at DATETIME,
+                decided_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                username TEXT,
+                action TEXT,
+                message TEXT,
+                payload_json TEXT,
+                created_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_setup_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                symbol TEXT,
+                side TEXT,
+                rating TEXT,
+                source TEXT,
+                score REAL,
+                payload_json TEXT,
+                created_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS best_setup_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT UNIQUE,
+                symbol TEXT,
+                side TEXT,
+                score REAL,
+                price REAL,
+                entry_low REAL,
+                entry_high REAL,
+                stop_loss REAL,
+                take_profit_1 REAL,
+                take_profit_2 REAL,
+                decision_action TEXT,
+                no_trade INTEGER DEFAULT 0,
+                model_weighted INTEGER DEFAULT 0,
+                payload_json TEXT,
+                created_at DATETIME,
+                outcome_1h TEXT,
+                return_1h REAL,
+                outcome_4h TEXT,
+                return_4h REAL,
+                outcome_24h TEXT,
+                return_24h REAL,
+                evaluated_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS signal_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id TEXT UNIQUE,
+                symbol TEXT,
+                canonical_symbol TEXT,
+                side TEXT,
+                timeframe TEXT,
+                price REAL,
+                confidence REAL,
+                win_probability REAL,
+                source TEXT,
+                market_regime TEXT,
+                graph_guard_json TEXT,
+                payload_json TEXT,
+                created_at DATETIME,
+                outcome_1h TEXT,
+                return_1h REAL,
+                outcome_4h TEXT,
+                return_4h REAL,
+                outcome_24h TEXT,
+                return_24h REAL,
+                evaluated_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ml_promotion_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_reason TEXT,
+                status TEXT,
+                reason TEXT,
+                accuracy REAL,
+                roc_auc REAL,
+                walk_forward_auc REAL,
+                n_samples INTEGER,
+                trained_at TEXT,
+                override_reason TEXT,
+                blockers_json TEXT,
+                paper_label_quality_json TEXT,
+                result_json TEXT,
+                created_at TEXT
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ml_symbol_policy_overrides (
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                action TEXT NOT NULL,
+                size_multiplier REAL,
+                note TEXT,
+                updated_at TEXT,
+                PRIMARY KEY(symbol, side)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_graph_nodes (
+                node_key TEXT PRIMARY KEY,
+                node_type TEXT,
+                label TEXT,
+                properties_json TEXT,
+                updated_at DATETIME
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_graph_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_key TEXT,
+                target_key TEXT,
+                edge_type TEXT,
+                weight REAL DEFAULT 1.0,
+                evidence_json TEXT,
+                updated_at DATETIME,
+                UNIQUE(source_key, target_key, edge_type)
+            )
+        """)
         
         # Migration: Ensure all columns exist in watchlist
         cursor.execute("PRAGMA table_info(watchlist)")
@@ -426,8 +1162,13 @@ def init_persistence_db():
             "user_id": "ALTER TABLE alerts ADD COLUMN user_id TEXT",
             "symbol": "ALTER TABLE alerts ADD COLUMN symbol TEXT",
             "condition": "ALTER TABLE alerts ADD COLUMN condition TEXT",
+            "price": "ALTER TABLE alerts ADD COLUMN price REAL",
+            "timeframe": "ALTER TABLE alerts ADD COLUMN timeframe TEXT",
+            "entry_source": "ALTER TABLE alerts ADD COLUMN entry_source TEXT",
             "message": "ALTER TABLE alerts ADD COLUMN message TEXT",
+            "meta_json": "ALTER TABLE alerts ADD COLUMN meta_json TEXT",
             "status": "ALTER TABLE alerts ADD COLUMN status TEXT DEFAULT 'ACTIVE'",
+            "triggered_at": "ALTER TABLE alerts ADD COLUMN triggered_at DATETIME",
             "created_at": "ALTER TABLE alerts ADD COLUMN created_at DATETIME",
         }
         for col_name, sql in alert_migrations.items():
@@ -478,11 +1219,138 @@ def init_persistence_db():
             "entry_reason": "ALTER TABLE paper_trades ADD COLUMN entry_reason TEXT",
             "close_reason": "ALTER TABLE paper_trades ADD COLUMN close_reason TEXT",
             "label_source": "ALTER TABLE paper_trades ADD COLUMN label_source TEXT",
+            "signal_grade": "ALTER TABLE paper_trades ADD COLUMN signal_grade TEXT",
+            "macro_bias": "ALTER TABLE paper_trades ADD COLUMN macro_bias TEXT",
         }
         for col_name, sql in paper_trade_migrations.items():
             if col_name not in pt_cols:
                 logger.info(f"Paper trade migration: adding {col_name}")
                 cursor.execute(sql)
+
+        cursor.execute("PRAGMA table_info(telegram_user_profiles)")
+        tg_cols = [c[1] for c in cursor.fetchall()]
+        telegram_profile_migrations = {
+            "username": "ALTER TABLE telegram_user_profiles ADD COLUMN username TEXT",
+            "first_name": "ALTER TABLE telegram_user_profiles ADD COLUMN first_name TEXT",
+            "preferred_symbols_json": "ALTER TABLE telegram_user_profiles ADD COLUMN preferred_symbols_json TEXT",
+            "default_lot": "ALTER TABLE telegram_user_profiles ADD COLUMN default_lot REAL",
+            "risk_pct": "ALTER TABLE telegram_user_profiles ADD COLUMN risk_pct REAL",
+            "language": "ALTER TABLE telegram_user_profiles ADD COLUMN language TEXT",
+            "answer_style": "ALTER TABLE telegram_user_profiles ADD COLUMN answer_style TEXT",
+            "notes": "ALTER TABLE telegram_user_profiles ADD COLUMN notes TEXT",
+            "created_at": "ALTER TABLE telegram_user_profiles ADD COLUMN created_at DATETIME",
+            "updated_at": "ALTER TABLE telegram_user_profiles ADD COLUMN updated_at DATETIME",
+        }
+        for col_name, sql in telegram_profile_migrations.items():
+            if col_name not in tg_cols:
+                logger.info(f"Telegram profile migration: adding {col_name}")
+                cursor.execute(sql)
+
+        cursor.execute("PRAGMA table_info(telegram_trade_confirmations)")
+        tc_cols = [c[1] for c in cursor.fetchall()]
+        telegram_trade_migrations = {
+            "chat_id": "ALTER TABLE telegram_trade_confirmations ADD COLUMN chat_id TEXT",
+            "symbol": "ALTER TABLE telegram_trade_confirmations ADD COLUMN symbol TEXT",
+            "side": "ALTER TABLE telegram_trade_confirmations ADD COLUMN side TEXT",
+            "volume": "ALTER TABLE telegram_trade_confirmations ADD COLUMN volume REAL",
+            "sl": "ALTER TABLE telegram_trade_confirmations ADD COLUMN sl REAL",
+            "tp": "ALTER TABLE telegram_trade_confirmations ADD COLUMN tp REAL",
+            "price": "ALTER TABLE telegram_trade_confirmations ADD COLUMN price REAL",
+            "request_json": "ALTER TABLE telegram_trade_confirmations ADD COLUMN request_json TEXT",
+            "status": "ALTER TABLE telegram_trade_confirmations ADD COLUMN status TEXT DEFAULT 'PENDING'",
+            "result_json": "ALTER TABLE telegram_trade_confirmations ADD COLUMN result_json TEXT",
+            "created_at": "ALTER TABLE telegram_trade_confirmations ADD COLUMN created_at DATETIME",
+            "expires_at": "ALTER TABLE telegram_trade_confirmations ADD COLUMN expires_at DATETIME",
+            "decided_at": "ALTER TABLE telegram_trade_confirmations ADD COLUMN decided_at DATETIME",
+        }
+        for col_name, sql in telegram_trade_migrations.items():
+            if col_name not in tc_cols:
+                logger.info(f"Telegram trade confirmation migration: adding {col_name}")
+                cursor.execute(sql)
+
+        cursor.execute("PRAGMA table_info(telegram_audit_log)")
+        tal_cols = [c[1] for c in cursor.fetchall()]
+        telegram_audit_migrations = {
+            "chat_id": "ALTER TABLE telegram_audit_log ADD COLUMN chat_id TEXT",
+            "username": "ALTER TABLE telegram_audit_log ADD COLUMN username TEXT",
+            "action": "ALTER TABLE telegram_audit_log ADD COLUMN action TEXT",
+            "message": "ALTER TABLE telegram_audit_log ADD COLUMN message TEXT",
+            "payload_json": "ALTER TABLE telegram_audit_log ADD COLUMN payload_json TEXT",
+            "created_at": "ALTER TABLE telegram_audit_log ADD COLUMN created_at DATETIME",
+        }
+        for col_name, sql in telegram_audit_migrations.items():
+            if col_name not in tal_cols:
+                logger.info(f"Telegram audit migration: adding {col_name}")
+                cursor.execute(sql)
+
+        cursor.execute("PRAGMA table_info(best_setup_outcomes)")
+        bso_cols = [c[1] for c in cursor.fetchall()]
+        best_outcome_migrations = {
+            "run_id": "ALTER TABLE best_setup_outcomes ADD COLUMN run_id TEXT",
+            "symbol": "ALTER TABLE best_setup_outcomes ADD COLUMN symbol TEXT",
+            "side": "ALTER TABLE best_setup_outcomes ADD COLUMN side TEXT",
+            "score": "ALTER TABLE best_setup_outcomes ADD COLUMN score REAL",
+            "price": "ALTER TABLE best_setup_outcomes ADD COLUMN price REAL",
+            "entry_low": "ALTER TABLE best_setup_outcomes ADD COLUMN entry_low REAL",
+            "entry_high": "ALTER TABLE best_setup_outcomes ADD COLUMN entry_high REAL",
+            "stop_loss": "ALTER TABLE best_setup_outcomes ADD COLUMN stop_loss REAL",
+            "take_profit_1": "ALTER TABLE best_setup_outcomes ADD COLUMN take_profit_1 REAL",
+            "take_profit_2": "ALTER TABLE best_setup_outcomes ADD COLUMN take_profit_2 REAL",
+            "decision_action": "ALTER TABLE best_setup_outcomes ADD COLUMN decision_action TEXT",
+            "no_trade": "ALTER TABLE best_setup_outcomes ADD COLUMN no_trade INTEGER DEFAULT 0",
+            "model_weighted": "ALTER TABLE best_setup_outcomes ADD COLUMN model_weighted INTEGER DEFAULT 0",
+            "payload_json": "ALTER TABLE best_setup_outcomes ADD COLUMN payload_json TEXT",
+            "created_at": "ALTER TABLE best_setup_outcomes ADD COLUMN created_at DATETIME",
+            "outcome_1h": "ALTER TABLE best_setup_outcomes ADD COLUMN outcome_1h TEXT",
+            "return_1h": "ALTER TABLE best_setup_outcomes ADD COLUMN return_1h REAL",
+            "outcome_4h": "ALTER TABLE best_setup_outcomes ADD COLUMN outcome_4h TEXT",
+            "return_4h": "ALTER TABLE best_setup_outcomes ADD COLUMN return_4h REAL",
+            "outcome_24h": "ALTER TABLE best_setup_outcomes ADD COLUMN outcome_24h TEXT",
+            "return_24h": "ALTER TABLE best_setup_outcomes ADD COLUMN return_24h REAL",
+            "evaluated_at": "ALTER TABLE best_setup_outcomes ADD COLUMN evaluated_at DATETIME",
+        }
+        for col_name, sql in best_outcome_migrations.items():
+            if col_name not in bso_cols:
+                logger.info(f"Best setup outcome migration: adding {col_name}")
+                cursor.execute(sql)
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_best_setup_outcomes_run_id ON best_setup_outcomes(run_id)")
+        except Exception as exc:
+            logger.warning(f"Best setup outcome unique index skipped: {exc}")
+
+        cursor.execute("PRAGMA table_info(signal_snapshots)")
+        sig_cols = [c[1] for c in cursor.fetchall()]
+        signal_snapshot_migrations = {
+            "signal_id": "ALTER TABLE signal_snapshots ADD COLUMN signal_id TEXT",
+            "symbol": "ALTER TABLE signal_snapshots ADD COLUMN symbol TEXT",
+            "canonical_symbol": "ALTER TABLE signal_snapshots ADD COLUMN canonical_symbol TEXT",
+            "side": "ALTER TABLE signal_snapshots ADD COLUMN side TEXT",
+            "timeframe": "ALTER TABLE signal_snapshots ADD COLUMN timeframe TEXT",
+            "price": "ALTER TABLE signal_snapshots ADD COLUMN price REAL",
+            "confidence": "ALTER TABLE signal_snapshots ADD COLUMN confidence REAL",
+            "win_probability": "ALTER TABLE signal_snapshots ADD COLUMN win_probability REAL",
+            "source": "ALTER TABLE signal_snapshots ADD COLUMN source TEXT",
+            "market_regime": "ALTER TABLE signal_snapshots ADD COLUMN market_regime TEXT",
+            "graph_guard_json": "ALTER TABLE signal_snapshots ADD COLUMN graph_guard_json TEXT",
+            "payload_json": "ALTER TABLE signal_snapshots ADD COLUMN payload_json TEXT",
+            "created_at": "ALTER TABLE signal_snapshots ADD COLUMN created_at DATETIME",
+            "outcome_1h": "ALTER TABLE signal_snapshots ADD COLUMN outcome_1h TEXT",
+            "return_1h": "ALTER TABLE signal_snapshots ADD COLUMN return_1h REAL",
+            "outcome_4h": "ALTER TABLE signal_snapshots ADD COLUMN outcome_4h TEXT",
+            "return_4h": "ALTER TABLE signal_snapshots ADD COLUMN return_4h REAL",
+            "outcome_24h": "ALTER TABLE signal_snapshots ADD COLUMN outcome_24h TEXT",
+            "return_24h": "ALTER TABLE signal_snapshots ADD COLUMN return_24h REAL",
+            "evaluated_at": "ALTER TABLE signal_snapshots ADD COLUMN evaluated_at DATETIME",
+        }
+        for col_name, sql in signal_snapshot_migrations.items():
+            if col_name not in sig_cols:
+                logger.info(f"Signal snapshot migration: adding {col_name}")
+                cursor.execute(sql)
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_snapshots_signal_id ON signal_snapshots(signal_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_snapshots_symbol_side ON signal_snapshots(canonical_symbol, side)")
+        except Exception as exc:
+            logger.warning(f"Signal snapshot index skipped: {exc}")
 
         # Migration: Add new columns if missing for tactics_audit_log
         cursor.execute("PRAGMA table_info(tactics_audit_log)")
@@ -503,23 +1371,35 @@ def init_persistence_db():
 def log_tactics_call(symbol: str, recommendation: str, price: float, strategy: str, confidence: float = 0.0, reasoning: str = ""):
     """Log a tactics generation call for audit purposes."""
     try:
-        conn = sqlite3.connect(PERSISTENCE_DB)
-        cursor = conn.cursor()
-        now = datetime.now(timezone.utc).isoformat()
-        cursor.execute("""
-            INSERT INTO tactics_audit_log (symbol, recommendation, price, strategy, confidence, reasoning, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (symbol.upper(), recommendation, price, strategy, confidence, reasoning, now))
-        conn.commit()
-        conn.close()
+        with get_persistence_conn() as conn:
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute("""
+                INSERT INTO tactics_audit_log (symbol, recommendation, price, strategy, confidence, reasoning, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (symbol.upper(), recommendation, price, strategy, confidence, reasoning, now))
+            conn.commit()
     except Exception as e:
         logger.error(f"❌ Failed to log tactics call: {e}")
 
 @contextmanager
 def get_persistence_conn():
     import sqlite3
-    conn = sqlite3.connect(PERSISTENCE_DB)
+    _ensure_persistence_db_path()
+    db_path = _ACTIVE_PERSISTENCE_DB
+    try:
+        conn = sqlite3.connect(db_path, timeout=15)
+    except sqlite3.OperationalError as exc:
+        normalized = str(exc).lower()
+        if "disk i/o error" not in normalized and "unable to open database file" not in normalized:
+            raise
+        db_path = _activate_persistence_fallback(exc)
+        conn = sqlite3.connect(db_path, timeout=15)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute("PRAGMA journal_mode=WAL")
+    except Exception:
+        pass
     try:
         yield conn
     finally:
@@ -631,6 +1511,12 @@ async def lifespan(app: FastAPI):
     t6 = asyncio.create_task(signal_broadcaster_task())
     t7 = asyncio.create_task(account_poller_task())
     t8 = asyncio.create_task(auto_paper_trader_task())
+    t9 = asyncio.create_task(telegram_bot_poller_task())
+    t10 = asyncio.create_task(best_setup_scanner_task())
+    t11 = asyncio.create_task(best_outcome_evaluator_task())
+    t12 = asyncio.create_task(trade_memory_sync_task())
+    t13 = asyncio.create_task(trade_graph_rebuild_task())
+    t14 = asyncio.create_task(news_watch_poller_task())
     
     # Notify Telegram that system is online
     asyncio.create_task(notifier.notify_system_startup())
@@ -645,7 +1531,13 @@ async def lifespan(app: FastAPI):
     t6.cancel()
     t7.cancel()
     t8.cancel()
-    await asyncio.gather(t1, t2, t3, t4, t5, t6, t7, t8, return_exceptions=True)
+    t9.cancel()
+    t10.cancel()
+    t11.cancel()
+    t12.cancel()
+    t13.cancel()
+    t14.cancel()
+    await asyncio.gather(t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, return_exceptions=True)
     if _db_pool:
         _db_pool.closeall()
     logger.info("✅ Workers stopped and DB pool closed.")
@@ -684,6 +1576,3449 @@ async def market_status_poller_task():
             logger.warning(f"Market status poller error: {e}")
             
         await asyncio.sleep(60) # check every minute
+
+def _telegram_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Status", "callback_data": "tg:status"},
+                {"text": "Best Now", "callback_data": "tg:best"},
+            ],
+            [
+                {"text": "Best Alt", "callback_data": "tg:bestalt"},
+                {"text": "Graph", "callback_data": "tg:graph"},
+            ],
+            [
+                {"text": "Open Best Paper", "callback_data": "tg:openbestpaper"},
+            ],
+            [
+                {"text": "Signals", "callback_data": "tg:signals"},
+                {"text": "MT5", "callback_data": "tg:mt5"},
+            ],
+            [
+                {"text": "Paper AI", "callback_data": "tg:paper"},
+                {"text": "RAG", "callback_data": "tg:rag"},
+            ],
+            [
+                {"text": "Profile", "callback_data": "tg:profile"},
+                {"text": "Help", "callback_data": "tg:help"},
+            ],
+        ]
+    }
+
+
+def _telegram_paper_keyboard() -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Run Paper Scan Now", "callback_data": "tg:paper_scan"},
+            ],
+            [
+                {"text": "Status", "callback_data": "tg:status"},
+                {"text": "Signals", "callback_data": "tg:signals"},
+            ],
+            [
+                {"text": "MT5", "callback_data": "tg:mt5"},
+                {"text": "RAG", "callback_data": "tg:rag"},
+            ],
+        ]
+    }
+
+
+def _telegram_help_text() -> str:
+    return (
+        "CryptoStream AI Telegram bot\n\n"
+        "Commands:\n"
+        "/status - system readiness\n"
+        "/best - best gated setup right now\n"
+        "/bestalt - best alternative by Graph Guard\n"
+        "/openbestpaper - open paper evidence trade from /bestalt\n"
+        "/whybest - explain why the best setup is enter/wait/no-trade\n"
+        "/why BTC BUY - explain a specific setup decision\n"
+        "/beststats - measured /best accuracy tracker\n"
+        "/graph BTCUSD BUY - Graph RAG memory for a setup\n"
+        "/riskguard - daily risk guard status\n"
+        "/signals - latest AI signal snapshot\n"
+        "/signal BTC - trade plan for BTC, ETH, GOLD, EURUSD, etc.\n"
+        "/mt5 - MT5 account and open positions\n"
+        "/paper - paper trading / AI quality gate\n"
+        "/paperscan - run one auto-paper scan now\n"
+        "/feedback - Telegram setup feedback learning\n"
+        "/rag - RAG corpus and retrieval stats\n"
+        "/alerts - latest active alerts\n"
+        "/audit - latest Telegram agent audit events\n"
+        "/profile - your saved finance preferences\n"
+        "/watch BTC GOLD - remember preferred symbols\n"
+        "/setlot 0.01 - remember default lot\n"
+        "/setrisk 1 - remember risk percent per trade\n"
+        "/alert GOLD above 4700 - create a price alert\n"
+        "/trade SYMBOL SIDE VOLUME SL TP - create a confirm/cancel live-order draft\n\n"
+        "Live orders are blocked unless MT5 preflight and ML/paper-trade readiness pass."
+    )
+
+
+
+
+TRADE_SYMBOL_ALIASES = _helper_trade_symbol_aliases_map
+_telegram_extract_symbol = _helper_telegram_extract_symbol
+_trade_symbol_aliases = _helper_trade_symbol_aliases
+_canonical_trade_symbol = _helper_canonical_trade_symbol
+resolve_trade_symbol = _helper_resolve_trade_symbol
+_telegram_symbols_from_text = _helper_telegram_symbols_from_text
+_normalize_query_text = _query_normalize_query_text
+_extract_historical_years = _query_extract_historical_years
+_extract_index_history_targets = _query_extract_index_history_targets
+_is_broad_stock_history_query = _query_is_broad_stock_history_query
+_is_capability_question = _query_is_capability_question
+_is_stock_top_performer_history_question = _query_is_stock_top_performer_history_question
+_extract_stock_history_direction = _query_extract_stock_history_direction
+_extract_stock_history_universe = _query_extract_stock_history_universe
+_is_ranked_stock_history_query = _query_is_ranked_stock_history_query
+_is_explicit_stock_ranking_request = _query_is_explicit_stock_ranking_request
+
+
+
+
+_normalize_query_text = _query_normalize_query_text
+_extract_historical_years = _query_extract_historical_years
+_extract_index_history_targets = _query_extract_index_history_targets
+_is_broad_stock_history_query = _query_is_broad_stock_history_query
+_is_capability_question = _query_is_capability_question
+_is_stock_top_performer_history_question = _query_is_stock_top_performer_history_question
+_extract_stock_history_direction = _query_extract_stock_history_direction
+_extract_stock_history_universe = _query_extract_stock_history_universe
+_is_ranked_stock_history_query = _query_is_ranked_stock_history_query
+_is_explicit_stock_ranking_request = _query_is_explicit_stock_ranking_request
+
+
+
+
+def _format_historical_stock_rankings(summary: dict, language: str = "th") -> str:
+    return _helper_format_historical_stock_rankings(summary, language=language)
+
+
+def _format_index_historical_summary(summary: dict, language: str = "th") -> str:
+    return _helper_format_index_historical_summary(summary, language=language)
+
+
+def _get_index_historical_summary_fast(years: int = 10, indices: list[str] | None = None) -> dict:
+    import yfinance as yf
+
+    years = max(1, min(int(years or 10), 15))
+    requested = [str(item).upper().strip() for item in (indices or ["NASDAQ_100", "SP500", "NASDAQ_COMPOSITE"])]
+    alias_map = {
+        "NASDAQ_100": "NASDAQ_100",
+        "NASDAQ100": "NASDAQ_100",
+        "NDX": "NASDAQ_100",
+        "SP500": "SP500",
+        "S&P500": "SP500",
+        "S&P 500": "SP500",
+        "NASDAQ_COMPOSITE": "NASDAQ_COMPOSITE",
+        "NASDAQ": "NASDAQ_COMPOSITE",
+        "IXIC": "NASDAQ_COMPOSITE",
+    }
+    ticker_map = {
+        "NASDAQ_100": "^NDX",
+        "SP500": "^GSPC",
+        "NASDAQ_COMPOSITE": "^IXIC",
+    }
+    labels = {
+        "NASDAQ_100": "NASDAQ 100",
+        "SP500": "S&P 500",
+        "NASDAQ_COMPOSITE": "NASDAQ Composite",
+    }
+
+    normalized: list[str] = []
+    for item in requested:
+        canonical = alias_map.get(item, item)
+        if canonical in ticker_map and canonical not in normalized:
+            normalized.append(canonical)
+    if not normalized:
+        normalized = ["NASDAQ_100", "SP500", "NASDAQ_COMPOSITE"]
+
+    try:
+        yf_symbols = [ticker_map[item] for item in normalized]
+        data = yf.download(
+            yf_symbols,
+            period=f"{years}y",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+            threads=False,
+        )
+        if data is None or data.empty:
+            return {"status": "ERROR", "error": "No historical index data returned"}
+
+        summaries: dict[str, dict] = {}
+        ranking: list[tuple[str, float]] = []
+        for key in normalized:
+            ticker = ticker_map[key]
+            try:
+                if isinstance(data.columns, pd.MultiIndex):
+                    close = data[ticker]["Close"].dropna() if ticker in data.columns.get_level_values(0) else pd.Series(dtype=float)
+                else:
+                    close = data["Close"].dropna()
+            except Exception:
+                close = pd.Series(dtype=float)
+
+            if close.empty or len(close) < 30:
+                continue
+
+            start_price = float(close.iloc[0])
+            end_price = float(close.iloc[-1])
+            total_return = (end_price / start_price) - 1.0 if start_price > 0 else 0.0
+            observed_years = max((close.index[-1] - close.index[0]).days / 365.25, 0.25)
+            cagr = (end_price / start_price) ** (1.0 / observed_years) - 1.0 if start_price > 0 else 0.0
+            running_max = close.cummax()
+            drawdown = (close / running_max) - 1.0
+            max_drawdown = float(drawdown.min()) if not drawdown.empty else 0.0
+            ma50 = float(close.tail(50).mean()) if len(close) >= 50 else end_price
+            ma200 = float(close.tail(200).mean()) if len(close) >= 200 else float(close.mean())
+            trend = "bullish" if end_price >= ma50 >= ma200 else "mixed" if end_price >= ma200 else "bearish"
+            one_year_return = ((end_price / float(close.iloc[-252])) - 1.0) if len(close) >= 252 else None
+
+            summaries[key] = {
+                "label": labels[key],
+                "ticker": ticker,
+                "start_date": close.index[0].strftime("%Y-%m-%d"),
+                "end_date": close.index[-1].strftime("%Y-%m-%d"),
+                "start_price": round(start_price, 2),
+                "end_price": round(end_price, 2),
+                "total_return_pct": round(total_return * 100, 2),
+                "cagr_pct": round(cagr * 100, 2),
+                "max_drawdown_pct": round(max_drawdown * 100, 2),
+                "one_year_return_pct": round(one_year_return * 100, 2) if one_year_return is not None else None,
+                "current_vs_ma50_pct": round(((end_price / ma50) - 1.0) * 100, 2) if ma50 else None,
+                "current_vs_ma200_pct": round(((end_price / ma200) - 1.0) * 100, 2) if ma200 else None,
+                "trend": trend,
+            }
+            ranking.append((key, total_return))
+
+        if not summaries:
+            return {"status": "ERROR", "error": "Unable to compute index summaries from historical data"}
+
+        ranking.sort(key=lambda item: item[1], reverse=True)
+        return {
+            "status": "SUCCESS",
+            "years": years,
+            "indices": summaries,
+            "best_index": ranking[0][0],
+            "worst_index": ranking[-1][0],
+            "ranking": [item[0] for item in ranking],
+        }
+    except Exception as exc:
+        return {"status": "ERROR", "error": str(exc)}
+
+
+def _telegram_default_profile(chat_id: str) -> dict:
+    return {
+        "chat_id": str(chat_id),
+        "username": None,
+        "first_name": None,
+        "preferred_symbols": [],
+        "default_lot": None,
+        "risk_pct": None,
+        "language": "th",
+        "answer_style": "concise",
+        "notes": None,
+    }
+
+
+def _telegram_get_profile(chat_id: str) -> dict:
+    profile = _telegram_default_profile(chat_id)
+    try:
+        with get_persistence_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM telegram_user_profiles WHERE chat_id = ?",
+                (str(chat_id),),
+            ).fetchone()
+        if not row:
+            return profile
+        profile.update({
+            "username": row["username"],
+            "first_name": row["first_name"],
+            "default_lot": row["default_lot"],
+            "risk_pct": row["risk_pct"],
+            "language": row["language"] or "th",
+            "answer_style": row["answer_style"] or "concise",
+            "notes": row["notes"],
+        })
+        try:
+            profile["preferred_symbols"] = json.loads(row["preferred_symbols_json"] or "[]")
+        except Exception:
+            profile["preferred_symbols"] = []
+    except Exception as exc:
+        logger.warning(f"Telegram profile read failed: {exc}")
+    return profile
+
+
+def _telegram_save_profile(chat_id: str, patch: dict) -> dict:
+    current = _telegram_get_profile(chat_id)
+    merged_symbols = set(current.get("preferred_symbols") or [])
+    for symbol in patch.get("preferred_symbols") or []:
+        merged_symbols.add(str(symbol).upper().strip())
+    preferred_symbols = sorted(symbol for symbol in merged_symbols if symbol)
+
+    updated = {
+        **current,
+        **{key: value for key, value in patch.items() if key != "preferred_symbols" and value is not None},
+        "preferred_symbols": preferred_symbols,
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with get_persistence_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO telegram_user_profiles (
+                    chat_id, username, first_name, preferred_symbols_json, default_lot,
+                    risk_pct, language, answer_style, notes, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    username=excluded.username,
+                    first_name=excluded.first_name,
+                    preferred_symbols_json=excluded.preferred_symbols_json,
+                    default_lot=excluded.default_lot,
+                    risk_pct=excluded.risk_pct,
+                    language=excluded.language,
+                    answer_style=excluded.answer_style,
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    str(chat_id),
+                    updated.get("username"),
+                    updated.get("first_name"),
+                    json.dumps(preferred_symbols, ensure_ascii=False),
+                    updated.get("default_lot"),
+                    updated.get("risk_pct"),
+                    updated.get("language") or "th",
+                    updated.get("answer_style") or "concise",
+                    updated.get("notes"),
+                    current.get("created_at") or now,
+                    now,
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning(f"Telegram profile save failed: {exc}")
+    return updated
+
+
+
+
+def _telegram_extract_profile_patch(text: str, user: dict | None = None) -> dict:
+    return _helper_telegram_extract_profile_patch(text, _telegram_symbols_from_text, user=user)
+
+
+def _telegram_profile_text(profile: dict) -> str:
+    return _helper_telegram_profile_text(profile)
+
+
+def _telegram_format_readiness(readiness: dict) -> str:
+    return _helper_telegram_format_readiness(readiness)
+
+
+def _telegram_format_signal(symbol: str, setup: dict) -> str:
+    return _helper_telegram_format_signal(symbol, setup, _trade_graph_guard)
+
+
+def _telegram_tactics_symbol(symbol: str) -> str:
+    return str(resolve_trade_symbol(symbol).get("tactics_symbol") or symbol).upper()
+
+
+def _telegram_paper_gate_symbol(symbol: str) -> str:
+    return str(resolve_trade_symbol(symbol).get("paper_symbol") or symbol).upper()
+
+
+def _parse_percent_like(value: Any, default: float = 0.0) -> float:
+    return _helper_parse_percent_like(value, default)
+
+
+def _ml_model_trust_snapshot() -> dict[str, Any]:
+    try:
+        import pickle as _pickle
+        from intelligence.ml.signal_model import MODEL_PATH
+
+        if not MODEL_PATH.exists():
+            return {
+                "available": False,
+                "trusted": False,
+                "reason": "model_missing",
+                "thresholds": {
+                    "min_roc_auc": BEST_SETUP_MIN_MODEL_AUC,
+                    "min_accuracy": BEST_SETUP_MIN_MODEL_ACCURACY,
+                },
+            }
+        with open(MODEL_PATH, "rb") as f:
+            bundle = _pickle.load(f)
+        auc = float(bundle.get("roc_auc") or 0.0)
+        accuracy = float(bundle.get("accuracy") or 0.0)
+        promotion_gate = bundle.get("promotion_gate") or {}
+        blockers = list(promotion_gate.get("blockers") or [])
+        if auc < BEST_SETUP_MIN_MODEL_AUC:
+            blockers.append(f"roc_auc {auc:.4f} < {BEST_SETUP_MIN_MODEL_AUC:.4f}")
+        if accuracy < BEST_SETUP_MIN_MODEL_ACCURACY:
+            blockers.append(f"accuracy {accuracy:.4f} < {BEST_SETUP_MIN_MODEL_ACCURACY:.4f}")
+        return {
+            "available": True,
+            "trusted": not blockers,
+            "roc_auc": round(auc, 4),
+            "accuracy": round(accuracy, 4),
+            "n_samples": int(bundle.get("n_samples") or 0),
+            "trained_at": bundle.get("trained_at"),
+            "blockers": blockers,
+            "thresholds": {
+                "min_roc_auc": BEST_SETUP_MIN_MODEL_AUC,
+                "min_accuracy": BEST_SETUP_MIN_MODEL_ACCURACY,
+            },
+        }
+    except Exception as exc:
+        return {"available": False, "trusted": False, "reason": str(exc), "blockers": [str(exc)]}
+
+
+def _best_setup_int_env(name: str, default: int, minimum: int) -> int:
+    return _helper_best_setup_int_env(name, default, minimum)
+
+
+BEST_SETUP_SCAN_INTERVAL_SECONDS = max(_best_setup_int_env("BEST_SETUP_SCAN_INTERVAL_SECONDS", 120, 30), 30)
+BEST_SETUP_CACHE_TTL_SECONDS = max(_best_setup_int_env("BEST_SETUP_CACHE_TTL_SECONDS", 300, 60), 60)
+BEST_SETUP_MIN_MODEL_AUC = float(os.getenv("BEST_SETUP_MIN_MODEL_AUC", "0.52"))
+BEST_SETUP_MIN_MODEL_ACCURACY = float(os.getenv("BEST_SETUP_MIN_MODEL_ACCURACY", "0.40"))
+BEST_SETUP_MIN_ACTIONABLE_SCORE = float(os.getenv("BEST_SETUP_MIN_ACTIONABLE_SCORE", "0.50"))
+BEST_SETUP_QUARANTINE_ADJUSTMENT = float(os.getenv("BEST_SETUP_QUARANTINE_ADJUSTMENT", "-0.12"))
+BEST_OUTCOME_EVAL_INTERVAL_SECONDS = max(_best_setup_int_env("BEST_OUTCOME_EVAL_INTERVAL_SECONDS", 900, 120), 120)
+TRADE_MEMORY_SYNC_INTERVAL_SECONDS = max(_best_setup_int_env("TRADE_MEMORY_SYNC_INTERVAL_SECONDS", 1800, 300), 300)
+TRADE_GRAPH_REBUILD_INTERVAL_SECONDS = max(_best_setup_int_env("TRADE_GRAPH_REBUILD_INTERVAL_SECONDS", 1800, 600), 600)
+TRADE_GRAPH_GUARD_MIN_EVALUATED = max(_best_setup_int_env("TRADE_GRAPH_GUARD_MIN_EVALUATED", 20, 5), 5)
+TRADE_GRAPH_GUARD_MIN_WIN_RATE = float(os.getenv("TRADE_GRAPH_GUARD_MIN_WIN_RATE", "0.35"))
+TRADE_GRAPH_GUARD_MIN_AVG_RETURN = float(os.getenv("TRADE_GRAPH_GUARD_MIN_AVG_RETURN", "-0.005"))
+_best_setup_cache: dict[str, dict[str, Any]] = {}
+_best_setup_state: dict[str, Any] = {
+    "last_run_at": None,
+    "last_error": None,
+    "last_payload": None,
+}
+_best_outcome_eval_state: dict[str, Any] = {
+    "last_run_at": None,
+    "last_result": None,
+    "last_error": None,
+}
+_trade_graph_state: dict[str, Any] = {
+    "last_run_at": None,
+    "last_result": None,
+    "last_error": None,
+}
+
+
+def _best_setup_cache_key(universe: list[str]) -> str:
+    return _helper_best_setup_cache_key(universe, _telegram_paper_gate_symbol)
+
+
+def _best_setup_entry_decision(item: dict[str, Any]) -> dict[str, Any]:
+    return _helper_best_setup_entry_decision(item, graph_guard_fn=_trade_graph_guard, num_fn=_num)
+
+
+def _best_setup_score_explain(
+    *,
+    confidence: float,
+    win_prob: float,
+    win_rate: float,
+    avg_pnl: float,
+    feedback_adjustment: float,
+    weights: dict[str, float],
+    model_trust: dict[str, Any],
+) -> dict[str, Any]:
+    return _helper_best_setup_score_explain(
+        confidence=confidence,
+        win_prob=win_prob,
+        win_rate=win_rate,
+        avg_pnl=avg_pnl,
+        feedback_adjustment=feedback_adjustment,
+        weights=weights,
+        model_trust=model_trust,
+    )
+
+
+def _best_setup_risk_summary(item: dict[str, Any], chat_id: str | None = None) -> dict[str, Any]:
+    return _helper_best_setup_risk_summary(
+        item,
+        num_fn=_num,
+        account_summary=GLOBAL_ACCOUNT_CACHE.get("summary") or {},
+        chat_id=chat_id,
+        profile_getter=_telegram_get_profile,
+        calculator=globals().get("calculate_crypto_risk"),
+    )
+
+
+BEST_OUTCOME_HORIZONS = {"1h": 1, "4h": 4, "24h": 24}
+
+
+def _best_setup_run_id(payload: dict[str, Any], top: dict[str, Any]) -> str:
+    return _helper_best_setup_run_id(payload, top)
+
+
+def _record_best_setup_snapshot(payload: dict[str, Any]) -> None:
+    top = (payload.get("candidates") or [{}])[0]
+    if not top:
+        return
+    entry = top.get("entry_zone") or {}
+    decision = top.get("entry_decision") or {}
+    run_id = _best_setup_run_id(payload, top)
+    with get_persistence_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO best_setup_outcomes (
+                run_id, symbol, side, score, price, entry_low, entry_high,
+                stop_loss, take_profit_1, take_profit_2, decision_action,
+                no_trade, model_weighted, payload_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                top.get("symbol"),
+                top.get("side"),
+                float(top.get("score", 0.0) or 0.0),
+                _num(top.get("price")),
+                _num(entry.get("low")),
+                _num(entry.get("high")),
+                _num(top.get("stop_loss")),
+                _num(top.get("take_profit_1")),
+                _num(top.get("take_profit_2")),
+                decision.get("action"),
+                1 if payload.get("no_trade") else 0,
+                1 if top.get("ml_weighted") else 0,
+                json.dumps(
+                    {
+                        "score_explain": top.get("score_explain"),
+                        "risk_summary": top.get("risk_summary"),
+                        "no_trade_reason": payload.get("no_trade_reason"),
+                        "model_trust": payload.get("model_trust"),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                payload.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+
+
+def _best_outcome_label(row: sqlite3.Row, current_price: float) -> tuple[str, float]:
+    return _helper_best_outcome_label(row, current_price)
+
+
+def _evaluate_best_setup_outcomes(limit: int = 120) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    checked = 0
+    updated = 0
+    price_cache: dict[str, float] = {}
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM best_setup_outcomes
+            WHERE outcome_1h IS NULL OR outcome_4h IS NULL OR outcome_24h IS NULL
+            ORDER BY datetime(created_at) ASC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        for row in rows:
+            checked += 1
+            try:
+                created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            age_hours = (now - created).total_seconds() / 3600.0
+            due = [label for label, hours in BEST_OUTCOME_HORIZONS.items() if age_hours >= hours and row[f"outcome_{label}"] is None]
+            if not due:
+                continue
+            symbol = str(row["symbol"] or "")
+            if symbol not in price_cache:
+                price_cache[symbol] = _get_live_price(symbol)
+            current_price = price_cache[symbol]
+            label, signed_return = _best_outcome_label(row, current_price)
+            updates = []
+            params: list[Any] = []
+            for horizon in due:
+                updates.append(f"outcome_{horizon} = ?")
+                params.append(label)
+                updates.append(f"return_{horizon} = ?")
+                params.append(round(signed_return, 6))
+            updates.append("evaluated_at = ?")
+            params.append(now.isoformat())
+            params.append(row["id"])
+            conn.execute(
+                f"UPDATE best_setup_outcomes SET {', '.join(updates)} WHERE id = ?",
+                tuple(params),
+            )
+            updated += 1
+        if updated:
+            conn.commit()
+    return {"checked": checked, "updated": updated, "evaluated_at": now.isoformat()}
+
+
+def _best_setup_metrics(limit: int = 500, evaluate: bool = True) -> dict[str, Any]:
+    eval_summary = _evaluate_best_setup_outcomes() if evaluate else {"checked": 0, "updated": 0, "skipped": "evaluation_disabled"}
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM best_setup_outcomes
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    return _helper_build_best_setup_metrics(rows, eval_summary, BEST_OUTCOME_HORIZONS)
+
+
+def _daily_risk_guard(chat_id: str | None = None) -> dict[str, Any]:
+    account = GLOBAL_ACCOUNT_CACHE.get("summary") or {}
+    balance = _num(account.get("balance")) or _num(account.get("equity")) or 10000.0
+    daily_loss_limit_pct = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
+    max_daily_trades = int(os.getenv("MAX_DAILY_TRADES", "10"))
+    today = datetime.now(timezone.utc).date().isoformat()
+    with get_persistence_conn() as conn:
+        closed = conn.execute(
+            """
+            SELECT COUNT(*) AS trades,
+                   COALESCE(SUM(pnl_usd), 0) AS pnl_usd,
+                   SUM(CASE WHEN COALESCE(pnl_usd, 0) < 0 THEN 1 ELSE 0 END) AS losses
+            FROM paper_trades
+            WHERE date(closed_at) = date(?)
+            """,
+            (today,),
+        ).fetchone()
+        opened = conn.execute(
+            "SELECT COUNT(*) AS trades FROM paper_trades WHERE date(opened_at) = date(?)",
+            (today,),
+        ).fetchone()
+        open_row = conn.execute("SELECT COUNT(*) AS open_trades FROM paper_trades WHERE status = 'OPEN'").fetchone()
+    return _helper_daily_risk_guard_summary(
+        balance=balance,
+        daily_loss_limit_pct=daily_loss_limit_pct,
+        max_daily_trades=max_daily_trades,
+        today=today,
+        closed=closed,
+        opened=opened,
+        open_row=open_row,
+        chat_id=chat_id,
+    )
+
+
+def _assert_daily_risk_guard_allows(action: str, chat_id: str | None = None) -> dict[str, Any]:
+    guard = _daily_risk_guard(chat_id)
+    if guard.get("blockers"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "GUARD_BLOCKED",
+                "action": action,
+                "message": "Daily risk guard blocked opening a new position.",
+                "guard": guard,
+            },
+        )
+    return guard
+
+
+_trade_memory_sync_state: dict[str, Any] = {"last_sync_at": None, "last_result": None, "last_error": None}
+
+
+def _build_trade_memory_document() -> str:
+    metrics = _best_setup_metrics(limit=500, evaluate=False)
+    feedback = _setup_feedback_summary(limit=300)
+    risk_guard = _daily_risk_guard()
+    return _helper_build_trade_memory_document(
+        metrics,
+        feedback,
+        risk_guard,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _sync_trade_memory_to_rag(force: bool = False) -> dict[str, Any]:
+    now = time.time()
+    last_sync = float(_trade_memory_sync_state.get("last_sync_epoch") or 0.0)
+    if not force and last_sync and (now - last_sync) < 1800:
+        return _helper_trade_memory_sync_skip(
+            _trade_memory_sync_state.get("last_sync_at"),
+            _trade_memory_sync_state.get("last_result"),
+        )
+    try:
+        from intelligence.rag import ingest_knowledge_document
+
+        content = _build_trade_memory_document()
+        previous_disable = os.environ.get("RAG_DISABLE_EMBEDDINGS")
+        os.environ["RAG_DISABLE_EMBEDDINGS"] = "1"
+        try:
+            result = ingest_knowledge_document(
+                source_uri="system://cryptostream/trade-memory",
+                title="CryptoStream AI Trade Memory",
+                source_type="trade_memory",
+                content=content,
+                metadata={
+                    "tenant_id": "public",
+                    "source": "best_setup_outcomes",
+                    "no_extra_embedding_cost": True,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                chunk_chars=1800,
+                overlap=120,
+                max_chunks=8,
+            )
+        finally:
+            if previous_disable is None:
+                os.environ.pop("RAG_DISABLE_EMBEDDINGS", None)
+            else:
+                os.environ["RAG_DISABLE_EMBEDDINGS"] = previous_disable
+        state_update, response = _helper_trade_memory_sync_success(now, datetime.now(timezone.utc).isoformat(), result)
+        _trade_memory_sync_state.update(state_update)
+        return response
+    except Exception as exc:
+        state_update, response = _helper_trade_memory_sync_error(now, datetime.now(timezone.utc).isoformat(), str(exc))
+        _trade_memory_sync_state.update(state_update)
+        return response
+
+
+def _pre_graph_rag_readiness() -> dict[str, Any]:
+    metrics = _best_setup_metrics(limit=1000, evaluate=False)
+    feedback = _setup_feedback_summary(limit=500)
+    rag_stats: dict[str, Any] = {"status": "UNKNOWN"}
+    try:
+        from intelligence.rag import get_knowledge_stats
+
+        rag_stats = get_knowledge_stats()
+    except Exception as exc:
+        rag_stats = {"status": "ERROR", "error": str(exc)}
+    return _helper_pre_graph_rag_readiness_summary(
+        metrics,
+        feedback,
+        rag_stats,
+        _trade_memory_sync_state,
+        _best_outcome_eval_state,
+        _trade_graph_state,
+        best_outcome_eval_interval_seconds=BEST_OUTCOME_EVAL_INTERVAL_SECONDS,
+        trade_memory_sync_interval_seconds=TRADE_MEMORY_SYNC_INTERVAL_SECONDS,
+        trade_graph_rebuild_interval_seconds=TRADE_GRAPH_REBUILD_INTERVAL_SECONDS,
+    )
+
+
+def _trade_graph_key(node_type: str, *parts: Any) -> str:
+    return _helper_trade_graph_key(node_type, *parts)
+
+
+def _upsert_trade_graph_node(
+    conn: sqlite3.Connection,
+    node_type: str,
+    label: str,
+    properties: dict[str, Any] | None = None,
+) -> str:
+    node_key = _trade_graph_key(node_type, label)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO trade_graph_nodes (node_key, node_type, label, properties_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(node_key) DO UPDATE SET
+            node_type = excluded.node_type,
+            label = excluded.label,
+            properties_json = excluded.properties_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            node_key,
+            node_type.upper(),
+            str(label or "UNKNOWN").upper(),
+            json.dumps(properties or {}, ensure_ascii=False, default=str),
+            now,
+        ),
+    )
+    return node_key
+
+
+def _upsert_trade_graph_edge(
+    conn: sqlite3.Connection,
+    source_key: str,
+    target_key: str,
+    edge_type: str,
+    weight: float = 1.0,
+    evidence: dict[str, Any] | None = None,
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO trade_graph_edges (source_key, target_key, edge_type, weight, evidence_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_key, target_key, edge_type) DO UPDATE SET
+            weight = excluded.weight,
+            evidence_json = excluded.evidence_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            source_key,
+            target_key,
+            edge_type.upper(),
+            float(weight or 0.0),
+            json.dumps(evidence or {}, ensure_ascii=False, default=str),
+            now,
+        ),
+    )
+
+
+def _setup_node_key(symbol: str, side: str) -> str:
+    return _helper_setup_node_key(symbol, side)
+
+
+def _current_market_regime() -> dict[str, Any]:
+    macro = GLOBAL_MACRO_CACHE if isinstance(GLOBAL_MACRO_CACHE, dict) else {}
+    return _helper_current_market_regime(macro)
+
+
+def _signal_snapshot_id(symbol: str, side: str, timeframe: str, source: str, created_at: str) -> str:
+    return _helper_signal_snapshot_id(symbol, side, timeframe, source, created_at)
+
+
+def _record_signal_snapshot(
+    payload: dict[str, Any],
+    source: str,
+    timeframe: str = "15m",
+) -> dict[str, Any]:
+    record = _helper_build_signal_snapshot_record(
+        payload,
+        source,
+        timeframe=timeframe,
+        resolve_trade_symbol_fn=resolve_trade_symbol,
+        num_fn=_num,
+        parse_percent_like_fn=_parse_percent_like,
+        current_market_regime_fn=_current_market_regime,
+        trade_graph_guard_fn=_trade_graph_guard,
+        signal_snapshot_id_fn=_signal_snapshot_id,
+    )
+    if record.get("status") != "OK":
+        return record
+    with get_persistence_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO signal_snapshots (
+                signal_id, symbol, canonical_symbol, side, timeframe, price, confidence,
+                win_probability, source, market_regime, graph_guard_json, payload_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["signal_id"],
+                record["symbol"],
+                record["canonical_symbol"],
+                record["side"],
+                record["timeframe"],
+                record["price"],
+                record["confidence"],
+                record["win_probability"],
+                record["source"],
+                record["market_regime"],
+                record["graph_guard_json"],
+                record["payload_json"],
+                record["created_at"],
+            ),
+        )
+        conn.commit()
+    return {
+        "status": "OK",
+        "signal_id": record["signal_id"],
+        "symbol": record["canonical_symbol"],
+        "side": record["side"],
+        "market_regime": record["market_regime"],
+    }
+
+
+def _signal_outcome_label(row: sqlite3.Row, current_price: float) -> tuple[str, float]:
+    return _helper_signal_outcome_label(row, current_price)
+
+
+def _evaluate_signal_snapshots(limit: int = 200) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    updated = 0
+    checked = 0
+    price_cache: dict[str, float] = {}
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM signal_snapshots
+            WHERE side IN ('BUY','SELL')
+              AND (outcome_1h IS NULL OR outcome_4h IS NULL OR outcome_24h IS NULL)
+            ORDER BY datetime(created_at) ASC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        for row in rows:
+            checked += 1
+            try:
+                created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            age_hours = (now - created).total_seconds() / 3600.0
+            due = [label for label, hours in BEST_OUTCOME_HORIZONS.items() if age_hours >= hours and row[f"outcome_{label}"] is None]
+            if not due:
+                continue
+            symbol = str(row["canonical_symbol"] or row["symbol"] or "").upper()
+            if symbol not in price_cache:
+                try:
+                    price_cache[symbol] = float(_get_live_price(symbol) or 0.0)
+                except Exception:
+                    price_cache[symbol] = 0.0
+            current_price = price_cache.get(symbol, 0.0)
+            if current_price <= 0:
+                continue
+            label, signed_return = _signal_outcome_label(row, current_price)
+            updates = []
+            values: list[Any] = []
+            for horizon in due:
+                updates.append(f"outcome_{horizon} = ?")
+                values.append(label)
+                updates.append(f"return_{horizon} = ?")
+                values.append(signed_return)
+            updates.append("evaluated_at = ?")
+            values.append(now.isoformat())
+            values.append(row["id"])
+            conn.execute(f"UPDATE signal_snapshots SET {', '.join(updates)} WHERE id = ?", values)
+            updated += len(due)
+        conn.commit()
+    return {"status": "OK", "checked": checked, "updated": updated}
+
+
+def _signal_snapshot_metrics(limit: int = 1000, evaluate: bool = False) -> dict[str, Any]:
+    evaluation = _evaluate_signal_snapshots(200) if evaluate else {"skipped": "evaluation_disabled"}
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM signal_snapshots
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            (min(max(int(limit), 50), 5000),),
+        ).fetchall()
+    return _helper_build_signal_snapshot_metrics(rows, evaluation)
+
+
+def _build_trade_knowledge_graph(limit: int = 1000) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    limit = min(max(int(limit or 1000), 100), 5000)
+    with get_persistence_conn() as conn:
+        best_rows = conn.execute(
+            """
+            SELECT *
+            FROM best_setup_outcomes
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        feedback_rows = conn.execute(
+            """
+            SELECT *
+            FROM telegram_setup_feedback
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            (min(limit, 1000),),
+        ).fetchall()
+        paper_rows = conn.execute(
+            """
+            SELECT *
+            FROM paper_trades
+            ORDER BY datetime(COALESCE(closed_at, opened_at)) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        signal_rows = conn.execute(
+            """
+            SELECT *
+            FROM signal_snapshots
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        conn.execute("DELETE FROM trade_graph_edges")
+        conn.execute("DELETE FROM trade_graph_nodes")
+
+        for row in best_rows:
+            symbol = str(row["symbol"] or "UNKNOWN").upper()
+            side = str(row["side"] or "UNKNOWN").upper()
+            decision = str(row["decision_action"] or "UNKNOWN").upper()
+            setup_label = f"{symbol}:{side}"
+            symbol_key = _upsert_trade_graph_node(conn, "SYMBOL", symbol, {"source": "best_setup_outcomes"})
+            setup_key = _upsert_trade_graph_node(
+                conn,
+                "SETUP",
+                setup_label,
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "latest_score": row["score"],
+                    "latest_price": row["price"],
+                    "entry_low": row["entry_low"],
+                    "entry_high": row["entry_high"],
+                    "stop_loss": row["stop_loss"],
+                    "take_profit_1": row["take_profit_1"],
+                    "take_profit_2": row["take_profit_2"],
+                    "source": "best_setup_outcomes",
+                },
+            )
+            decision_key = _upsert_trade_graph_node(conn, "DECISION", decision, {"source": "best_setup_outcomes"})
+            _upsert_trade_graph_edge(conn, symbol_key, setup_key, "HAS_SETUP", 1.0, {"run_id": row["run_id"]})
+            _upsert_trade_graph_edge(conn, setup_key, decision_key, "HAS_DECISION", 1.0, {"run_id": row["run_id"]})
+
+            for horizon in BEST_OUTCOME_HORIZONS:
+                outcome = row[f"outcome_{horizon}"]
+                if not outcome:
+                    continue
+                return_value = float(row[f"return_{horizon}"] or 0.0)
+                outcome_key = _upsert_trade_graph_node(
+                    conn,
+                    "OUTCOME",
+                    f"{horizon}:{outcome}",
+                    {"horizon": horizon, "outcome": outcome, "source": "best_setup_outcomes"},
+                )
+                _upsert_trade_graph_edge(
+                    conn,
+                    setup_key,
+                    outcome_key,
+                    f"LED_TO_{horizon.upper()}",
+                    return_value,
+                    {"run_id": row["run_id"], "return": return_value, "created_at": row["created_at"]},
+                )
+
+        rating_weights = {"GOOD": 1.0, "BAD": -1.0, "WRONG": -1.25, "LATE": -0.5}
+        for row in feedback_rows:
+            symbol = str(row["symbol"] or "UNKNOWN").upper()
+            side = str(row["side"] or "UNKNOWN").upper()
+            rating = str(row["rating"] or "UNKNOWN").upper()
+            setup_key = _upsert_trade_graph_node(
+                conn,
+                "SETUP",
+                f"{symbol}:{side}",
+                {"symbol": symbol, "side": side, "source": "telegram_setup_feedback"},
+            )
+            feedback_key = _upsert_trade_graph_node(
+                conn,
+                "FEEDBACK",
+                rating,
+                {"source": "telegram_setup_feedback"},
+            )
+            _upsert_trade_graph_edge(
+                conn,
+                setup_key,
+                feedback_key,
+                "RECEIVED_FEEDBACK",
+                rating_weights.get(rating, 0.0),
+                {"feedback_id": row["id"], "score": row["score"], "created_at": row["created_at"]},
+            )
+
+        for row in paper_rows:
+            symbol = str(row["symbol"] or "UNKNOWN").upper()
+            side = str(row["side"] or "UNKNOWN").upper()
+            status = str(row["status"] or "UNKNOWN").upper()
+            outcome = str(row["outcome"] or status or "UNKNOWN").upper()
+            setup_key = _upsert_trade_graph_node(
+                conn,
+                "SETUP",
+                f"{symbol}:{side}",
+                {"symbol": symbol, "side": side, "source": "paper_trades"},
+            )
+            paper_outcome_key = _upsert_trade_graph_node(
+                conn,
+                "PAPER_OUTCOME",
+                outcome,
+                {"source": "paper_trades"},
+            )
+            _upsert_trade_graph_edge(
+                conn,
+                setup_key,
+                paper_outcome_key,
+                "PAPER_OUTCOME",
+                float(row["pnl_usd"] or row["pnl"] or 0.0),
+                {
+                    "trade_id": row["id"],
+                    "entry_source": row["entry_source"],
+                    "close_reason": row["close_reason"],
+                    "opened_at": row["opened_at"],
+                    "closed_at": row["closed_at"],
+                },
+            )
+
+        for row in signal_rows:
+            symbol = str(row["canonical_symbol"] or row["symbol"] or "UNKNOWN").upper()
+            side = str(row["side"] or "UNKNOWN").upper()
+            if side not in {"BUY", "SELL"}:
+                continue
+            setup_key = _upsert_trade_graph_node(
+                conn,
+                "SETUP",
+                f"{symbol}:{side}",
+                {"symbol": symbol, "side": side, "source": "signal_snapshots"},
+            )
+            regime = str(row["market_regime"] or "NEUTRAL").upper()
+            regime_key = _upsert_trade_graph_node(
+                conn,
+                "MARKET_REGIME",
+                regime,
+                {"source": "signal_snapshots"},
+            )
+            _upsert_trade_graph_edge(
+                conn,
+                setup_key,
+                regime_key,
+                "OCCURRED_IN_REGIME",
+                1.0,
+                {"signal_id": row["signal_id"], "created_at": row["created_at"]},
+            )
+            for horizon in BEST_OUTCOME_HORIZONS:
+                outcome = row[f"outcome_{horizon}"]
+                if not outcome:
+                    continue
+                return_value = float(row[f"return_{horizon}"] or 0.0)
+                outcome_key = _upsert_trade_graph_node(
+                    conn,
+                    "SIGNAL_OUTCOME",
+                    f"{horizon}:{outcome}",
+                    {"horizon": horizon, "outcome": outcome, "source": "signal_snapshots"},
+                )
+                _upsert_trade_graph_edge(
+                    conn,
+                    setup_key,
+                    outcome_key,
+                    f"SIGNAL_LED_TO_{horizon.upper()}",
+                    return_value,
+                    {"signal_id": row["signal_id"], "return": return_value, "created_at": row["created_at"]},
+                )
+
+        counts = {
+            "nodes": int(conn.execute("SELECT COUNT(*) AS c FROM trade_graph_nodes").fetchone()["c"] or 0),
+            "edges": int(conn.execute("SELECT COUNT(*) AS c FROM trade_graph_edges").fetchone()["c"] or 0),
+            "best_snapshots": len(best_rows),
+            "feedback_labels": len(feedback_rows),
+            "paper_trades": len(paper_rows),
+            "signal_snapshots": len(signal_rows),
+        }
+        meta_key = _upsert_trade_graph_node(conn, "GRAPH_META", "TRADE_GRAPH", {"built_at": now, **counts})
+        _upsert_trade_graph_edge(conn, meta_key, meta_key, "BUILT_AT", 1.0, {"built_at": now})
+        conn.commit()
+    result = {"status": "OK", "built_at": now, "counts": counts, "cost": "local_sqlite_no_extra_cost"}
+    _trade_graph_state.update({"last_run_at": now, "last_result": result, "last_error": None})
+    return result
+
+
+def _trade_graph_status() -> dict[str, Any]:
+    with get_persistence_conn() as conn:
+        node_count = int(conn.execute("SELECT COUNT(*) AS c FROM trade_graph_nodes").fetchone()["c"] or 0)
+        edge_count = int(conn.execute("SELECT COUNT(*) AS c FROM trade_graph_edges").fetchone()["c"] or 0)
+        by_type = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT node_type, COUNT(*) AS count
+                FROM trade_graph_nodes
+                GROUP BY node_type
+                ORDER BY count DESC
+                """
+            ).fetchall()
+        ]
+        meta = conn.execute(
+            """
+            SELECT properties_json, updated_at
+            FROM trade_graph_nodes
+            WHERE node_key = 'graph_meta:TRADE_GRAPH'
+            """
+        ).fetchone()
+    return {
+        "status": "OK" if node_count and edge_count else "EMPTY",
+        "nodes": node_count,
+        "edges": edge_count,
+        "by_type": by_type,
+        "last_build": json.loads(meta["properties_json"] or "{}") if meta else None,
+        "last_build_at": meta["updated_at"] if meta else None,
+        "background_rebuild": {
+            "interval_seconds": TRADE_GRAPH_REBUILD_INTERVAL_SECONDS,
+            **_trade_graph_state,
+        },
+    }
+
+
+def _query_trade_graph(symbol: str | None = None, side: str | None = None, limit: int = 25) -> dict[str, Any]:
+    limit = min(max(int(limit or 25), 5), 100)
+    symbol_filter = _canonical_trade_symbol(symbol)
+    symbol_aliases = _trade_symbol_aliases(symbol_filter or symbol)
+    side_filter = str(side or "").upper().strip()
+    where = []
+    params: list[Any] = []
+    if symbol_aliases:
+        where.append(f"UPPER(symbol) IN ({','.join('?' for _ in symbol_aliases)})")
+        params.extend(symbol_aliases)
+    if side_filter:
+        where.append("UPPER(side) = ?")
+        params.append(side_filter)
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT symbol, side,
+                   COUNT(*) AS snapshots,
+                   AVG(score) AS avg_score,
+                   SUM(CASE WHEN outcome_4h IS NOT NULL THEN 1 ELSE 0 END) AS evaluated_4h,
+                   SUM(CASE WHEN outcome_4h IN ('TP1','WIN') THEN 1 ELSE 0 END) AS wins_4h,
+                   AVG(CASE WHEN outcome_4h IS NOT NULL THEN return_4h ELSE NULL END) AS avg_return_4h,
+                   MAX(created_at) AS last_seen_at
+            FROM best_setup_outcomes
+            {where_sql}
+            GROUP BY symbol, side
+            ORDER BY evaluated_4h DESC, snapshots DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+        feedback = _setup_feedback_summary(limit=500)
+        setup_summaries = []
+        for row in rows:
+            setup_key = f"{row['symbol']}:{row['side']}"
+            evaluated = int(row["evaluated_4h"] or 0)
+            wins = int(row["wins_4h"] or 0)
+            graph_key = _setup_node_key(row["symbol"], row["side"])
+            edges = [
+                dict(edge)
+                for edge in conn.execute(
+                    """
+                    SELECT edge_type, target_key, weight, evidence_json, updated_at
+                    FROM trade_graph_edges
+                    WHERE source_key = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 12
+                    """,
+                    (graph_key,),
+                ).fetchall()
+            ]
+            setup_summaries.append(
+                {
+                    "setup": setup_key,
+                    "symbol": row["symbol"],
+                    "side": row["side"],
+                    "snapshots": int(row["snapshots"] or 0),
+                    "avg_score": round(float(row["avg_score"] or 0.0), 4),
+                    "evaluated_4h": evaluated,
+                    "win_rate_4h": round(wins / max(evaluated, 1), 4),
+                    "avg_return_4h": round(float(row["avg_return_4h"] or 0.0), 6),
+                    "feedback_adjustment": round(float((feedback.get("score_adjustments") or {}).get(setup_key, 0.0)), 4),
+                    "last_seen_at": row["last_seen_at"],
+                    "edges": edges,
+                }
+            )
+        if not setup_summaries:
+            paper_rows = conn.execute(
+                f"""
+                SELECT symbol, side,
+                       COUNT(*) AS trades,
+                       SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) AS closed_trades,
+                       SUM(CASE WHEN COALESCE(pnl_usd, pnl, 0) > 0 THEN 1 ELSE 0 END) AS wins,
+                       AVG(CASE WHEN status = 'CLOSED' THEN COALESCE(pnl_usd, pnl, 0) ELSE NULL END) AS avg_pnl_usd,
+                       MAX(COALESCE(closed_at, opened_at)) AS last_seen_at
+                FROM paper_trades
+                {where_sql}
+                GROUP BY symbol, side
+                ORDER BY closed_trades DESC, trades DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+            for row in paper_rows:
+                closed = int(row["closed_trades"] or 0)
+                wins = int(row["wins"] or 0)
+                graph_key = _setup_node_key(row["symbol"], row["side"])
+                edges = [
+                    dict(edge)
+                    for edge in conn.execute(
+                        """
+                        SELECT edge_type, target_key, weight, evidence_json, updated_at
+                        FROM trade_graph_edges
+                        WHERE source_key = ?
+                        ORDER BY updated_at DESC
+                        LIMIT 12
+                        """,
+                        (graph_key,),
+                    ).fetchall()
+                ]
+                setup_summaries.append(
+                    {
+                        "setup": f"{row['symbol']}:{row['side']}",
+                        "symbol": row["symbol"],
+                        "side": row["side"],
+                        "snapshots": int(row["trades"] or 0),
+                        "avg_score": 0.0,
+                        "evaluated_4h": closed,
+                        "win_rate_4h": round(wins / max(closed, 1), 4),
+                        "avg_return_4h": round(float(row["avg_pnl_usd"] or 0.0), 6),
+                        "feedback_adjustment": 0.0,
+                        "last_seen_at": row["last_seen_at"],
+                        "source": "paper_trades_fallback",
+                        "edges": edges,
+                    }
+                )
+    return {
+        "status": "OK",
+        "query": {
+            "symbol": symbol_filter or None,
+            "symbol_aliases": symbol_aliases,
+            "side": side_filter or None,
+            "limit": limit,
+        },
+        "setups": setup_summaries,
+        "summary": {
+            "setups_returned": len(setup_summaries),
+            "graph_status": _trade_graph_status(),
+        },
+    }
+
+
+def _trade_graph_context_for_query(text: str) -> dict[str, Any]:
+    raw = str(text or "")
+    symbol = _canonical_trade_symbol(_telegram_extract_symbol(raw, default="")) if "_telegram_extract_symbol" in globals() else ""
+    lower = raw.lower()
+    side = ""
+    if any(term in lower for term in (" buy", "ซื้อ", "long")):
+        side = "BUY"
+    elif any(term in lower for term in (" sell", "ขาย", "short")):
+        side = "SELL"
+    try:
+        query = _query_trade_graph(symbol=symbol or None, side=side or None, limit=5)
+        fallback_reason = None
+        if symbol and not query.get("setups"):
+            fallback_reason = f"no exact graph history for {symbol}; using nearest available setup history"
+            query = _query_trade_graph(symbol=None, side=side or None, limit=5)
+        return {
+            "status": query.get("status"),
+            "symbol": symbol or None,
+            "side": side or None,
+            "fallback_reason": fallback_reason,
+            "top_setups": [
+                {
+                    "setup": item.get("setup"),
+                    "snapshots": item.get("snapshots"),
+                    "evaluated_4h": item.get("evaluated_4h"),
+                    "win_rate_4h": item.get("win_rate_4h"),
+                    "avg_return_4h": item.get("avg_return_4h"),
+                    "feedback_adjustment": item.get("feedback_adjustment"),
+                }
+                for item in query.get("setups", [])[:5]
+            ],
+            "graph": query.get("summary", {}).get("graph_status", {}),
+        }
+    except Exception as exc:
+        return {"status": "ERROR", "error": str(exc), "symbol": symbol or None, "side": side or None}
+
+
+def _trade_graph_guard(symbol: str | None, side: str | None) -> dict[str, Any]:
+    canonical = _canonical_trade_symbol(symbol)
+    side_upper = str(side or "").upper().strip()
+    guard_thresholds = {
+        "min_evaluated": TRADE_GRAPH_GUARD_MIN_EVALUATED,
+        "min_win_rate": TRADE_GRAPH_GUARD_MIN_WIN_RATE,
+        "min_avg_return": TRADE_GRAPH_GUARD_MIN_AVG_RETURN,
+        "quarantine_adjustment": BEST_SETUP_QUARANTINE_ADJUSTMENT,
+    }
+    if not canonical or side_upper not in {"BUY", "SELL"}:
+        return _helper_build_trade_graph_guard_result(
+            canonical=canonical,
+            original_symbol=symbol,
+            side_upper=side_upper,
+            **guard_thresholds,
+        )
+    try:
+        graph = _query_trade_graph(symbol=canonical, side=side_upper, limit=5)
+        setups = graph.get("setups") or []
+    except Exception as exc:
+        return _helper_build_trade_graph_guard_result(
+            canonical=canonical,
+            side_upper=side_upper,
+            graph_error=exc,
+            **guard_thresholds,
+        )
+    return _helper_build_trade_graph_guard_result(
+        canonical=canonical,
+        side_upper=side_upper,
+        graph=graph,
+        setups=setups,
+        **guard_thresholds,
+    )
+
+
+def _assert_trade_graph_guard_allows(symbol: str, side: str, action: str) -> dict[str, Any]:
+    guard = _trade_graph_guard(symbol, side)
+    if guard.get("blockers"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "GRAPH_GUARD_BLOCKED",
+                "action": action,
+                "message": "Graph RAG guard blocked this setup based on historical outcomes.",
+                "guard": guard,
+            },
+        )
+    return guard
+
+
+def _telegram_format_trade_graph(text: str = "") -> str:
+    parts = str(text or "").split()
+    symbol = ""
+    side = ""
+    if len(parts) >= 2:
+        symbol = _canonical_trade_symbol(parts[1])
+    if len(parts) >= 3 and parts[2].upper() in {"BUY", "SELL"}:
+        side = parts[2].upper()
+    if not symbol:
+        symbol = _canonical_trade_symbol(_telegram_extract_symbol(text, default=""))
+    status = _trade_graph_status()
+    if status.get("status") != "OK":
+        try:
+            _build_trade_knowledge_graph(1500)
+            status = _trade_graph_status()
+        except Exception as exc:
+            return f"Trade Graph RAG unavailable: {exc}"
+
+    query = _query_trade_graph(symbol=symbol or None, side=side or None, limit=5)
+    aliases = _trade_symbol_aliases(symbol)[:6] if symbol else []
+    guard = _trade_graph_guard(symbol, side) if symbol and side in {"BUY", "SELL"} else None
+    return _helper_format_trade_graph_report(
+        status=status,
+        query=query,
+        symbol=symbol,
+        side=side,
+        aliases=aliases,
+        guard=guard,
+        rebuild_interval_seconds=TRADE_GRAPH_REBUILD_INTERVAL_SECONDS,
+    )
+
+
+def _telegram_format_why_setup(text: str, chat_id: str | None = None) -> str:
+    parts = str(text or "").split()
+    symbol = _canonical_trade_symbol(parts[1] if len(parts) >= 2 else _telegram_extract_symbol(text, default=""))
+    side = parts[2].upper() if len(parts) >= 3 and parts[2].upper() in {"BUY", "SELL"} else ""
+    if not side:
+        lower = str(text or "").lower()
+        side = "BUY" if any(token in lower for token in ("buy", "ซื้อ", "long")) else "SELL" if any(token in lower for token in ("sell", "ขาย", "short")) else "BUY"
+    guard = _trade_graph_guard(symbol, side)
+    graph = _query_trade_graph(symbol=symbol, side=side, limit=3)
+    risk_guard = _daily_risk_guard(chat_id)
+    signal_metrics = _signal_snapshot_metrics(limit=500, evaluate=False)
+    setup_key = f"{guard.get('symbol') or symbol}:{side}"
+    signal_row = (signal_metrics.get("by_setup") or {}).get(setup_key) or {}
+    return _helper_format_why_setup_report(
+        setup_key=setup_key,
+        side=side,
+        guard=guard,
+        graph=graph,
+        risk_guard=risk_guard,
+        signal_row=signal_row,
+    )
+
+
+def _best_alternative_candidates(chat_id: str | None = None) -> dict[str, Any]:
+    profile_symbols: list[str] = []
+    if chat_id:
+        try:
+            profile_symbols = list(_telegram_get_profile(chat_id).get("preferred_symbols") or [])
+        except Exception:
+            profile_symbols = []
+    signal_metrics = _signal_snapshot_metrics(limit=1000, evaluate=False)
+    risk_guard = _daily_risk_guard(chat_id)
+    return _helper_build_best_alternative_candidates_payload(
+        profile_symbols=profile_symbols,
+        signal_metrics=signal_metrics,
+        risk_guard=risk_guard,
+        trade_graph_guard_fn=_trade_graph_guard,
+        canonical_symbol_fn=_canonical_trade_symbol,
+        min_evaluated=TRADE_GRAPH_GUARD_MIN_EVALUATED,
+    )
+
+
+def _telegram_format_best_alternative(chat_id: str | None = None) -> str:
+    payload = _best_alternative_candidates(chat_id)
+    return _helper_format_best_alternative_report(payload)
+
+
+def _open_best_paper_evidence(chat_id: str | None = None, volume: float | None = None) -> dict[str, Any]:
+    payload = _best_alternative_candidates(chat_id)
+    precheck = _helper_precheck_open_best_paper_payload(payload)
+    if precheck.get("status") != "READY":
+        return precheck
+    best = precheck.get("best") or {}
+    symbol = str(precheck.get("symbol") or "")
+    side = str(precheck.get("side") or "")
+
+    _assert_daily_risk_guard_allows("telegram_open_best_paper", chat_id)
+    _assert_trade_graph_guard_allows(symbol, side, "telegram_open_best_paper")
+
+    cooldown_minutes = int((_auto_paper_status() or {}).get("cooldown_minutes") or 30)
+    cooldown_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=cooldown_minutes)).isoformat()
+    with get_persistence_conn() as conn:
+        recent_bestalt = conn.execute(
+            """
+            SELECT *
+            FROM paper_trades
+            WHERE entry_source = 'bestalt_paper_evidence'
+              AND datetime(COALESCE(closed_at, opened_at)) >= datetime(?)
+            ORDER BY datetime(COALESCE(closed_at, opened_at)) DESC
+            LIMIT 1
+            """,
+            (cooldown_cutoff,),
+        ).fetchone()
+    if recent_bestalt:
+        trade = _serialize_paper_trade(recent_bestalt)
+        return {
+            "status": "COOLDOWN",
+            "message": f"Recent /openbestpaper evidence already exists; wait {cooldown_minutes} minutes before opening another.",
+            "cooldown_minutes": cooldown_minutes,
+            "trade": trade,
+            "best_alternative": payload,
+        }
+
+    with get_persistence_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM paper_trades
+            WHERE status = 'OPEN'
+              AND UPPER(symbol) = ?
+              AND UPPER(side) = ?
+            ORDER BY datetime(opened_at) DESC
+            LIMIT 1
+            """,
+            (symbol, side),
+        ).fetchone()
+    if existing:
+        return {
+            "status": "ALREADY_OPEN",
+            "trade": _serialize_paper_trade(existing),
+            "best_alternative": payload,
+        }
+
+    if _recent_trade_exists(symbol, cooldown_minutes):
+        return {
+            "status": "COOLDOWN",
+            "message": f"Recent paper evidence already exists for {symbol}; wait {cooldown_minutes} minutes before opening another.",
+            "cooldown_minutes": cooldown_minutes,
+            "best_alternative": payload,
+        }
+
+    profile: dict[str, Any] = {}
+    if chat_id:
+        try:
+            profile = _telegram_get_profile(chat_id)
+        except Exception:
+            profile = {}
+    configured_volume = _helper_resolve_best_paper_volume(
+        requested_volume=volume,
+        profile=profile,
+        auto_status=_auto_paper_status() or {},
+        num_fn=_num,
+    )
+
+    setup: dict[str, Any] = {}
+    tactics_symbol = _telegram_tactics_symbol(symbol)
+    try:
+        from intelligence.tools.market_tools import get_trading_tactics
+
+        setup = get_trading_tactics(tactics_symbol) or {}
+        try:
+            _record_signal_snapshot(setup, "open_best_paper", "15m")
+        except Exception as snap_exc:
+            logger.warning("Open best paper signal snapshot failed for %s: %s", symbol, snap_exc)
+    except Exception as exc:
+        setup = {"error": str(exc), "symbol": tactics_symbol}
+
+    entry_price = _telegram_resolve_paper_entry_price(symbol, side, setup.get("price"))
+    if entry_price <= 0:
+        return {
+            "status": "PRICE_UNAVAILABLE",
+            "message": f"Unable to resolve MT5 or market entry price for {symbol}.",
+            "setup": setup,
+            "best_alternative": payload,
+        }
+
+    reason = _helper_best_paper_entry_reason(best)
+    opened = _open_paper_trade_internal(
+        symbol=symbol,
+        side=side,
+        volume=configured_volume,
+        price=entry_price,
+        entry_source="bestalt_paper_evidence",
+        entry_reason=reason,
+    )
+    opened["volume"] = configured_volume
+
+    stop_loss = _num(setup.get("stop_loss") or setup.get("sl"))
+    take_profit = _num(setup.get("take_profit_1") or setup.get("take_profit") or setup.get("tp"))
+    if stop_loss and take_profit:
+        try:
+            from intelligence.ml.outcome_tracker import attach_sl_tp_features
+
+            attach_sl_tp_features(
+                opened["trade_id"],
+                float(stop_loss),
+                float(take_profit),
+                {
+                    "source": "bestalt_paper_evidence",
+                    "symbol": symbol,
+                    "side": side,
+                    "best_mode": best.get("mode"),
+                    "graph_reason": best.get("reason"),
+                },
+                None,
+            )
+            opened["levels_attached"] = True
+            opened["stop_loss"] = float(stop_loss)
+            opened["take_profit"] = float(take_profit)
+        except Exception as attach_exc:
+            opened["levels_attached"] = False
+            opened["levels_error"] = str(attach_exc)
+    else:
+        opened["levels_attached"] = bool(opened.get("ml_snapshot_attached"))
+
+    return {
+        "status": "OPENED",
+        "opened": opened,
+        "setup": {
+            "symbol": symbol,
+            "tactics_symbol": tactics_symbol,
+            "side": side,
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+        },
+        "best_alternative": payload,
+        "risk_guard": _daily_risk_guard(chat_id),
+    }
+
+
+def _telegram_open_best_paper_text(chat_id: str | None = None) -> str:
+    try:
+        result = _open_best_paper_evidence(chat_id)
+    except HTTPException as exc:
+        return _helper_format_open_best_paper_blocked_exception(exc.detail, status_code=exc.status_code)
+    except Exception as exc:
+        return f"Open best paper failed: {exc}"
+
+    return _helper_format_open_best_paper_result(result, num_fn=_num)
+
+
+def _setup_feedback_summary(chat_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+    try:
+        with get_persistence_conn() as conn:
+            params: list[Any] = []
+            where = ""
+            if chat_id:
+                where = "WHERE chat_id = ?"
+                params.append(str(chat_id))
+            rows = conn.execute(
+                f"""
+                SELECT chat_id, symbol, side, rating, source, score, payload_json, created_at
+                FROM telegram_setup_feedback
+                {where}
+                ORDER BY datetime(created_at) DESC
+                LIMIT ?
+                """,
+                (*params, int(limit)),
+            ).fetchall()
+    except Exception as exc:
+        return {
+            "available": False,
+            "total": 0,
+            "by_rating": {},
+            "by_symbol_side": {},
+            "recent": [],
+            "score_adjustments": {},
+            "recommendations": [],
+            "error": str(exc),
+        }
+    return _helper_build_setup_feedback_summary(rows)
+
+
+def _telegram_format_feedback(chat_id: str | None = None) -> str:
+    return _helper_telegram_format_feedback(_setup_feedback_summary(chat_id=chat_id, limit=200))
+
+
+def _build_best_setup_payload(universe: list[str] | None = None, use_cache: bool = True) -> dict[str, Any]:
+    try:
+        from intelligence.ml.performance_feedback import paper_entry_performance_gate
+        from intelligence.tools.market_tools import get_trading_tactics
+    except Exception as exc:
+        return {"available": False, "error": str(exc), "candidates": [], "skipped": []}
+
+    universe = universe or list(AUTO_PAPER_DEFAULTS.get("symbols") or [])
+    cache_key = _best_setup_cache_key(universe)
+    now = time.time()
+    cached = _best_setup_cache.get(cache_key) or {}
+    if use_cache and cached.get("payload"):
+        payload = dict(cached["payload"])
+        age_seconds = now - float(cached.get("loaded_at") or now)
+        payload["cache"] = {
+            "hit": True,
+            "stale": bool(age_seconds > BEST_SETUP_CACHE_TTL_SECONDS),
+            "age_seconds": round(age_seconds, 1),
+            "ttl_seconds": BEST_SETUP_CACHE_TTL_SECONDS,
+        }
+        return payload
+
+    model_trust = _ml_model_trust_snapshot()
+    ml_weight = 0.32 if model_trust.get("trusted") else 0.0
+    confidence_weight = 0.38 if model_trust.get("trusted") else 0.45
+    paper_weight = 0.20 if model_trust.get("trusted") else 0.35
+    pnl_weight = 0.10 if model_trust.get("trusted") else 0.20
+    score_weights = {
+        "confidence": confidence_weight,
+        "ml_win_probability": ml_weight,
+        "paper_win_rate": paper_weight,
+        "paper_avg_pnl": pnl_weight,
+    }
+    human_feedback = _setup_feedback_summary(limit=200)
+    feedback_adjustments = human_feedback.get("score_adjustments") or {}
+    candidates: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    quarantined: list[dict[str, Any]] = []
+
+    for raw_symbol in universe[:12]:
+        paper_symbol = _telegram_paper_gate_symbol(raw_symbol)
+        tactics_symbol = _telegram_tactics_symbol(raw_symbol)
+        try:
+            setup = get_trading_tactics(tactics_symbol)
+        except Exception as exc:
+            skipped.append(f"{paper_symbol}: setup_error:{exc}")
+            continue
+        if not isinstance(setup, dict) or setup.get("error"):
+            skipped.append(f"{paper_symbol}: no_setup")
+            continue
+
+        side = str(setup.get("recommendation") or "HOLD").upper().strip()
+        if side not in {"BUY", "SELL"}:
+            skipped.append(f"{paper_symbol}: HOLD")
+            continue
+
+        gate = paper_entry_performance_gate(paper_symbol, side, "auto_paper")
+        if not bool(gate.get("ok", False)):
+            skipped.append(f"{paper_symbol}: performance_block")
+            continue
+        graph_guard = _trade_graph_guard(paper_symbol, side)
+        if graph_guard.get("blockers"):
+            skipped.append(f"{paper_symbol}: graph_guard_block:{graph_guard.get('reason')}")
+            continue
+
+        edge = setup.get("ai_edge") or {}
+        tactics = setup.get("tactics") or []
+        top_score = _parse_percent_like((tactics[0] or {}).get("score") if tactics else None, 0.0)
+        confidence = _parse_percent_like(edge.get("signal_confidence"), top_score)
+        win_prob = _parse_percent_like(edge.get("win_pct") or edge.get("win_probability"), 0.0)
+        symbol_stats = gate.get("symbol_stats") or {}
+        side_stats = gate.get("symbol_side_stats") or {}
+        avg_pnl = float(side_stats.get("avg_pnl", symbol_stats.get("avg_pnl", 0.0)) or 0.0)
+        win_rate = float(side_stats.get("win_rate", symbol_stats.get("win_rate", 0.0)) or 0.0) / 100.0
+        top_tactic = tactics[0] if tactics else {}
+        feedback_key = f"{paper_symbol}:{side}"
+        feedback_adjustment = float(feedback_adjustments.get(feedback_key, 0.0) or 0.0)
+        feedback_quarantined = feedback_adjustment <= BEST_SETUP_QUARANTINE_ADJUSTMENT
+        base_score = (
+            (confidence * confidence_weight)
+            + (win_prob * ml_weight)
+            + (win_rate * paper_weight)
+            + (min(max(avg_pnl, -1.0), 1.0) * pnl_weight)
+        )
+        score = max(base_score + feedback_adjustment, 0.0)
+        if feedback_quarantined:
+            quarantined.append(
+                {
+                    "symbol": paper_symbol,
+                    "side": side,
+                    "score": round(score, 4),
+                    "feedback_adjustment": round(feedback_adjustment, 4),
+                    "reason": "negative Telegram feedback cooldown",
+                }
+            )
+            skipped.append(f"{paper_symbol}: feedback_cooldown")
+            continue
+        candidate = {
+            "score": score,
+            "base_score": base_score,
+            "feedback_adjustment": feedback_adjustment,
+            "symbol": paper_symbol,
+            "side": side,
+            "setup": setup,
+            "confidence": confidence,
+            "win_prob": win_prob,
+            "win_rate": win_rate,
+            "avg_pnl": avg_pnl,
+            "warnings": gate.get("warnings") or [],
+            "ml_weighted": bool(model_trust.get("trusted")),
+            "reasoning": top_tactic.get("logic") or setup.get("best_persona") or "Multi-layer signal passed paper-performance gate.",
+            "strategy": setup.get("best_persona") or top_tactic.get("strategy") or "Institutional setup",
+            "price": setup.get("price"),
+            "entry_zone": setup.get("entry_zone") or {},
+            "stop_loss": setup.get("stop_loss"),
+            "take_profit_1": setup.get("take_profit_1"),
+            "take_profit_2": setup.get("take_profit_2"),
+            "graph_guard": graph_guard,
+        }
+        candidate["entry_decision"] = _best_setup_entry_decision(candidate)
+        candidate["score_explain"] = _best_setup_score_explain(
+            confidence=confidence,
+            win_prob=win_prob,
+            win_rate=win_rate,
+            avg_pnl=avg_pnl,
+            feedback_adjustment=feedback_adjustment,
+            weights=score_weights,
+            model_trust=model_trust,
+        )
+        candidate["risk_summary"] = _best_setup_risk_summary(candidate)
+        candidates.append(candidate)
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    no_trade = False
+    no_trade_reason = None
+    if not candidates:
+        no_trade = True
+        no_trade_reason = "no setup passed all gates"
+    else:
+        top = candidates[0]
+        top_decision = top.get("entry_decision") or {}
+        if float(top.get("score", 0.0) or 0.0) < BEST_SETUP_MIN_ACTIONABLE_SCORE:
+            no_trade = True
+            no_trade_reason = f"top score below {BEST_SETUP_MIN_ACTIONABLE_SCORE:.2f}"
+        elif top_decision.get("action") == "WAIT_BETTER_RR":
+            no_trade = True
+            no_trade_reason = "risk/reward is not good enough"
+    payload = {
+        "available": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "universe": universe[:12],
+        "candidates": candidates,
+        "skipped": skipped,
+        "quarantined": quarantined,
+        "no_trade": no_trade,
+        "no_trade_reason": no_trade_reason,
+        "model_trust": model_trust,
+        "human_feedback": human_feedback,
+        "score_weights": score_weights,
+        "thresholds": {
+            "min_actionable_score": BEST_SETUP_MIN_ACTIONABLE_SCORE,
+            "quarantine_adjustment": BEST_SETUP_QUARANTINE_ADJUSTMENT,
+        },
+        "cache": {"hit": False, "stale": False, "age_seconds": 0.0, "ttl_seconds": BEST_SETUP_CACHE_TTL_SECONDS},
+    }
+    try:
+        _record_best_setup_snapshot(payload)
+    except Exception as exc:
+        logger.warning(f"Best setup outcome snapshot failed: {exc}")
+    _best_setup_cache[cache_key] = {"loaded_at": now, "payload": payload}
+    _best_setup_state["last_run_at"] = payload["generated_at"]
+    _best_setup_state["last_payload"] = payload
+    _best_setup_state["last_error"] = None
+    return payload
+
+
+def _telegram_format_best_setup(chat_id: str | None = None) -> str:
+    profile_symbols: list[str] = []
+    if chat_id:
+        try:
+            profile_symbols = list(_telegram_get_profile(chat_id).get("preferred_symbols") or [])
+        except Exception:
+            profile_symbols = []
+    universe = profile_symbols or list(AUTO_PAPER_DEFAULTS.get("symbols") or [])
+    payload = _build_best_setup_payload(universe=universe, use_cache=True)
+    if not payload.get("available"):
+        return f"Best setup unavailable: {payload.get('error', 'unknown error')}"
+
+    candidates = payload.get("candidates") or []
+    skipped = payload.get("skipped") or []
+    if not candidates:
+        return (
+            "AI Finance Agent: Best setup right now\n"
+            "- No BUY/SELL setup passed the paper-performance gate yet.\n"
+            f"- Skipped: {', '.join(skipped[:8]) or 'none'}\n\n"
+            "Action: keep paper scan running. Live trade stays blocked until evidence improves."
+        )
+
+    cache = payload.get("cache") or {}
+    model_trust = payload.get("model_trust") or {}
+    human_feedback = payload.get("human_feedback") or {}
+    best = candidates[0]
+    best_entry = best.get("entry_zone") or {}
+    decision = best.get("entry_decision") or {}
+    risk = _best_setup_risk_summary(best, chat_id)
+    risk_guard = _daily_risk_guard(chat_id)
+    no_trade = bool(payload.get("no_trade"))
+    execution_blocked = bool(risk_guard.get("blockers"))
+    lines = [
+        "AI Finance Agent: Best setup right now",
+        f"Top pick: {best['symbol']} {best['side']} | score={float(best['score']):.2f}",
+        f"Mode: {'NO TRADE' if no_trade else 'ACTIONABLE WATCH'}"
+        + (f" | {payload.get('no_trade_reason')}" if no_trade and payload.get("no_trade_reason") else ""),
+        f"Execution guard: {'BLOCKED' if execution_blocked else risk_guard.get('status', 'ok')}",
+        f"Decision: {decision.get('action', 'WAIT')} | {decision.get('reason', 'wait for confirmation')}",
+        f"Risk/reward: {decision.get('rr', 'n/a')}R",
+        f"Price: {best.get('price')}",
+        f"Entry zone: {best_entry.get('low')} - {best_entry.get('high')}",
+        f"Stop loss: {best.get('stop_loss')}",
+        f"Take profit: {best.get('take_profit_1')} / {best.get('take_profit_2')}",
+        f"Confidence: {float(best.get('confidence', 0.0)):.0%} | ML win: {float(best.get('win_prob', 0.0)):.0%}",
+        f"Paper edge: win={float(best.get('win_rate', 0.0)):.0%}, avg_pnl={float(best.get('avg_pnl', 0.0)):+.4f}",
+        f"Human feedback adj: {float(best.get('feedback_adjustment', 0.0)):+.3f} ({human_feedback.get('total', 0)} labels)",
+    ]
+    if risk.get("available"):
+        lines.append(
+            "Risk estimate: "
+            f"{risk.get('risk_percent')}% = ${risk.get('risk_amount')} risk | "
+            f"size~{risk.get('position_size_units')} units | value~${risk.get('position_value')}"
+        )
+    else:
+        lines.append(f"Risk estimate: unavailable ({risk.get('reason', 'missing data')})")
+    if model_trust.get("trusted"):
+        lines.append(
+            f"ML model: trusted | AUC={model_trust.get('roc_auc')} | accuracy={model_trust.get('accuracy')}"
+        )
+    else:
+        blockers = model_trust.get("blockers") or [model_trust.get("reason", "model not trusted")]
+        lines.append(
+            f"ML model: DEGRADED | AUC={model_trust.get('roc_auc', 'n/a')} | not weighted in score"
+        )
+        lines.append(f"ML blocker: {blockers[0]}")
+    lines.extend([
+        "",
+        "Why this one:",
+        f"- {best.get('reasoning')}",
+        "- It passed symbol and side paper-performance gates while weaker setups were filtered out.",
+        "- Telegram feedback is now included as a bounded score adjustment.",
+    ])
+    if not model_trust.get("trusted"):
+        lines.append("- Because ML quality is degraded, this ranking prioritizes tactics + realized paper edge.")
+    lines.extend([
+        "",
+        "How to use it:",
+        "- If Mode is NO TRADE, do not enter yet; use the setup for watchlist and alert only.",
+        "- If Execution guard is BLOCKED, do not open new live/paper positions until the guard clears.",
+        "- Treat the entry zone as the trigger area, not a blind market order.",
+        "- If price reaches entry but momentum flips against the side, skip it.",
+        "- Risk is invalidated at the stop loss; do not widen it after entry.",
+    ])
+    if best.get("warnings"):
+        lines.append(f"- Caution: {'; '.join(best['warnings'][:2])}")
+
+    lines.append("")
+    lines.append("Next best alternatives:")
+    for idx, item in enumerate(candidates[:3], start=1):
+        entry = item.get("entry_zone") or {}
+        lines.extend([
+            f"{idx}. {item['symbol']} {item['side']} | score={item['score']:.2f}",
+            f"   Decision: {(item.get('entry_decision') or {}).get('action', 'WAIT')} | RR={(item.get('entry_decision') or {}).get('rr', 'n/a')}R",
+            f"   Feedback adj: {float(item.get('feedback_adjustment', 0.0)):+.3f}",
+            f"   Price: {item.get('price')}",
+            f"   Entry: {entry.get('low')} - {entry.get('high')}",
+            f"   SL/TP: {item.get('stop_loss')} / {item.get('take_profit_1')} / {item.get('take_profit_2')}",
+            f"   Confidence: {item['confidence']:.0%} | ML win: {item['win_prob']:.0%}",
+            f"   Paper edge: win={item['win_rate']:.0%}, avg_pnl={item['avg_pnl']:+.4f}",
+        ])
+    if skipped:
+        lines.append("")
+        lines.append(f"Filtered out: {', '.join(skipped[:8])}")
+    if payload.get("quarantined"):
+        lines.append("")
+        q = payload["quarantined"][0]
+        lines.append(
+            "Feedback cooldown: "
+            f"{q.get('symbol')} {q.get('side')} is paused from top ranking "
+            f"(adj={float(q.get('feedback_adjustment', 0.0)):+.3f})."
+        )
+    lines.append("")
+    cache_label = "stale-cache" if cache.get("stale") else ("cache" if cache.get("hit") else "fresh")
+    lines.append(f"Cache: {cache_label} | age={cache.get('age_seconds', 0)}s")
+    lines.append("Analysis only. Live order still needs MT5 preflight + full ML readiness gate.")
+    return "\n".join(lines)
+
+
+def _telegram_best_feedback_keyboard(chat_id: str | None = None) -> dict:
+    profile_symbols: list[str] = []
+    if chat_id:
+        try:
+            profile_symbols = list(_telegram_get_profile(chat_id).get("preferred_symbols") or [])
+        except Exception:
+            profile_symbols = []
+    payload = _build_best_setup_payload(
+        universe=profile_symbols or list(AUTO_PAPER_DEFAULTS.get("symbols") or []),
+        use_cache=True,
+    )
+    top = (payload.get("candidates") or [{}])[0]
+    symbol = str(top.get("symbol") or "NA")[:12]
+    side = str(top.get("side") or "NA")[:4]
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Explain score", "callback_data": "tg:best_explain"},
+                {"text": "Alert at entry", "callback_data": "tg:best_alert"},
+            ],
+            [
+                {"text": "Why wait?", "callback_data": "tg:no_trade"},
+                {"text": "Confirm alert", "callback_data": "tg:best_confirm_alert"},
+            ],
+            [
+                {"text": "Good setup", "callback_data": f"tg:setup_fb:GOOD:{symbol}:{side}"},
+                {"text": "Bad setup", "callback_data": f"tg:setup_fb:BAD:{symbol}:{side}"},
+            ],
+            [
+                {"text": "Too late", "callback_data": f"tg:setup_fb:LATE:{symbol}:{side}"},
+                {"text": "Wrong direction", "callback_data": f"tg:setup_fb:WRONG:{symbol}:{side}"},
+            ],
+            [
+                {"text": "Refresh Best", "callback_data": "tg:best"},
+                {"text": "Paper AI", "callback_data": "tg:paper"},
+            ],
+            [
+                {"text": "Accuracy", "callback_data": "tg:best_metrics"},
+                {"text": "Risk Guard", "callback_data": "tg:risk_guard"},
+            ],
+        ]
+    }
+
+
+def _telegram_format_best_explain(chat_id: str | None = None) -> str:
+    profile_symbols: list[str] = []
+    if chat_id:
+        try:
+            profile_symbols = list(_telegram_get_profile(chat_id).get("preferred_symbols") or [])
+        except Exception:
+            profile_symbols = []
+    payload = _build_best_setup_payload(
+        universe=profile_symbols or list(AUTO_PAPER_DEFAULTS.get("symbols") or []),
+        use_cache=True,
+    )
+    top = (payload.get("candidates") or [{}])[0]
+    if not top:
+        return "No best setup to explain yet."
+
+    explain = top.get("score_explain") or {}
+    components = explain.get("components") or {}
+    risk = _best_setup_risk_summary(top, chat_id)
+    thresholds = payload.get("thresholds") or {}
+    lines = [
+        f"Score explanation: {top.get('symbol')} {top.get('side')}",
+        f"- Final score: {float(top.get('score', 0.0)):.4f}",
+        f"- Base score: {float(top.get('base_score', 0.0)):.4f}",
+        f"- Confidence contribution: {float(components.get('confidence', 0.0)):+.4f}",
+        f"- ML win contribution: {float(components.get('ml_win_probability', 0.0)):+.4f}",
+        f"- Paper win contribution: {float(components.get('paper_win_rate', 0.0)):+.4f}",
+        f"- Paper PnL contribution: {float(components.get('paper_avg_pnl', 0.0)):+.4f}",
+        f"- Human feedback: {float(components.get('human_feedback', 0.0)):+.4f}",
+        f"- Model note: {explain.get('model_note')}",
+        f"- No-trade threshold: {float(thresholds.get('min_actionable_score', BEST_SETUP_MIN_ACTIONABLE_SCORE)):.2f}",
+    ]
+    if payload.get("no_trade"):
+        lines.append(f"- Current mode: NO TRADE ({payload.get('no_trade_reason')})")
+    else:
+        lines.append("- Current mode: actionable watch")
+    if risk.get("available"):
+        lines.extend(
+            [
+                "",
+                "Risk sizing estimate:",
+                f"- Account basis: ${risk.get('account_balance')}",
+                f"- Risk: {risk.get('risk_percent')}% = ${risk.get('risk_amount')}",
+                f"- Entry midpoint: {risk.get('entry_mid')}",
+                f"- Stop loss: {risk.get('stop_loss')} ({risk.get('sl_distance_pct')}%)",
+                f"- Position estimate: {risk.get('position_size_units')} units, value ${risk.get('position_value')}",
+            ]
+        )
+    lines.append("")
+    lines.append("This is an analysis score, not a guarantee. Live orders still require MT5 + readiness gates.")
+    return "\n".join(lines)
+
+
+def _telegram_format_no_trade_reason(chat_id: str | None = None) -> str:
+    profile_symbols: list[str] = []
+    if chat_id:
+        try:
+            profile_symbols = list(_telegram_get_profile(chat_id).get("preferred_symbols") or [])
+        except Exception:
+            profile_symbols = []
+    payload = _build_best_setup_payload(
+        universe=profile_symbols or list(AUTO_PAPER_DEFAULTS.get("symbols") or []),
+        use_cache=True,
+    )
+    top = (payload.get("candidates") or [{}])[0]
+    if not top:
+        return (
+            "Why no trade?\n"
+            "- No setup passed the paper-performance gate.\n"
+            f"- Filtered: {', '.join((payload.get('skipped') or [])[:8]) or 'none'}\n\n"
+            "Next: keep paper scanner running and wait for cleaner evidence."
+        )
+    decision = top.get("entry_decision") or {}
+    risk_guard = _daily_risk_guard(chat_id)
+    lines = [
+        "Why no trade / why wait?",
+        f"- Top setup: {top.get('symbol')} {top.get('side')} score={float(top.get('score', 0.0)):.2f}",
+        f"- Current mode: {'NO TRADE' if payload.get('no_trade') else 'ACTIONABLE WATCH'}",
+        f"- Main reason: {payload.get('no_trade_reason') or decision.get('reason') or 'waiting for stronger confirmation'}",
+        f"- Decision: {decision.get('action', 'WAIT')}",
+        f"- RR: {decision.get('rr', 'n/a')}R",
+        f"- ML weighted: {bool(top.get('ml_weighted'))}",
+        f"- Human feedback adj: {float(top.get('feedback_adjustment', 0.0)):+.3f}",
+        f"- Daily risk guard: {risk_guard.get('status')} ({', '.join(risk_guard.get('blockers') or risk_guard.get('warnings') or ['clear'])})",
+        "",
+        "Best next action:",
+    ]
+    if payload.get("no_trade"):
+        lines.append("- Set alert at entry/confirmation and do not enter manually yet.")
+    elif decision.get("action") == "ENTER_NOW":
+        lines.append("- It is actionable only if your execution gate, spread, and risk size also pass.")
+    else:
+        lines.append("- Wait for price to reach the trigger condition; do not chase.")
+    if payload.get("quarantined"):
+        lines.append("")
+        lines.append("Paused by feedback:")
+        for item in payload.get("quarantined", [])[:5]:
+            lines.append(f"- {item.get('symbol')} {item.get('side')}: {item.get('reason')}")
+    return "\n".join(lines)
+
+
+def _telegram_format_best_metrics() -> str:
+    metrics = _best_setup_metrics(limit=500, evaluate=False)
+    lines = [
+        "Best setup accuracy tracker",
+        f"- Total snapshots: {metrics.get('total_snapshots', 0)}",
+    ]
+    for horizon, row in (metrics.get("horizons") or {}).items():
+        lines.append(
+            f"- {horizon}: evaluated={row.get('evaluated', 0)}, "
+            f"win_rate={float(row.get('win_rate', 0.0)):.0%}, avg_return={float(row.get('avg_return', 0.0)):+.4%}"
+        )
+    if metrics.get("by_symbol"):
+        ranked = sorted(
+            metrics["by_symbol"].items(),
+            key=lambda item: (int(item[1].get("evaluated_4h", 0)), float(item[1].get("win_rate_4h", 0.0))),
+            reverse=True,
+        )
+        lines.append("")
+        lines.append("Symbol 4h record:")
+        for symbol, row in ranked[:6]:
+            lines.append(
+                f"- {symbol}: snapshots={row.get('snapshots', 0)}, evaluated={row.get('evaluated_4h', 0)}, "
+                f"win={float(row.get('win_rate_4h', 0.0)):.0%}, avg={float(row.get('avg_return_4h', 0.0)):+.4%}"
+            )
+    if metrics.get("recommendations"):
+        lines.append("")
+        lines.extend(metrics["recommendations"][:3])
+    return "\n".join(lines)
+
+
+def _telegram_format_risk_guard(chat_id: str | None = None) -> str:
+    guard = _daily_risk_guard(chat_id)
+    lines = [
+        "Daily risk guard",
+        f"- Status: {guard.get('status')}",
+        f"- Balance basis: ${guard.get('balance_basis')}",
+        f"- Daily loss limit: {guard.get('daily_loss_limit_pct')}% = ${guard.get('daily_loss_limit_usd')}",
+        f"- Paper PnL today: ${guard.get('paper_pnl_usd_today')}",
+        f"- Trades today: {guard.get('opened_trades_today')}/{guard.get('max_daily_trades')}",
+        f"- Open trades: {guard.get('open_trades')}",
+    ]
+    if guard.get("blockers"):
+        lines.append("Blockers:")
+        lines.extend(f"- {item}" for item in guard["blockers"])
+    elif guard.get("warnings"):
+        lines.append("Warnings:")
+        lines.extend(f"- {item}" for item in guard["warnings"])
+    else:
+        lines.append("Risk guard is clear for analysis/paper mode.")
+    return "\n".join(lines)
+
+
+def _telegram_save_setup_feedback(chat_id: str, rating: str, symbol: str, side: str) -> dict:
+    payload = _build_best_setup_payload(use_cache=True)
+    matching = None
+    for item in payload.get("candidates") or []:
+        if str(item.get("symbol")) == symbol and str(item.get("side")) == side:
+            matching = item
+            break
+    created_at = datetime.now(timezone.utc).isoformat()
+    with get_persistence_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_setup_feedback (
+                chat_id, symbol, side, rating, source, score, payload_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(chat_id),
+                symbol,
+                side,
+                rating,
+                "telegram_best",
+                float((matching or {}).get("score", 0.0) or 0.0),
+                json.dumps({"match": matching, "model_trust": payload.get("model_trust")}, ensure_ascii=False, default=str),
+                created_at,
+            ),
+        )
+        conn.commit()
+    return {"rating": rating, "symbol": symbol, "side": side, "created_at": created_at}
+
+
+async def best_setup_scanner_task():
+    logger.info("Best Setup Scanner Task started.")
+    await asyncio.sleep(15)
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            payload = await loop.run_in_executor(
+                None,
+                lambda: _build_best_setup_payload(
+                    universe=list(AUTO_PAPER_DEFAULTS.get("symbols") or []),
+                    use_cache=False,
+                ),
+            )
+            _best_setup_state["last_payload"] = payload
+            _best_setup_state["last_run_at"] = payload.get("generated_at")
+            _best_setup_state["last_error"] = None if payload.get("available") else payload.get("error")
+            top = (payload.get("candidates") or [{}])[0]
+            if top:
+                logger.info(
+                    "Best setup cache refreshed: %s %s score=%.2f",
+                    top.get("symbol"),
+                    top.get("side"),
+                    float(top.get("score", 0.0) or 0.0),
+                )
+        except Exception as exc:
+            _best_setup_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+            _best_setup_state["last_error"] = str(exc)
+            logger.warning(f"Best setup scanner failed: {exc}")
+
+        await asyncio.sleep(BEST_SETUP_SCAN_INTERVAL_SECONDS)
+
+
+async def best_outcome_evaluator_task():
+    logger.info("Best Outcome Evaluator Task started.")
+    await asyncio.sleep(45)
+    while True:
+        try:
+            result = await asyncio.to_thread(_evaluate_best_setup_outcomes, 80)
+            signal_result = await asyncio.to_thread(_evaluate_signal_snapshots, 120)
+            _best_outcome_eval_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+            _best_outcome_eval_state["last_result"] = {"best_setups": result, "signals": signal_result}
+            _best_outcome_eval_state["last_error"] = None
+            total_updated = int(result.get("updated", 0) or 0) + int(signal_result.get("updated", 0) or 0)
+            if total_updated:
+                logger.info("Outcome evaluator updated %s snapshot horizon(s)", total_updated)
+        except Exception as exc:
+            _best_outcome_eval_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+            _best_outcome_eval_state["last_error"] = str(exc)
+            logger.warning(f"Best outcome evaluator failed: {exc}")
+        await asyncio.sleep(BEST_OUTCOME_EVAL_INTERVAL_SECONDS)
+
+
+async def trade_memory_sync_task():
+    logger.info("Trade Memory RAG Sync Task started.")
+    await asyncio.sleep(90)
+    while True:
+        try:
+            result = await asyncio.to_thread(_sync_trade_memory_to_rag, False)
+            if result.get("status") == "OK":
+                logger.info("Trade memory synced to RAG without extra embedding cost.")
+            elif result.get("status") == "ERROR":
+                logger.warning("Trade memory RAG sync failed: %s", result.get("error"))
+        except Exception as exc:
+            _trade_memory_sync_state["last_error"] = str(exc)
+            logger.warning(f"Trade memory sync task failed: {exc}")
+        await asyncio.sleep(TRADE_MEMORY_SYNC_INTERVAL_SECONDS)
+
+
+async def trade_graph_rebuild_task():
+    logger.info("Trade Graph RAG Rebuild Task started.")
+    await asyncio.sleep(120)
+    while True:
+        try:
+            result = await asyncio.to_thread(_build_trade_knowledge_graph, 1500)
+            _trade_graph_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+            _trade_graph_state["last_result"] = result
+            _trade_graph_state["last_error"] = None
+            counts = result.get("counts") or {}
+            logger.info(
+                "Trade graph rebuilt: nodes=%s edges=%s snapshots=%s paper_trades=%s",
+                counts.get("nodes"),
+                counts.get("edges"),
+                counts.get("best_snapshots"),
+                counts.get("paper_trades"),
+            )
+        except Exception as exc:
+            _trade_graph_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+            _trade_graph_state["last_error"] = str(exc)
+            logger.warning(f"Trade graph rebuild task failed: {exc}")
+        await asyncio.sleep(TRADE_GRAPH_REBUILD_INTERVAL_SECONDS)
+
+
+def _telegram_format_mt5() -> str:
+    return _helper_telegram_format_mt5_snapshot(GLOBAL_ACCOUNT_CACHE)
+
+
+def _telegram_format_paper() -> str:
+    try:
+        from intelligence.ml.trading_quality_gate import get_trading_quality_gate
+        gate = get_trading_quality_gate(force_refresh=True)
+    except Exception as exc:
+        gate = {"error": str(exc)}
+    try:
+        status = _auto_paper_status()
+        snapshot = _paper_trade_snapshot()
+    except Exception as exc:
+        return f"Paper status unavailable: {exc}"
+    feedback = None
+    try:
+        from intelligence.ml.performance_feedback import get_feedback_snapshot
+
+        feedback = get_feedback_snapshot(force_refresh=True)
+    except Exception:
+        pass
+    quality = None
+    try:
+        from intelligence.ml.signal_model import get_paper_label_quality_report
+
+        quality = get_paper_label_quality_report(force_refresh=True)
+    except Exception:
+        pass
+    return _helper_telegram_format_paper_dashboard(
+        gate=gate,
+        status=status,
+        snapshot=snapshot,
+        feedback=feedback,
+        quality=quality,
+        num_fn=_num,
+    )
+
+
+def _telegram_format_rag() -> str:
+    try:
+        from intelligence.rag import get_knowledge_feedback_stats, get_knowledge_observability, get_knowledge_stats
+        stats = get_knowledge_stats()
+        feedback = get_knowledge_feedback_stats(limit=1)
+        obs = get_knowledge_observability(limit=50, tenant_id="public")
+        return (
+            "RAG status\n"
+            f"- Documents: {stats.get('documents', stats.get('document_count', 'n/a'))}\n"
+            f"- Chunks: {stats.get('chunks', stats.get('chunk_count', 'n/a'))}\n"
+            f"- Embedded chunks: {stats.get('embedded_chunks', 'n/a')}\n"
+            f"- Retrievals: {obs.get('total_retrievals', obs.get('retrieval_count', 'n/a'))}\n"
+            f"- Avg latency ms: {obs.get('avg_latency_ms', 'n/a')}\n"
+            f"- Feedback: {feedback.get('summary', feedback)}"
+        )
+    except Exception as exc:
+        readiness = build_system_readiness()
+        rag = readiness.get("checks", {}).get("rag_vector", {})
+        return (
+            "RAG status\n"
+            f"- Status: {rag.get('status', 'unknown')}\n"
+            f"- Chunks: {rag.get('chunks')}\n"
+            f"- Embedded chunks: {rag.get('embedded_chunks')}\n"
+            f"- Detail unavailable: {exc}"
+        )
+
+
+def _telegram_format_alerts() -> str:
+    try:
+        rows = _read_alert_rows().get("alerts", [])
+    except Exception as exc:
+        return f"Alerts unavailable: {exc}"
+    if not rows:
+        return "No alerts found."
+    lines = ["Latest alerts"]
+    for row in rows[:8]:
+        lines.append(
+            f"- #{row.get('id')} {row.get('symbol')} {row.get('condition')} {row.get('price')} [{row.get('status')}]"
+        )
+    return "\n".join(lines)
+
+
+def _telegram_format_audit(chat_id: str) -> str:
+    try:
+        with get_persistence_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT action, message, created_at
+                FROM telegram_audit_log
+                WHERE chat_id = ?
+                ORDER BY datetime(created_at) DESC
+                LIMIT 10
+                """,
+                (str(chat_id),),
+            ).fetchall()
+    except Exception as exc:
+        return f"Audit unavailable: {exc}"
+    if not rows:
+        return "No Telegram audit events yet."
+    lines = ["Latest Telegram audit events"]
+    for row in rows:
+        msg = str(row["message"] or "").replace("\n", " ")[:80]
+        lines.append(f"- {row['created_at']} | {row['action']} | {msg}")
+    return "\n".join(lines)
+
+
+def _telegram_audit(chat_id: str, action: str, message: str = "", payload: dict | None = None, user: dict | None = None) -> None:
+    try:
+        with get_persistence_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO telegram_audit_log (chat_id, username, action, message, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(chat_id),
+                    (user or {}).get("username"),
+                    action,
+                    str(message or "")[:1000],
+                    json.dumps(payload or {}, ensure_ascii=False, default=str),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning(f"Telegram audit write failed: {exc}")
+
+
+def _telegram_parse_alert_request(text: str) -> dict | None:
+    return _helper_telegram_parse_alert_request(
+        text,
+        symbol_extractor=lambda raw, default: _telegram_extract_symbol(raw, default=default),
+        live_price_fn=_get_live_price,
+        trigger_terms=("/alert", "alert", "เตือน", "แจ้งเตือน"),
+        above_terms=("above", "over", ">", "มากกว่า", "สูงกว่า", "ทะลุ"),
+        below_terms=("below", "under", "<", "ต่ำกว่า", "หลุด"),
+    )
+
+
+def _telegram_create_price_alert(chat_id: str, request: dict) -> dict:
+    symbol = str(request.get("symbol") or "").upper().strip()
+    condition = _normalize_alert_condition(str(request.get("condition") or ""))
+    price = float(request.get("price") or 0.0)
+    if not symbol or price <= 0:
+        raise ValueError("symbol and positive price are required")
+
+    now = datetime.now(timezone.utc).isoformat()
+    meta_json = json.dumps({"source": "telegram_bot", "chat_id": str(chat_id)}, ensure_ascii=False)
+    message = request.get("message") or f"Telegram alert: {symbol} {condition} ${price:,.2f}"
+    with get_persistence_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO alerts (
+                user_id, symbol, condition, price, timeframe, entry_source,
+                message, meta_json, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+            """,
+            (
+                f"telegram:{chat_id}",
+                symbol,
+                condition,
+                price,
+                request.get("timeframe") or "15m",
+                "telegram_bot",
+                message,
+                meta_json,
+                now,
+            ),
+        )
+        conn.commit()
+        alert_id = int(cursor.lastrowid)
+    _cache_delete("alerts_payload_v1")
+    _append_audit_event("TELEGRAM_ALERT", f"Created alert #{alert_id}: {symbol} {condition} {price}")
+    return {"id": alert_id, "symbol": symbol, "condition": condition, "price": price}
+
+
+def _telegram_create_best_entry_alert(chat_id: str) -> dict:
+    profile_symbols: list[str] = []
+    try:
+        profile_symbols = list(_telegram_get_profile(chat_id).get("preferred_symbols") or [])
+    except Exception:
+        profile_symbols = []
+    payload = _build_best_setup_payload(
+        universe=profile_symbols or list(AUTO_PAPER_DEFAULTS.get("symbols") or []),
+        use_cache=True,
+    )
+    top = (payload.get("candidates") or [{}])[0]
+    if not top:
+        raise ValueError("No best setup available for alert")
+
+    request = _helper_build_best_entry_alert_request(top, payload, num_fn=_num)
+    created = _telegram_create_price_alert(chat_id, request)
+    created.update(request.get("metadata") or {})
+    return created
+
+
+def _telegram_create_best_confirmation_alert(chat_id: str) -> dict:
+    profile_symbols: list[str] = []
+    try:
+        profile_symbols = list(_telegram_get_profile(chat_id).get("preferred_symbols") or [])
+    except Exception:
+        profile_symbols = []
+    payload = _build_best_setup_payload(
+        universe=profile_symbols or list(AUTO_PAPER_DEFAULTS.get("symbols") or []),
+        use_cache=True,
+    )
+    top = (payload.get("candidates") or [{}])[0]
+    if not top:
+        raise ValueError("No best setup available for confirmation alert")
+
+    request = _helper_build_best_confirmation_alert_request(top, payload, num_fn=_num)
+    created = _telegram_create_price_alert(chat_id, request)
+    created.update(request.get("metadata") or {})
+    return created
+
+
+def _telegram_trade_keyboard(confirmation_id: str) -> dict:
+    return _helper_telegram_trade_keyboard(confirmation_id)
+
+
+def _telegram_create_trade_confirmation(chat_id: str, request: dict) -> dict:
+    confirmation_id = uuid.uuid4().hex[:12]
+    now_dt = datetime.now(timezone.utc)
+    expires_at = now_dt + timedelta(minutes=5)
+    with get_persistence_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_trade_confirmations (
+                id, chat_id, symbol, side, volume, sl, tp, price, request_json,
+                status, created_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+            """,
+            (
+                confirmation_id,
+                str(chat_id),
+                str(request["symbol"]).upper(),
+                str(request["side"]).upper(),
+                float(request["volume"]),
+                float(request["sl"]),
+                float(request["tp"]),
+                float(request.get("price") or 0.0) if request.get("price") is not None else None,
+                json.dumps(request, ensure_ascii=False),
+                now_dt.isoformat(),
+                expires_at.isoformat(),
+            ),
+        )
+        conn.commit()
+    _append_audit_event("TELEGRAM_TRADE_DRAFT", f"Created trade confirmation {confirmation_id}")
+    return {"id": confirmation_id, "expires_at": expires_at.isoformat(), **request}
+
+
+def _telegram_get_trade_confirmation(confirmation_id: str, chat_id: str) -> sqlite3.Row | None:
+    with get_persistence_conn() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM telegram_trade_confirmations
+            WHERE id = ? AND chat_id = ?
+            LIMIT 1
+            """,
+            (confirmation_id, str(chat_id)),
+        ).fetchone()
+
+
+def _telegram_update_trade_confirmation(confirmation_id: str, status: str, result: dict | None = None) -> None:
+    with get_persistence_conn() as conn:
+        conn.execute(
+            """
+            UPDATE telegram_trade_confirmations
+            SET status = ?, result_json = ?, decided_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                json.dumps(result or {}, ensure_ascii=False, default=str),
+                datetime.now(timezone.utc).isoformat(),
+                confirmation_id,
+            ),
+        )
+        conn.commit()
+
+
+def _telegram_blocked_trade_keyboard(confirmation_id: str) -> dict:
+    return _helper_telegram_blocked_trade_keyboard(confirmation_id)
+
+
+def _telegram_extract_blockers(result: dict) -> list[dict]:
+    return _helper_telegram_extract_blockers(result)
+
+
+def _telegram_format_blocked_trade(confirmation_id: str, result: dict) -> str:
+    gate = None
+    try:
+        from intelligence.ml.trading_quality_gate import get_trading_quality_gate
+
+        gate = get_trading_quality_gate(force_refresh=True)
+    except Exception:
+        pass
+    return _helper_telegram_format_blocked_trade(confirmation_id, result, gate)
+
+
+def _telegram_format_blocked_detail(confirmation_id: str) -> str:
+    try:
+        with get_persistence_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM telegram_trade_confirmations WHERE id = ? LIMIT 1",
+                (confirmation_id,),
+            ).fetchone()
+        if not row:
+            return "Blocked detail not found."
+        result = json.loads(row["result_json"] or "{}")
+        request = json.loads(row["request_json"] or "{}")
+    except Exception as exc:
+        return f"Blocked detail unavailable: {exc}"
+    gate = None
+    try:
+        from intelligence.ml.trading_quality_gate import get_trading_quality_gate
+
+        gate = get_trading_quality_gate(force_refresh=True)
+    except Exception:
+        pass
+    return _helper_telegram_format_blocked_detail(confirmation_id, request, result, gate)
+
+
+def _telegram_resolve_paper_entry_price(symbol: str, side: str, fallback_price: Any = None) -> float:
+    """Resolve a paper entry from MT5 first so broker aliases like GOLD work."""
+    try:
+        price = float(fallback_price or 0.0)
+        if price > 0:
+            return price
+    except Exception:
+        pass
+
+    side_upper = (side or "").upper().strip()
+    try:
+        from intelligence.mt5_connector import resolve_broker_symbol
+
+        resolved = resolve_broker_symbol(symbol)
+        quote = resolved.get("quote") or {}
+        bid = float(quote.get("bid") or 0.0)
+        ask = float(quote.get("ask") or 0.0)
+        last = float(quote.get("last") or 0.0)
+        if side_upper == "BUY" and ask > 0:
+            return ask
+        if side_upper == "SELL" and bid > 0:
+            return bid
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        if last > 0:
+            return last
+    except Exception as exc:
+        logger.warning("Telegram paper fallback MT5 quote failed for %s: %s", symbol, exc)
+
+    try:
+        price = _get_live_price(symbol)
+        if price > 0:
+            return price
+    except Exception:
+        pass
+    return 0.0
+
+
+def _telegram_existing_paper_for_confirmation(confirmation_id: str) -> dict | None:
+    try:
+        with get_persistence_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM paper_trades
+                WHERE entry_source = 'telegram_blocked_live_fallback'
+                  AND entry_reason LIKE ?
+                ORDER BY datetime(opened_at) DESC
+                LIMIT 1
+                """,
+                (f"%{confirmation_id}%",),
+            ).fetchone()
+        return _serialize_paper_trade(row) if row else None
+    except Exception as exc:
+        logger.warning("Telegram duplicate paper lookup failed for %s: %s", confirmation_id, exc)
+        return None
+
+
+async def _telegram_open_paper_from_confirmation(chat_id: str, confirmation_id: str) -> None:
+    row = await asyncio.to_thread(_telegram_get_trade_confirmation, confirmation_id, chat_id)
+    if not row:
+        await notifier.send_telegram_message(chat_id, "Trade confirmation not found.")
+        return
+    try:
+        try:
+            await asyncio.to_thread(_assert_daily_risk_guard_allows, "telegram_paper_fallback", chat_id)
+        except HTTPException as guard_exc:
+            detail = guard_exc.detail if isinstance(guard_exc.detail, dict) else {"message": str(guard_exc.detail)}
+            guard = detail.get("guard") or {}
+            await notifier.send_telegram_message(
+                chat_id,
+                "Paper fallback blocked by daily risk guard.\n"
+                f"- Status: {guard.get('status')}\n"
+                f"- Blockers: {', '.join(guard.get('blockers') or ['unknown'])}\n\n"
+                "Use /riskguard and wait until the guard clears.",
+                reply_markup=_telegram_keyboard(),
+            )
+            return
+        request = json.loads(row["request_json"] or "{}")
+        existing = await asyncio.to_thread(_telegram_existing_paper_for_confirmation, confirmation_id)
+        if existing:
+            await notifier.send_telegram_message(
+                chat_id,
+                "Paper trade already exists for this confirmation.\n"
+                f"- Paper trade ID: {existing['id']}\n"
+                f"- Symbol: {existing['symbol']}\n"
+                f"- Side: {existing['side']}\n"
+                f"- Status: {existing['status']}\n"
+                f"- Entry price: {_num(existing.get('entry_price')):.5f}",
+                reply_markup=_telegram_paper_keyboard(),
+            )
+            return
+        entry_price = await asyncio.to_thread(
+            _telegram_resolve_paper_entry_price,
+            request["symbol"],
+            request["side"],
+            request.get("price"),
+        )
+        if entry_price <= 0:
+            await notifier.send_telegram_message(
+                chat_id,
+                f"Paper fallback failed: unable to resolve MT5 or market entry price for {request['symbol']}.",
+                reply_markup=_telegram_keyboard(),
+            )
+            return
+        opened = await asyncio.to_thread(
+            _open_paper_trade_internal,
+            symbol=request["symbol"],
+            side=request["side"],
+            volume=float(request["volume"]),
+            price=entry_price,
+            entry_source="telegram_blocked_live_fallback",
+            entry_reason=f"Paper fallback from blocked live confirmation {confirmation_id}",
+        )
+        try:
+            from intelligence.ml.outcome_tracker import attach_sl_tp_features
+            await asyncio.to_thread(
+                attach_sl_tp_features,
+                opened["trade_id"],
+                float(request["sl"]),
+                float(request["tp"]),
+                {
+                    "source": "telegram_blocked_live_fallback",
+                    "confirmation_id": confirmation_id,
+                    "symbol": request["symbol"],
+                    "side": request["side"],
+                },
+                None,
+            )
+            opened["levels_attached"] = True
+        except Exception as attach_exc:
+            opened["levels_attached"] = False
+            opened["levels_error"] = str(attach_exc)
+        _telegram_audit(chat_id, "paper_trade_from_blocked_live", "", {"id": confirmation_id, "opened": opened})
+        await notifier.send_telegram_message(
+            chat_id,
+            "Opened paper trade instead.\n"
+            f"- Paper trade ID: {opened['trade_id']}\n"
+            f"- Symbol: {request['symbol']}\n"
+            f"- Side: {request['side']}\n"
+            f"- Volume: {request['volume']}\n"
+            f"- Entry price: {entry_price:.5f}\n"
+            f"- SL/TP attached: {opened.get('levels_attached')}",
+            reply_markup=_telegram_keyboard(),
+        )
+    except Exception as exc:
+        await notifier.send_telegram_message(chat_id, f"Paper fallback failed: {exc}", reply_markup=_telegram_keyboard())
+
+
+def _telegram_is_finance_text(text: str) -> bool:
+    lower = str(text or "").lower()
+    finance_terms = {
+        "btc", "eth", "sol", "xrp", "gold", "xau", "eurusd", "usd", "oil", "nasdaq", "sp500",
+        "stock", "crypto", "forex", "entry", "sell", "buy", "hold", "sl", "tp", "risk",
+        "portfolio", "market", "price", "chart", "signal", "trend", "support", "resistance",
+        "เทรด", "ซื้อ", "ขาย", "เข้า", "ออก", "ทอง", "หุ้น", "คริปโต", "ตลาด", "ราคา",
+        "พอร์ต", "แนวรับ", "แนวต้าน", "กำไร", "ขาดทุน", "เสี่ยง", "วิเคราะห์",
+    }
+    return any(term in lower for term in finance_terms)
+
+
+async def _telegram_finance_agent_answer(text: str, chat_id: str) -> str:
+    readiness = await asyncio.to_thread(build_system_readiness)
+    market_snapshot = await asyncio.to_thread(get_market_snapshot)
+    profile = await asyncio.to_thread(_telegram_get_profile, chat_id)
+
+    rag_context = {}
+    try:
+        await asyncio.to_thread(_sync_trade_memory_to_rag, False)
+        from intelligence.rag import retrieve_knowledge_context
+        rag_context = await asyncio.to_thread(
+            retrieve_knowledge_context,
+            query=text,
+            limit=4,
+            tenant_id="public",
+            experiment_arm="telegram_agent",
+        )
+    except Exception as exc:
+        rag_context = {"status": "ERROR", "error": str(exc)}
+
+    signal_context = []
+    try:
+        if INTELLIGENCE_AVAILABLE and crypto_intel:
+            signal_context = await asyncio.to_thread(
+                lambda: crypto_intel.get_quick_signals(["BTC", "ETH", "GOLD", "EURUSD"], timeframe="15m")
+            )
+    except Exception as exc:
+        signal_context = [{"error": str(exc)}]
+
+    account = GLOBAL_ACCOUNT_CACHE.get("summary") or {}
+    positions = GLOBAL_ACCOUNT_CACHE.get("positions") or []
+    best_metrics = await asyncio.to_thread(_best_setup_metrics, 250, False)
+    risk_guard = await asyncio.to_thread(_daily_risk_guard, chat_id)
+    trade_graph_context = await asyncio.to_thread(_trade_graph_context_for_query, text)
+    system_prompt = (
+        "You are CryptoStream AI, an AI finance agent for trading and market analysis. "
+        "Reply in Thai unless the user clearly asks for English. Be concise but useful. "
+        "Use the provided system, market, RAG, trade graph, signal, and MT5 context as the source of truth. "
+        "Use trade_graph_context to explain what similar symbol/side setups historically did, but do not overclaim precision. "
+        "Use telegram_user_profile to personalize symbols, lot size, risk percentage, language, and answer style. "
+        "If the profile is missing something important, infer conservatively and ask one short follow-up only when needed. "
+        "Never claim a live trade was executed unless a tool result says SUCCESS. "
+        "If asked whether to buy/sell, give a practical plan with signal, entry zone, stop loss, take profit, "
+        "risk note, and why. If live AI trading is blocked, say it is analysis/paper mode only. "
+        "Do not provide guaranteed-profit language."
+    )
+    prompt = {
+        "user_message": text,
+        "telegram_user_profile": profile,
+        "system_readiness": {
+            "overall_percent": readiness.get("overall_percent"),
+            "ready_for_users": readiness.get("ready_for_users"),
+            "ready_for_live_trading": readiness.get("ready_for_live_trading"),
+            "ready_for_live_ai_trading": readiness.get("ready_for_live_ai_trading"),
+            "ai_blockers": readiness.get("checks", {}).get("ai_trading_quality", {}).get("blockers", []),
+        },
+        "best_setup_accuracy": {
+            "horizons": best_metrics.get("horizons", {}),
+            "recommendations": best_metrics.get("recommendations", []),
+        },
+        "daily_risk_guard": risk_guard,
+        "market_snapshot": market_snapshot,
+        "rag_context": rag_context,
+        "trade_graph_context": trade_graph_context,
+        "signals": signal_context,
+        "mt5": {
+            "connected": bool(GLOBAL_ACCOUNT_CACHE.get("connected")),
+            "account": {
+                "balance": account.get("balance"),
+                "equity": account.get("equity"),
+                "currency": account.get("currency"),
+                "trade_allowed": account.get("trade_allowed"),
+                "expert_allowed": account.get("trade_expert"),
+            },
+            "positions_count": len(positions),
+            "positions": positions[:5],
+        },
+    }
+
+    try:
+        result = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=MODEL_ID,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=json.dumps(prompt, ensure_ascii=False, default=str))],
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
+            ),
+            timeout=25,
+        )
+        reply = getattr(result, "text", None) or ""
+        if reply.strip():
+            return reply.strip()[:3800]
+    except Exception as exc:
+        logger.warning(f"Telegram finance agent fallback failed: {exc}")
+
+    if _telegram_is_finance_text(text):
+        return (
+            "ตอนนี้ผมตอบแบบ agent ไม่สำเร็จชั่วคราว แต่ระบบตลาดยังทำงานอยู่ครับ\n"
+            "ลองใช้ /signal BTC, /signal GOLD, /signals, /status หรือ /paper ได้เลย"
+        )
+    return _telegram_help_text()
+
+
+async def _telegram_execute_trade_command(chat_id: str, text: str) -> None:
+    parts = str(text or "").split()
+    if len(parts) < 6:
+        await notifier.send_telegram_message(
+            chat_id,
+            "Usage: /trade SYMBOL SIDE VOLUME SL TP\nExample: /trade GOLD BUY 0.01 4500 4900\nThis creates a confirmation draft first.",
+        )
+        return
+    _, symbol, side, volume, sl, tp, *rest = parts
+    try:
+        from intelligence.mt5_connector import validate_live_order_request
+        request = {
+            "symbol": symbol.upper().strip(),
+            "side": side.upper().strip(),
+            "volume": float(volume),
+            "sl": float(sl),
+            "tp": float(tp),
+            "price": None,
+        }
+        preflight = validate_live_order_request(
+            symbol=request["symbol"],
+            action=request["side"],
+            volume=request["volume"],
+            sl=request["sl"],
+            tp=request["tp"],
+            price=request["price"],
+        )
+        graph_guard = _trade_graph_guard(request["symbol"], request["side"])
+        if graph_guard.get("blockers"):
+            await notifier.send_telegram_message(
+                chat_id,
+                "Trade draft rejected by Graph RAG guard.\n"
+                f"- Symbol: {graph_guard.get('symbol')}\n"
+                f"- Side: {graph_guard.get('side')}\n"
+                f"- Reason: {graph_guard.get('reason')}\n\n"
+                "Use /graph to inspect the setup memory.",
+                reply_markup=_telegram_keyboard(),
+            )
+            _telegram_audit(chat_id, "trade_graph_guard_blocked", text, {"graph_guard": graph_guard})
+            return
+        if not preflight.get("passed"):
+            await notifier.send_telegram_message(
+                chat_id,
+                "Trade draft rejected by preflight.\n"
+                f"Issues: {', '.join(preflight.get('issues', []))}",
+            )
+            _telegram_audit(chat_id, "trade_preflight_blocked", text, {"preflight": preflight})
+            return
+        draft = await asyncio.to_thread(_telegram_create_trade_confirmation, chat_id, request)
+    except Exception as exc:
+        await notifier.send_telegram_message(chat_id, f"Trade draft failed: {exc}")
+        return
+
+    _telegram_audit(chat_id, "trade_confirmation_created", text, draft)
+    await notifier.send_telegram_message(
+        chat_id,
+        "Trade confirmation required\n"
+        f"- ID: {draft['id']}\n"
+        f"- Symbol: {draft['symbol']}\n"
+        f"- Side: {draft['side']}\n"
+        f"- Volume: {draft['volume']}\n"
+        f"- SL: {draft['sl']}\n"
+        f"- TP: {draft['tp']}\n"
+        "- Expires in: 5 minutes\n\n"
+        "Press Confirm Trade to send this request through the live safety gates.",
+        reply_markup=_telegram_trade_keyboard(draft["id"]),
+    )
+
+
+async def _telegram_confirm_trade(chat_id: str, confirmation_id: str) -> None:
+    row = await asyncio.to_thread(_telegram_get_trade_confirmation, confirmation_id, chat_id)
+    if not row:
+        await notifier.send_telegram_message(chat_id, "Trade confirmation not found.")
+        return
+    if row["status"] != "PENDING":
+        await notifier.send_telegram_message(chat_id, f"Trade confirmation is already {row['status']}.")
+        return
+    try:
+        expires_at = datetime.fromisoformat(str(row["expires_at"]))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires_at:
+            await asyncio.to_thread(_telegram_update_trade_confirmation, confirmation_id, "EXPIRED", {"reason": "expired"})
+            await notifier.send_telegram_message(chat_id, "Trade confirmation expired. Create a new /trade request.")
+            return
+    except Exception:
+        pass
+
+    request = json.loads(row["request_json"] or "{}")
+    try:
+        await asyncio.to_thread(_assert_daily_risk_guard_allows, "telegram_live_trade", chat_id)
+    except HTTPException as guard_exc:
+        detail = guard_exc.detail if isinstance(guard_exc.detail, dict) else {"message": str(guard_exc.detail)}
+        result = {
+            "status": "GUARD_BLOCKED",
+            "message": detail.get("message", "Daily risk guard blocked live trade."),
+            "guard": detail.get("guard"),
+        }
+        await asyncio.to_thread(_telegram_update_trade_confirmation, confirmation_id, "BLOCKED", result)
+        await notifier.send_telegram_message(
+            chat_id,
+            "Live order blocked by daily risk guard.\n"
+            f"- Blockers: {', '.join((result.get('guard') or {}).get('blockers') or ['unknown'])}\n\n"
+            "Use /riskguard. I will not execute a new order while this guard is blocked.",
+            reply_markup=_telegram_blocked_trade_keyboard(confirmation_id),
+        )
+        return
+    try:
+        from intelligence.tools.market_tools import execute_mt5_trade
+        result = await asyncio.to_thread(
+            execute_mt5_trade,
+            symbol=request["symbol"],
+            side=request["side"],
+            volume=float(request["volume"]),
+            sl=float(request["sl"]),
+            tp=float(request["tp"]),
+            price=request.get("price"),
+            comment=f"CryptoStream Telegram Confirm {confirmation_id}",
+        )
+    except Exception as exc:
+        result = {"status": "ERROR", "message": str(exc)}
+
+    final_status = "EXECUTED" if result.get("status") == "SUCCESS" else "BLOCKED"
+    await asyncio.to_thread(_telegram_update_trade_confirmation, confirmation_id, final_status, result)
+    _telegram_audit(chat_id, f"trade_{final_status.lower()}", "", {"id": confirmation_id, "result": result})
+
+    if result.get("status") == "SUCCESS":
+        await notifier.send_telegram_message(
+            chat_id,
+            f"Live order executed.\nID: {confirmation_id}\nSymbol: {request['symbol']}\nSide: {request['side']}\nResult: {result}",
+            reply_markup=_telegram_keyboard(),
+        )
+        return
+    await notifier.send_telegram_message(
+        chat_id,
+        _telegram_format_blocked_trade(confirmation_id, result),
+        reply_markup=_telegram_blocked_trade_keyboard(confirmation_id),
+    )
+
+
+async def _telegram_cancel_trade(chat_id: str, confirmation_id: str) -> None:
+    row = await asyncio.to_thread(_telegram_get_trade_confirmation, confirmation_id, chat_id)
+    if not row:
+        await notifier.send_telegram_message(chat_id, "Trade confirmation not found.")
+        return
+    if row["status"] != "PENDING":
+        await notifier.send_telegram_message(chat_id, f"Trade confirmation is already {row['status']}.")
+        return
+    await asyncio.to_thread(_telegram_update_trade_confirmation, confirmation_id, "CANCELLED", {"reason": "user_cancelled"})
+    _telegram_audit(chat_id, "trade_cancelled", "", {"id": confirmation_id})
+    await notifier.send_telegram_message(chat_id, f"Cancelled trade confirmation {confirmation_id}.", reply_markup=_telegram_keyboard())
+
+
+async def _telegram_run_paper_scan(chat_id: str) -> None:
+    try:
+        summary = await asyncio.to_thread(_auto_paper_cycle_sync)
+        _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _auto_paper_state["last_summary"] = summary
+        _auto_paper_state["last_error"] = None
+        opened = len(summary.get("opened", []))
+        shadow = len(summary.get("shadow_opened", []))
+        expired = (summary.get("expired_labels") or {}).get("closed_count", 0)
+        skipped = len(summary.get("skipped", []))
+        paper_text = await asyncio.to_thread(_telegram_format_paper)
+        await notifier.send_telegram_message(
+            chat_id,
+            "Paper scan completed\n"
+            f"- Opened auto trades: {opened}\n"
+            f"- Opened shadow labels: {shadow}\n"
+            f"- Closed stale labels: {expired}\n"
+            f"- Skipped candidates: {skipped}\n\n"
+            + paper_text,
+            reply_markup=_telegram_paper_keyboard(),
+        )
+    except Exception as exc:
+        _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _auto_paper_state["last_error"] = str(exc)
+        await notifier.send_telegram_message(chat_id, f"Paper scan failed: {exc}", reply_markup=_telegram_paper_keyboard())
+
+
+async def _telegram_reply_for_text(chat_id: str, text: str, user: dict | None = None) -> None:
+    raw = str(text or "").strip()
+    lower = raw.lower()
+    command = lower.split()[0] if lower.startswith("/") else ""
+    profile_patch = _telegram_extract_profile_patch(raw, user=user)
+    if profile_patch:
+        await asyncio.to_thread(_telegram_save_profile, chat_id, profile_patch)
+
+    if command in {"/start", "/help", "/menu"}:
+        await notifier.send_telegram_message(chat_id, _telegram_help_text(), reply_markup=_telegram_keyboard())
+        return
+    if command == "/profile":
+        profile = await asyncio.to_thread(_telegram_get_profile, chat_id)
+        await notifier.send_telegram_message(chat_id, _telegram_profile_text(profile), reply_markup=_telegram_keyboard())
+        return
+    if command == "/forgetprofile":
+        try:
+            with get_persistence_conn() as conn:
+                conn.execute("DELETE FROM telegram_user_profiles WHERE chat_id = ?", (str(chat_id),))
+                conn.commit()
+            await notifier.send_telegram_message(chat_id, "ลบ finance profile ของ Telegram chat นี้แล้วครับ", reply_markup=_telegram_keyboard())
+        except Exception as exc:
+            await notifier.send_telegram_message(chat_id, f"ลบ profile ไม่สำเร็จ: {exc}")
+        return
+    if command == "/watch":
+        symbols = _telegram_symbols_from_text(raw)
+        profile = await asyncio.to_thread(_telegram_save_profile, chat_id, {"preferred_symbols": symbols})
+        await notifier.send_telegram_message(chat_id, "จำ watchlist แล้วครับ\n\n" + _telegram_profile_text(profile), reply_markup=_telegram_keyboard())
+        return
+    if command == "/setlot":
+        parts = raw.split()
+        if len(parts) < 2:
+            await notifier.send_telegram_message(chat_id, "ใช้แบบนี้ครับ: /setlot 0.01")
+            return
+        try:
+            default_lot = max(float(parts[1]), 0.001)
+        except Exception:
+            await notifier.send_telegram_message(chat_id, "lot ต้องเป็นตัวเลข เช่น /setlot 0.01")
+            return
+        profile = await asyncio.to_thread(_telegram_save_profile, chat_id, {"default_lot": default_lot})
+        await notifier.send_telegram_message(chat_id, "จำ lot ปกติแล้วครับ\n\n" + _telegram_profile_text(profile), reply_markup=_telegram_keyboard())
+        return
+    if command == "/setrisk":
+        parts = raw.split()
+        if len(parts) < 2:
+            await notifier.send_telegram_message(chat_id, "ใช้แบบนี้ครับ: /setrisk 1")
+            return
+        try:
+            risk_pct = min(max(float(parts[1].replace("%", "")), 0.1), 10.0)
+        except Exception:
+            await notifier.send_telegram_message(chat_id, "risk ต้องเป็นตัวเลข เช่น /setrisk 1")
+            return
+        profile = await asyncio.to_thread(_telegram_save_profile, chat_id, {"risk_pct": risk_pct})
+        await notifier.send_telegram_message(chat_id, "จำ risk ต่อไม้แล้วครับ\n\n" + _telegram_profile_text(profile), reply_markup=_telegram_keyboard())
+        return
+    if command == "/status" or "status" in lower or "พร้อม" in lower:
+        readiness = await asyncio.to_thread(build_system_readiness)
+        await notifier.send_telegram_message(chat_id, _telegram_format_readiness(readiness), reply_markup=_telegram_keyboard())
+        return
+    if command == "/best":
+        await notifier.send_telegram_message(
+            chat_id,
+            await asyncio.to_thread(_telegram_format_best_setup, chat_id),
+            reply_markup=await asyncio.to_thread(_telegram_best_feedback_keyboard, chat_id),
+        )
+        return
+    if command in {"/bestalt", "/alternative", "/alts"}:
+        await notifier.send_telegram_message(
+            chat_id,
+            await asyncio.to_thread(_telegram_format_best_alternative, chat_id),
+            reply_markup=_telegram_keyboard(),
+        )
+        return
+    if command in {"/openbestpaper", "/openbest", "/paperbest"}:
+        await notifier.send_telegram_message(
+            chat_id,
+            await asyncio.to_thread(_telegram_open_best_paper_text, chat_id),
+            reply_markup=_telegram_keyboard(),
+        )
+        return
+    if command in {"/whybest", "/notrade", "/whywait"}:
+        await notifier.send_telegram_message(
+            chat_id,
+            await asyncio.to_thread(_telegram_format_no_trade_reason, chat_id),
+            reply_markup=await asyncio.to_thread(_telegram_best_feedback_keyboard, chat_id),
+        )
+        return
+    if command == "/why":
+        await notifier.send_telegram_message(
+            chat_id,
+            await asyncio.to_thread(_telegram_format_why_setup, raw, chat_id),
+            reply_markup=_telegram_keyboard(),
+        )
+        return
+    if command in {"/beststats", "/accuracy"}:
+        await notifier.send_telegram_message(
+            chat_id,
+            await asyncio.to_thread(_telegram_format_best_metrics),
+            reply_markup=await asyncio.to_thread(_telegram_best_feedback_keyboard, chat_id),
+        )
+        return
+    if command in {"/riskguard", "/dailyguard"}:
+        await notifier.send_telegram_message(
+            chat_id,
+            await asyncio.to_thread(_telegram_format_risk_guard, chat_id),
+            reply_markup=await asyncio.to_thread(_telegram_best_feedback_keyboard, chat_id),
+        )
+        return
+    if command == "/mt5":
+        await notifier.send_telegram_message(chat_id, _telegram_format_mt5(), reply_markup=_telegram_keyboard())
+        return
+    if command == "/paper":
+        await notifier.send_telegram_message(chat_id, await asyncio.to_thread(_telegram_format_paper), reply_markup=_telegram_paper_keyboard())
+        return
+    if command in {"/feedback", "/learn"}:
+        await notifier.send_telegram_message(chat_id, await asyncio.to_thread(_telegram_format_feedback, chat_id), reply_markup=_telegram_keyboard())
+        return
+    if command == "/rag":
+        await notifier.send_telegram_message(chat_id, await asyncio.to_thread(_telegram_format_rag), reply_markup=_telegram_keyboard())
+        return
+    if command in {"/graph", "/memory"}:
+        await notifier.send_telegram_message(chat_id, await asyncio.to_thread(_telegram_format_trade_graph, raw), reply_markup=_telegram_keyboard())
+        return
+    if command == "/alerts":
+        await notifier.send_telegram_message(chat_id, await asyncio.to_thread(_telegram_format_alerts), reply_markup=_telegram_keyboard())
+        return
+    if command == "/audit":
+        await notifier.send_telegram_message(chat_id, await asyncio.to_thread(_telegram_format_audit, chat_id), reply_markup=_telegram_keyboard())
+        return
+    if command == "/alert" or "alert" in lower or "เตือน" in lower or "แจ้งเตือน" in lower:
+        alert_request = _telegram_parse_alert_request(raw)
+        if not alert_request:
+            await notifier.send_telegram_message(
+                chat_id,
+                "สร้าง alert ไม่สำเร็จครับ ใช้แบบนี้ได้:\n/alert GOLD above 4700\n/alert BTC below 78000",
+            )
+            return
+        try:
+            alert = await asyncio.to_thread(_telegram_create_price_alert, chat_id, alert_request)
+            _telegram_audit(chat_id, "alert_created", raw, alert)
+            await notifier.send_telegram_message(
+                chat_id,
+                "สร้าง price alert แล้วครับ\n"
+                f"- ID: {alert['id']}\n"
+                f"- Symbol: {alert['symbol']}\n"
+                f"- Condition: {alert['condition']}\n"
+                f"- Price: {alert['price']}",
+                reply_markup=_telegram_keyboard(),
+            )
+        except Exception as exc:
+            await notifier.send_telegram_message(chat_id, f"สร้าง alert ไม่สำเร็จ: {exc}")
+        return
+    if command == "/trade":
+        await _telegram_execute_trade_command(chat_id, raw)
+        return
+    if command == "/paperscan":
+        await _telegram_run_paper_scan(chat_id)
+        return
+
+    if command == "/signals":
+        symbols = ["BTC", "ETH", "GOLD", "EURUSD"]
+        try:
+            signals = await asyncio.to_thread(lambda: crypto_intel.get_quick_signals(symbols, timeframe="15m")) if INTELLIGENCE_AVAILABLE and crypto_intel else []
+            if not signals:
+                await notifier.send_telegram_message(chat_id, "No signals available right now.", reply_markup=_telegram_keyboard())
+                return
+            lines = ["Latest AI signals"]
+            for item in signals[:6]:
+                lines.append(
+                    f"- {item.get('symbol')}: {item.get('candidate_direction') or item.get('direction')} "
+                    f"prob={item.get('ml_win_prob')} tradeable={item.get('tradeable')}"
+                )
+            await notifier.send_telegram_message(chat_id, "\n".join(lines), reply_markup=_telegram_keyboard())
+        except Exception as exc:
+            await notifier.send_telegram_message(chat_id, f"Signal fetch failed: {exc}")
+        return
+
+    if command == "/signal" or any(token in lower for token in ("btc", "eth", "gold", "xau", "eurusd", "signal", "วิเคราะห์")):
+        parts = raw.split()
+        symbol = parts[1].upper().strip() if command == "/signal" and len(parts) > 1 else _telegram_extract_symbol(raw)
+        try:
+            from intelligence.tools.market_tools import get_trading_tactics
+            setup = await asyncio.to_thread(get_trading_tactics, symbol)
+            try:
+                await asyncio.to_thread(_record_signal_snapshot, setup, "telegram_signal", "15m")
+            except Exception as snap_exc:
+                logger.debug(f"Telegram signal snapshot skipped: {snap_exc}")
+            await notifier.send_telegram_message(chat_id, _telegram_format_signal(symbol, setup), reply_markup=_telegram_keyboard())
+        except Exception as exc:
+            await notifier.send_telegram_message(chat_id, f"Analysis failed for {symbol}: {exc}")
+        return
+
+    reply = await _telegram_finance_agent_answer(raw, chat_id)
+    await notifier.send_telegram_message(chat_id, reply, reply_markup=_telegram_keyboard())
+
+
+async def _telegram_handle_update(update: dict) -> None:
+    callback = update.get("callback_query") or {}
+    if callback:
+        callback_id = callback.get("id")
+        data = str(callback.get("data") or "")
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id") or "")
+        if callback_id:
+            await notifier.answer_callback_query(callback_id, "Working...")
+        if not notifier.is_chat_allowed(chat_id):
+            await notifier.send_telegram_message(chat_id, "This chat is not authorized.")
+            return
+        if data.startswith("tg:trade_confirm:"):
+            confirmation_id = data.rsplit(":", 1)[-1]
+            await _telegram_confirm_trade(chat_id, confirmation_id)
+            return
+        if data.startswith("tg:trade_cancel:"):
+            confirmation_id = data.rsplit(":", 1)[-1]
+            await _telegram_cancel_trade(chat_id, confirmation_id)
+            return
+        if data.startswith("tg:why_blocked:"):
+            confirmation_id = data.rsplit(":", 1)[-1]
+            await notifier.send_telegram_message(
+                chat_id,
+                await asyncio.to_thread(_telegram_format_blocked_detail, confirmation_id),
+                reply_markup=_telegram_blocked_trade_keyboard(confirmation_id),
+            )
+            return
+        if data.startswith("tg:paper_trade:"):
+            confirmation_id = data.rsplit(":", 1)[-1]
+            await _telegram_open_paper_from_confirmation(chat_id, confirmation_id)
+            return
+        if data == "tg:paper_scan":
+            await _telegram_run_paper_scan(chat_id)
+            return
+        if data == "tg:best_explain":
+            await notifier.send_telegram_message(
+                chat_id,
+                await asyncio.to_thread(_telegram_format_best_explain, chat_id),
+                reply_markup=_telegram_best_feedback_keyboard(chat_id),
+            )
+            return
+        if data == "tg:no_trade":
+            await notifier.send_telegram_message(
+                chat_id,
+                await asyncio.to_thread(_telegram_format_no_trade_reason, chat_id),
+                reply_markup=_telegram_best_feedback_keyboard(chat_id),
+            )
+            return
+        if data == "tg:best_metrics":
+            await notifier.send_telegram_message(
+                chat_id,
+                await asyncio.to_thread(_telegram_format_best_metrics),
+                reply_markup=_telegram_best_feedback_keyboard(chat_id),
+            )
+            return
+        if data == "tg:risk_guard":
+            await notifier.send_telegram_message(
+                chat_id,
+                await asyncio.to_thread(_telegram_format_risk_guard, chat_id),
+                reply_markup=_telegram_best_feedback_keyboard(chat_id),
+            )
+            return
+        if data == "tg:best_alert":
+            try:
+                created = await asyncio.to_thread(_telegram_create_best_entry_alert, chat_id)
+                warning = ""
+                if created.get("no_trade"):
+                    warning = f"\n\nNote: current mode is NO TRADE ({created.get('no_trade_reason')}). This alert is for watching, not auto-entry."
+                await notifier.send_telegram_message(
+                    chat_id,
+                    "Entry alert created.\n"
+                    f"- ID: {created.get('id')}\n"
+                    f"- Setup: {created.get('symbol')} {created.get('side')}\n"
+                    f"- Trigger: {created.get('condition')} {created.get('price')}\n"
+                    f"- Decision: {created.get('decision')}"
+                    f"{warning}",
+                    reply_markup=_telegram_keyboard(),
+                )
+            except Exception as exc:
+                await notifier.send_telegram_message(chat_id, f"Entry alert failed: {exc}", reply_markup=_telegram_keyboard())
+            return
+        if data == "tg:best_confirm_alert":
+            try:
+                created = await asyncio.to_thread(_telegram_create_best_confirmation_alert, chat_id)
+                warning = ""
+                if created.get("no_trade"):
+                    warning = f"\n\nNote: current mode is NO TRADE ({created.get('no_trade_reason')}). This alert is for confirmation watch only."
+                await notifier.send_telegram_message(
+                    chat_id,
+                    "Confirmation alert created.\n"
+                    f"- ID: {created.get('id')}\n"
+                    f"- Setup: {created.get('symbol')} {created.get('side')}\n"
+                    f"- Trigger: {created.get('condition')} {created.get('price')}\n"
+                    f"- Decision: {created.get('decision')}\n"
+                    "- When it fires, re-check momentum, spread, RR, and risk guard before entry."
+                    f"{warning}",
+                    reply_markup=_telegram_keyboard(),
+                )
+            except Exception as exc:
+                await notifier.send_telegram_message(chat_id, f"Confirmation alert failed: {exc}", reply_markup=_telegram_keyboard())
+            return
+        if data.startswith("tg:setup_fb:"):
+            parts = data.split(":")
+            rating = parts[2] if len(parts) > 2 else "UNKNOWN"
+            symbol = parts[3] if len(parts) > 3 else "NA"
+            side = parts[4] if len(parts) > 4 else "NA"
+            try:
+                saved = await asyncio.to_thread(_telegram_save_setup_feedback, chat_id, rating, symbol, side)
+                _best_setup_cache.clear()
+                _telegram_audit(chat_id, "setup_feedback", data, saved)
+                await notifier.send_telegram_message(
+                    chat_id,
+                    "Feedback saved.\n"
+                    f"- Setup: {symbol} {side}\n"
+                    f"- Rating: {rating}\n\n"
+                    "I will use this to improve future ranking and annotation quality.",
+                    reply_markup=_telegram_keyboard(),
+                )
+            except Exception as exc:
+                await notifier.send_telegram_message(chat_id, f"Feedback failed: {exc}", reply_markup=_telegram_keyboard())
+            return
+        command_map = {
+            "tg:status": "/status",
+            "tg:best": "/best",
+            "tg:bestalt": "/bestalt",
+            "tg:openbestpaper": "/openbestpaper",
+            "tg:signals": "/signals",
+            "tg:mt5": "/mt5",
+            "tg:paper": "/paper",
+            "tg:rag": "/rag",
+            "tg:graph": "/graph",
+            "tg:profile": "/profile",
+            "tg:help": "/help",
+        }
+        await _telegram_reply_for_text(chat_id, command_map.get(data, "/help"))
+        return
+
+    message = update.get("message") or update.get("edited_message") or {}
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id") or "")
+    text = str(message.get("text") or "").strip()
+    if not chat_id or not text:
+        return
+    if not notifier.is_chat_allowed(chat_id):
+        await notifier.send_telegram_message(chat_id, "This chat is not authorized.")
+        return
+    _telegram_audit(chat_id, "message_received", text, user=message.get("from") or {})
+    await _telegram_reply_for_text(chat_id, text, user=message.get("from") or {})
+
+
+async def telegram_bot_poller_task():
+    """Receive Telegram user commands and route them into the existing AI stack."""
+    enabled = str(os.getenv("TELEGRAM_BOT_POLLING_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    status = notifier.telegram_status()
+    if not enabled:
+        logger.info("Telegram bot polling disabled by TELEGRAM_BOT_POLLING_ENABLED=0")
+        return
+    if not status.get("polling_ready"):
+        logger.info("Telegram bot polling skipped: token or allowed chat id is missing")
+        return
+
+    await asyncio.sleep(6)
+    await notifier.delete_webhook()
+    logger.info("Telegram bot poller started.")
+
+    while True:
+        try:
+            updates = await notifier.get_updates(timeout=20, limit=20)
+            for update in updates:
+                await _telegram_handle_update(update)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"Telegram bot poller error: {exc}")
+            await asyncio.sleep(5)
+
 
 async def signal_broadcaster_task():
     """[LIVE] Broadcasts ML signals + real system health to all WebSocket clients every 15s."""
@@ -773,6 +5108,9 @@ async def account_poller_task():
                     "server": acc_info.get("server", "N/A"),
                     "trade_allowed": acc_info.get("trade_allowed", False),
                     "trade_expert": acc_info.get("trade_expert", False),
+                    "bridge_connected": acc_info.get("bridge_connected"),
+                    "bridge_live_trading_enabled": acc_info.get("bridge_live_trading_enabled"),
+                    "bridge_url": acc_info.get("bridge_url"),
                 }
                 GLOBAL_ACCOUNT_CACHE["positions"] = positions
                 GLOBAL_ACCOUNT_CACHE["updated_at"] = time.time()
@@ -809,10 +5147,14 @@ async def account_poller_task():
 async def macro_poller_task():
     """Polls yfinance for Gold, Stocks, and Indices every 30s and broadcasts to UI."""
     import yfinance as yf
-    from intelligence.technical_engine import MACRO_MAPPING
+    from intelligence.constants import YFINANCE_DISABLED_TICKERS
     
-    symbols = list(MACRO_MAPPING.keys())
-    tickers = list(MACRO_MAPPING.values())
+    poll_mapping = {
+        sym: ticker
+        for sym, ticker in MACRO_MAPPING.items()
+        if ticker not in YFINANCE_DISABLED_TICKERS and not str(ticker).endswith("-USD")
+    }
+    tickers = list(dict.fromkeys(poll_mapping.values()))
     
     while True:
         # Give the server a few seconds to warm up before the first heavy fetch
@@ -826,7 +5168,7 @@ async def macro_poller_task():
             )
             
             if not data.empty:
-                for sym, ticker in MACRO_MAPPING.items():
+                for sym, ticker in poll_mapping.items():
                     try:
                         price = 0
                         delta = 0
@@ -946,6 +5288,19 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 notifier = NotificationService()
+_kafka_decode_skip_counts: dict[str, int] = {}
+
+
+def _decode_kafka_json(value: bytes, topic: str) -> dict | None:
+    try:
+        return json.loads(value.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        _kafka_decode_skip_counts[topic] = _kafka_decode_skip_counts.get(topic, 0) + 1
+        count = _kafka_decode_skip_counts[topic]
+        if count <= 5 or count % 100000 == 0:
+            logger.warning(f"Kafka {topic}: skipped malformed message #{count} ({exc})")
+    return None
+
 
 async def kafka_consumer_task():
     """Consumes normal trade stream for ticking and whales."""
@@ -961,7 +5316,9 @@ async def kafka_consumer_task():
     try:
         await consumer.start()
         async for msg in consumer:
-            data = json.loads(msg.value.decode("utf-8"))
+            data = _decode_kafka_json(msg.value, "trade_stream")
+            if data is None:
+                continue
             
             # Broadcast Tick (Throttled to 2 FPS to prevent UI rendering crashes from the raw firehose)
             now = time.time()
@@ -1004,7 +5361,9 @@ async def dlq_consumer_task():
     try:
         await consumer.start()
         async for msg in consumer:
-            data = json.loads(msg.value.decode("utf-8"))
+            data = _decode_kafka_json(msg.value, "trade_stream_dlq")
+            if data is None:
+                continue
             await manager.broadcast({
                 "type": "DQ_ALERT",
                 "data": data
@@ -1039,7 +5398,8 @@ def get_market_snapshot():
         return {
             "metrics": metrics, 
             "whales": whales,
-            "global_macro": GLOBAL_MACRO_CACHE
+            "global_macro": GLOBAL_MACRO_CACHE,
+            "market_regime": _current_market_regime(),
         }
     except Exception as e:
         logger.error(f"DB Error for snapshot: {e}")
@@ -1195,6 +5555,7 @@ class MT5TradeRequest(BaseModel):
     sl: float = 0.0
     tp: float = 0.0
     price: Optional[float] = None
+    timeframe: str = "1h"
     order_kind: str = "MARKET"
     filling_policy: str = "IOC"
     deviation: int = 20
@@ -1204,7 +5565,8 @@ class MT5CloseRequest(BaseModel):
     ticket: int
 
 @app.get("/api/mt5/quote")
-def mt5_quote(symbol: str = "GOLD"):
+def mt5_quote(symbol: str = "GOLD", x_api_key: str = Header(None)):
+    verify_token(x_api_key)
     try:
         from intelligence.mt5_connector import get_mt5_quote
         result = get_mt5_quote(symbol.upper().strip())
@@ -1218,7 +5580,8 @@ def mt5_quote(symbol: str = "GOLD"):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/mt5/account")
-def mt5_account():
+def mt5_account(x_api_key: str = Header(None)):
+    verify_token(x_api_key)
     try:
         cached = GLOBAL_ACCOUNT_CACHE.get("summary", {})
         cached_at = GLOBAL_ACCOUNT_CACHE.get("updated_at", 0)
@@ -1258,17 +5621,75 @@ def mt5_account():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/mt5/positions")
-def mt5_positions():
+def mt5_positions(x_api_key: str = Header(None)):
+    verify_token(x_api_key)
     try:
         from intelligence.mt5_connector import get_mt5_positions
         return {"positions": get_mt5_positions()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/mt5/trade")
-async def mt5_execute(req: MT5TradeRequest):
-    """Send a live market order to MT5."""
+@app.post("/api/mt5/preflight")
+async def mt5_preflight(req: MT5TradeRequest, x_api_key: str = Header(None)):
+    """Check whether a live MT5 order would be allowed before sending it."""
+    verify_token(x_api_key)
+
+    def _run():
+        from intelligence.ml.readiness import live_execution_gate
+        from intelligence.mt5_connector import (
+            initialize_mt5,
+            resolve_broker_symbol,
+            validate_live_order_request,
+        )
+
+        basic = validate_live_order_request(
+            req.symbol,
+            req.side,
+            req.volume,
+            sl=req.sl,
+            tp=req.tp,
+            price=req.price,
+        )
+        graph_guard = _trade_graph_guard(req.symbol, req.side)
+        mt5_connected = initialize_mt5()
+        resolution = resolve_broker_symbol(req.symbol) if mt5_connected and basic["passed"] else None
+        ready, readiness = live_execution_gate({"symbol": req.symbol, "timeframe": req.timeframe})
+        return {
+            "ready_for_live_order": bool(
+                basic["passed"]
+                and graph_guard.get("allowed", True)
+                and mt5_connected
+                and ready
+                and resolution
+                and resolution.get("status") == "SUCCESS"
+            ),
+            "preflight": basic,
+            "graph_guard": graph_guard,
+            "mt5_connected": mt5_connected,
+            "symbol_resolution": resolution,
+            "readiness_passed": bool(ready),
+            "readiness": {
+                "passed": bool(readiness.get("passed")),
+                "blockers": readiness.get("blockers", []),
+                "thresholds": readiness.get("thresholds", {}),
+                "paper": readiness.get("paper", {}),
+                "model": readiness.get("model", {}),
+            },
+        }
+
     try:
+        return await asyncio.to_thread(_run)
+    except Exception as e:
+        logger.error(f"MT5 preflight error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/mt5/trade")
+async def mt5_execute(req: MT5TradeRequest, x_api_key: str = Header(None)):
+    """Send a live market order to MT5."""
+    verify_token(x_api_key)
+    try:
+        _assert_daily_risk_guard_allows("api_live_trade")
+        _assert_trade_graph_guard_allows(req.symbol, req.side, "api_live_trade")
         loop = asyncio.get_event_loop()
         from intelligence.tools.market_tools import execute_mt5_trade
         result = await loop.run_in_executor(
@@ -1286,8 +5707,8 @@ async def mt5_execute(req: MT5TradeRequest):
                 comment=req.comment,
             )
         )
-        if result.get("status") == "ERROR" or "error" in result:
-            raise HTTPException(status_code=400, detail=result.get("error") or result.get("message", "Trade failed"))
+        if result.get("status") != "SUCCESS":
+            raise HTTPException(status_code=409, detail=result)
         return result
     except HTTPException:
         raise
@@ -1296,8 +5717,9 @@ async def mt5_execute(req: MT5TradeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/mt5/close")
-async def mt5_close_position(req: MT5CloseRequest):
+async def mt5_close_position(req: MT5CloseRequest, x_api_key: str = Header(None)):
     """Close a specific MT5 position by ticket."""
+    verify_token(x_api_key)
     try:
         loop = asyncio.get_event_loop()
         from intelligence.mt5_connector import mt5_close_position
@@ -1361,7 +5783,311 @@ class ChatResponse(BaseModel):
     sql_query: str | None = None
     has_data: bool = False
 
+
+class KnowledgeIngestRequest(BaseModel):
+    source_uri: str
+    content: str
+    title: str | None = None
+    source_type: str = "text"
+    tenant_id: str = "public"
+    metadata: Dict[str, Any] | None = None
+
+
+class KnowledgeRetrieveRequest(BaseModel):
+    query: str
+    limit: int = 5
+    source_type: str | None = None
+    min_similarity: float = 0.0
+    tenant_id: str = "public"
+    user_id: str | None = None
+    experiment_id: str | None = None
+    experiment_arm: str | None = None
+    rerank: bool = True
+
+
+class KnowledgeFeedbackRequest(BaseModel):
+    retrieval_id: str | None = None
+    rating: str
+    useful: bool | None = None
+    query: str | None = None
+    selected_citation: str | None = None
+    comment: str | None = None
+    expected_answer: str | None = None
+    metadata: Dict[str, Any] | None = None
+
+
+class DataAnomalyRequest(BaseModel):
+    symbol: str | None = None
+    severity: str | None = None
+    hours: int = 24
+    limit: int = 20
+
+
+class DataAnomalySummaryRequest(BaseModel):
+    hours: int = 24
+
+
+class HistoricalRankingRefreshRequest(BaseModel):
+    years: list[int] = [1, 3, 5, 10]
+    full_window_only: bool = True
+
 # Root removed to avoid double-definition conflict with SPA routing at bottom
+
+
+@app.post("/api/rag/ingest")
+def rag_ingest(req: KnowledgeIngestRequest, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.rag import ingest_knowledge_document
+
+    result = ingest_knowledge_document(
+        source_uri=req.source_uri,
+        content=req.content,
+        title=req.title,
+        source_type=req.source_type,
+        metadata={**(req.metadata or {}), "tenant_id": req.tenant_id},
+    )
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/api/rag/retrieve")
+def rag_retrieve(req: KnowledgeRetrieveRequest, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.rag import retrieve_knowledge_context
+
+    result = retrieve_knowledge_context(
+        query=req.query,
+        limit=req.limit,
+        source_type=req.source_type,
+        min_similarity=req.min_similarity,
+        tenant_id=req.tenant_id,
+        user_id=req.user_id,
+        experiment_id=req.experiment_id or "rag_hybrid_rerank_v1",
+        experiment_arm=req.experiment_arm,
+        rerank=req.rerank,
+    )
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/api/rag/feedback")
+def rag_feedback(req: KnowledgeFeedbackRequest, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.rag import record_knowledge_feedback
+
+    result = record_knowledge_feedback(
+        retrieval_id=req.retrieval_id,
+        rating=req.rating,
+        useful=req.useful,
+        query=req.query,
+        selected_citation=req.selected_citation,
+        comment=req.comment,
+        expected_answer=req.expected_answer,
+        metadata={**(req.metadata or {}), "source": "api"},
+    )
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.get("/api/rag/feedback/stats")
+def rag_feedback_stats(limit: int = 20, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.rag import get_knowledge_feedback_stats
+
+    result = get_knowledge_feedback_stats(limit=limit)
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.get("/api/rag/observability")
+def rag_observability(limit: int = 50, tenant_id: str = "public", x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.rag import get_knowledge_observability
+
+    result = get_knowledge_observability(limit=limit, tenant_id=tenant_id)
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def _metric_label(value: Any) -> str:
+    return _helper_metric_label(value)
+
+
+def _metric_number(value: Any) -> float:
+    return _helper_metric_number(value)
+
+
+def prometheus_metrics():
+    """Expose app-level metrics for Prometheus without leaking secrets."""
+    from intelligence.rag import get_knowledge_feedback_stats, get_knowledge_observability, get_knowledge_stats
+
+    tenants = [
+        _metric_label(tenant.strip())
+        for tenant in os.getenv("RAG_METRICS_TENANTS", "public").split(",")
+        if tenant.strip()
+    ] or ["public"]
+    lines = [
+        "# HELP cryptostream_rag_retrievals_total Total RAG retrieval events recorded in PostgreSQL.",
+        "# TYPE cryptostream_rag_retrievals_total counter",
+        "# HELP cryptostream_rag_latency_avg_ms Average RAG retrieval latency in milliseconds.",
+        "# TYPE cryptostream_rag_latency_avg_ms gauge",
+        "# HELP cryptostream_rag_latency_p95_ms P95 RAG retrieval latency in milliseconds.",
+        "# TYPE cryptostream_rag_latency_p95_ms gauge",
+        "# HELP cryptostream_rag_estimated_cost_usd_total Estimated cumulative embedding cost in USD.",
+        "# TYPE cryptostream_rag_estimated_cost_usd_total counter",
+        "# HELP cryptostream_rag_tokens_total Total RAG query plus returned context tokens.",
+        "# TYPE cryptostream_rag_tokens_total counter",
+        "# HELP cryptostream_rag_annotation_queue_items Retrievals currently visible in the annotation queue.",
+        "# TYPE cryptostream_rag_annotation_queue_items gauge",
+        "# HELP cryptostream_rag_query_embedding_cache_hit_ratio Share of retrievals served with cached query embeddings.",
+        "# TYPE cryptostream_rag_query_embedding_cache_hit_ratio gauge",
+        "# HELP cryptostream_rag_feedback_negative_ratio Share of feedback marked negative.",
+        "# TYPE cryptostream_rag_feedback_negative_ratio gauge",
+        "# HELP cryptostream_rag_documents_total Total documents in the RAG corpus.",
+        "# TYPE cryptostream_rag_documents_total gauge",
+        "# HELP cryptostream_rag_chunks_total Total chunks in the RAG corpus.",
+        "# TYPE cryptostream_rag_chunks_total gauge",
+        "# HELP cryptostream_rag_embedded_chunks_total Total chunks with embeddings.",
+        "# TYPE cryptostream_rag_embedded_chunks_total gauge",
+    ]
+
+    try:
+        stats = get_knowledge_stats()
+    except Exception as exc:
+        logger.warning(f"RAG metrics stats unavailable: {exc}")
+        stats = {"status": "ERROR"}
+    if stats.get("status") == "SUCCESS":
+        lines.append(f"cryptostream_rag_documents_total {_metric_number(stats.get('documents'))}")
+        lines.append(f"cryptostream_rag_chunks_total {_metric_number(stats.get('chunks'))}")
+        lines.append(f"cryptostream_rag_embedded_chunks_total {_metric_number(stats.get('embedded_chunks'))}")
+
+    try:
+        feedback = get_knowledge_feedback_stats(limit=1)
+    except Exception as exc:
+        logger.warning(f"RAG feedback metrics unavailable: {exc}")
+        feedback = {"status": "ERROR"}
+    if feedback.get("status") == "SUCCESS":
+        total_feedback = _metric_number(feedback.get("feedback_count"))
+        negative_feedback = _metric_number(feedback.get("negative_count"))
+        negative_ratio = negative_feedback / total_feedback if total_feedback else 0.0
+        lines.append(f"cryptostream_rag_feedback_negative_ratio {negative_ratio:.6f}")
+
+    for tenant_id in tenants:
+        try:
+            obs = get_knowledge_observability(limit=50, tenant_id=tenant_id)
+        except Exception as exc:
+            logger.warning(f"RAG observability metrics unavailable for {tenant_id}: {exc}")
+            continue
+        if obs.get("status") != "SUCCESS":
+            continue
+        summary = obs.get("summary") or {}
+        label = f'tenant_id="{tenant_id}"'
+        lines.append(f"cryptostream_rag_retrievals_total{{{label}}} {_metric_number(summary.get('retrieval_count'))}")
+        lines.append(f"cryptostream_rag_latency_avg_ms{{{label}}} {_metric_number(summary.get('avg_latency_ms'))}")
+        lines.append(f"cryptostream_rag_latency_p95_ms{{{label}}} {_metric_number(summary.get('p95_latency_ms'))}")
+        lines.append(
+            f"cryptostream_rag_estimated_cost_usd_total{{{label}}} "
+            f"{_metric_number(summary.get('estimated_cost_usd')):.8f}"
+        )
+        lines.append(f"cryptostream_rag_tokens_total{{{label}}} {_metric_number(summary.get('total_tokens'))}")
+        retrieval_count = _metric_number(summary.get("retrieval_count"))
+        cache_hits = _metric_number(summary.get("query_cache_hits"))
+        cache_hit_ratio = cache_hits / retrieval_count if retrieval_count else 0.0
+        lines.append(f"cryptostream_rag_query_embedding_cache_hit_ratio{{{label}}} {cache_hit_ratio:.6f}")
+        lines.append(
+            f"cryptostream_rag_annotation_queue_items{{{label}}} "
+            f"{len(obs.get('annotation_queue') or [])}"
+        )
+
+        for arm in obs.get("by_experiment") or []:
+            arm_label = f'tenant_id="{tenant_id}",arm="{_metric_label(arm.get("arm"))}"'
+            lines.append(
+                f"cryptostream_rag_experiment_retrievals_total{{{arm_label}}} "
+                f"{_metric_number(arm.get('retrieval_count'))}"
+            )
+            lines.append(
+                f"cryptostream_rag_experiment_latency_avg_ms{{{arm_label}}} "
+                f"{_metric_number(arm.get('avg_latency_ms'))}"
+            )
+            lines.append(
+                f"cryptostream_rag_experiment_estimated_cost_usd_total{{{arm_label}}} "
+                f"{_metric_number(arm.get('estimated_cost_usd')):.8f}"
+            )
+
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
+@app.post("/api/anomalies/recent")
+def recent_data_anomalies(req: DataAnomalyRequest, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.tools.market_tools import get_data_anomalies
+
+    result = get_data_anomalies(
+        symbol=req.symbol,
+        severity=req.severity,
+        hours=req.hours,
+        limit=req.limit,
+    )
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/api/anomalies/summary")
+def data_anomaly_summary(req: DataAnomalySummaryRequest, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.tools.market_tools import get_data_anomaly_summary
+
+    result = get_data_anomaly_summary(hours=req.hours)
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.get("/api/historical-rankings")
+def get_historical_rankings(
+    years: int = 10,
+    direction: str = "top",
+    limit: int = 10,
+    universe: str = "COMBINED",
+    full_window_only: bool = True,
+    x_api_key: str = Header(None),
+):
+    verify_token(x_api_key)
+    from intelligence.tools.market_tools import get_historical_stock_rankings
+
+    result = get_historical_stock_rankings(
+        years=years,
+        direction=direction,
+        limit=limit,
+        universe=universe,
+        full_window_only=full_window_only,
+    )
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/api/historical-rankings/refresh")
+def refresh_historical_rankings(req: HistoricalRankingRefreshRequest, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    from intelligence.tools.market_tools import refresh_historical_stock_rankings
+
+    result = refresh_historical_stock_rankings(
+        years_list=req.years,
+        full_window_only=req.full_window_only,
+    )
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.get("/api/system/market-status")
@@ -1377,17 +6103,32 @@ from fastapi import Header
 # Concurrent Gemini request guard — prevent queue buildup under heavy load
 _GEMINI_SEMAPHORE = asyncio.Semaphore(5)  # max 5 simultaneous AI calls
 
-def verify_token(x_api_key: str = Header(None)):
-    """Validate API key. Accepts APP_API_KEY from env or 'demo' for local dev."""
-    # In production set APP_API_KEY in .env — never use 'demo' in prod
-    dev_mode = not APP_API_KEY or APP_API_KEY in ("", "changeme")
+def verify_token(
+    x_api_key: str = Header(None),
+    *,
+    detail: str = "Unauthorized",
+    status_code: int = 403,
+):
+    """Validate API key. Demo access is opt-in and limited to development-style environments."""
     valid_keys = {APP_API_KEY} if APP_API_KEY else set()
-    valid_keys.add("demo")  # always allow demo for local dev
-    if dev_mode:
-        return  # no key configured → open for local development
+    if ALLOW_DEMO_API_KEY:
+        valid_keys.add("demo")
     if x_api_key not in valid_keys:
         logger.warning(f"Unauthorized access attempt — key: {str(x_api_key)[:8]}...")
-        raise HTTPException(status_code=403, detail="Unauthorized")
+        raise HTTPException(status_code=status_code, detail=detail)
+
+
+def require_request_api_key(
+    request: Request,
+    *,
+    detail: str = "Invalid API Key",
+    status_code: int = 403,
+):
+    verify_token(
+        request.headers.get("X-API-Key"),
+        detail=detail,
+        status_code=status_code,
+    )
 
 from fastapi.responses import StreamingResponse
 
@@ -1405,6 +6146,72 @@ def chat(request: Request, req: ChatRequest, x_api_key: str = Header(None)):
         # 0. Fast-path: greeting detection — no API calls needed
         import re as _re
         import random as _random
+
+        async def _stream_historical_stock_rankings(
+            years: int,
+            direction: str,
+            universe: str,
+            limit: int = 10,
+            full_window_only: bool = True,
+        ):
+            yield json.dumps({
+                "type": "tool_call",
+                "tool": "get_historical_stock_rankings",
+                "years": years,
+                "direction": direction,
+                "limit": limit,
+                "universe": universe,
+            }) + "\n"
+            yield json.dumps({
+                "type": "status",
+                "content": f"กำลังดึงข้อมูลหุ้นที่มีผลตอบแทนสูงสุดในช่วง {years} ปีที่ผ่านมาให้คุณนะครับ โปรดรอสักครู่"
+            }) + "\n"
+
+            try:
+                from intelligence.tools.market_tools import get_historical_stock_rankings
+                ranking_out = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        get_historical_stock_rankings,
+                        years,
+                        direction,
+                        limit,
+                        universe,
+                        full_window_only,
+                    ),
+                    timeout=90.0,
+                )
+            except asyncio.TimeoutError:
+                ranking_out = {
+                    "status": "ERROR",
+                    "years": years,
+                    "direction": direction,
+                    "universe": universe,
+                    "full_window_only": bool(full_window_only),
+                    "error": "historical ranking request timed out",
+                }
+            except Exception as ranking_exc:
+                ranking_out = {
+                    "status": "ERROR",
+                    "years": years,
+                    "direction": direction,
+                    "universe": universe,
+                    "full_window_only": bool(full_window_only),
+                    "error": str(ranking_exc),
+                }
+
+            yield json.dumps({
+                "type": "metadata",
+                "sql_query": None,
+                "has_data": ranking_out.get("status") == "SUCCESS",
+                "intent": "GENERAL",
+                "tv_symbol": None,
+                "tv_symbols": [],
+            }) + "\n"
+            yield json.dumps({
+                "type": "chunk",
+                "content": _format_historical_stock_rankings(ranking_out, req.language),
+            }) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
 
         _GREETINGS = {
             "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "สวัสดีคับ", "สวัสดีฮะ",
@@ -1437,6 +6244,27 @@ def chat(request: Request, req: ChatRequest, x_api_key: str = Header(None)):
                         r"^สวัสดี", r"^หวัดดี", r"^ดี(ครับ|ค่ะ|ค้าบ|งับ|ฮะ)?$"]
             return any(_re.search(p, t) for p in patterns)
 
+        async def _retry_plain_language_answer(extra_instruction: str) -> str:
+            retry_contents = list(history_contents) + [
+                types.Content(role="user", parts=[types.Part(text=extra_instruction)])
+            ]
+            try:
+                retry_res = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=MODEL_ID,
+                        contents=retry_contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=agent_system_prompt,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0),
+                        ),
+                    ),
+                    timeout=20.0,
+                )
+                return (retry_res.text or "").strip()
+            except Exception as retry_exc:
+                logger.warning(f"Plain-language retry failed: {retry_exc}")
+                return ""
+
         if _is_greeting(user_input) and len(user_input.strip().split()) <= 5:
             if req.language == 'en':
                 reply = _random.choice([
@@ -1460,6 +6288,265 @@ def chat(request: Request, req: ChatRequest, x_api_key: str = Header(None)):
                 ])
             yield json.dumps({"type": "chunk", "content": reply}) + "\n"
             yield json.dumps({"type": "done", "intent": "CHAT", "tvSymbol": None}) + "\n"
+            return
+
+        user_lower = user_input.lower()
+        READINESS_KEYWORDS = [
+            "100%",
+            "readiness",
+            "system status",
+            "system health",
+            "ready for users",
+            "all systems",
+            "connected all systems",
+            "พร้อม 100",
+            "พร้อมไหม",
+            "พร้อมใช้งาน",
+            "พร้อมตอบ",
+            "ทุกระบบ",
+            "เชื่อมต่อทุกระบบ",
+            "ใช้งานจริง",
+            "production ready",
+        ]
+        if any(keyword in user_lower for keyword in READINESS_KEYWORDS):
+            yield json.dumps({"type": "tool_call", "tool": "get_system_readiness", "symbol": "System"}) + "\n"
+            readiness = await asyncio.to_thread(build_system_readiness)
+            yield json.dumps({
+                "type": "metadata",
+                "sql_query": None,
+                "has_data": readiness.get("ready_for_users", False),
+                "intent": "GENERAL",
+                "tv_symbol": None,
+                "tv_symbols": [],
+                "readiness": {
+                    "overall_percent": readiness.get("overall_percent"),
+                    "ready_for_users": readiness.get("ready_for_users"),
+                    "ready_for_notifications": readiness.get("ready_for_notifications"),
+                    "ready_for_live_trading": readiness.get("ready_for_live_trading"),
+                },
+            }) + "\n"
+            yield json.dumps({"type": "chunk", "content": format_readiness_for_chat(readiness)}) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+            return
+
+        if _is_capability_question(user_input) and (
+            _is_stock_top_performer_history_question(user_input) or _is_ranked_stock_history_query(user_input)
+        ):
+            capability_reply = (
+                "ได้ครับ ผมตอบได้ โดยในโหมดนี้ผมสามารถจัดอันดับหุ้นที่ผลตอบแทนดีที่สุดหรือแย่ที่สุดย้อนหลัง 10 ปีจากกลุ่มหุ้นสหรัฐที่ระบบติดตามอยู่ได้ "
+                "ถ้าต้องการให้ดึงเลย พิมพ์ว่า 'จัดอันดับหุ้น 10 ตัวแรกที่ขึ้นมากที่สุดใน 10 ปี' หรือ 'จัดอันดับหุ้น 10 ตัวแรกที่ลงมากที่สุดใน 10 ปี' และระบุเพิ่มได้ว่าต้องการเฉพาะ NASDAQ 100, S&P 500 หรือรวมทั้งสองกลุ่มครับ"
+                if req.language != "en"
+                else "Yes — I can do that. In this mode I can rank the best-performing stocks over the last 10 years from the US stock universe the system tracks. "
+                     "If you want me to fetch it now, say 'Rank the top 10 stocks with the biggest gains over the last 10 years' and optionally specify NASDAQ 100, S&P 500, or both."
+            )
+            yield json.dumps({
+                "type": "metadata",
+                "sql_query": None,
+                "has_data": True,
+                "intent": "GENERAL",
+                "tv_symbol": None,
+                "tv_symbols": [],
+            }) + "\n"
+            yield json.dumps({"type": "chunk", "content": capability_reply}) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+            return
+
+        if _is_explicit_stock_ranking_request(user_input) and not _is_capability_question(user_input):
+            requested_years = _extract_historical_years(user_input, default=10)
+            requested_direction = _extract_stock_history_direction(user_input)
+            requested_universe = _extract_stock_history_universe(user_input)
+            async for chunk in _stream_historical_stock_rankings(
+                requested_years,
+                requested_direction,
+                requested_universe,
+                10,
+                True,
+            ):
+                yield chunk
+            return
+
+        if (
+            _is_stock_top_performer_history_question(user_input) or _is_ranked_stock_history_query(user_input)
+        ) and not _is_capability_question(user_input):
+            requested_years = _extract_historical_years(user_input, default=10)
+            requested_direction = _extract_stock_history_direction(user_input)
+            requested_universe = _extract_stock_history_universe(user_input)
+            async for chunk in _stream_historical_stock_rankings(
+                requested_years,
+                requested_direction,
+                requested_universe,
+                10,
+                True,
+            ):
+                yield chunk
+            return
+
+        historical_index_terms = [
+            "ย้อนหลัง", "ที่ผ่านมา", "historical", "history", "last ", "over the last", "10 ปี", "5 ปี", "3 ปี", "1 ปี", "10ปี", "5ปี", "3ปี", "1ปี",
+            "year", "years", "decade", "performance", "return", "ภาพรวม",
+        ]
+        conceptual_index_stop_terms = [
+            "what is", "คืออะไร", "อธิบาย", "explain", "how it works", "how does", "ทำงานยังไง",
+        ]
+        requested_indices = _extract_index_history_targets(user_input)
+        requested_years = _extract_historical_years(user_input, default=10)
+        broad_stock_history_query = _is_broad_stock_history_query(user_input)
+        if broad_stock_history_query and not requested_indices:
+            requested_indices = ["NASDAQ_100", "SP500", "NASDAQ_COMPOSITE"]
+        historical_index_trigger = (
+            bool(requested_indices)
+            and not any(term in user_lower for term in conceptual_index_stop_terms)
+            and (
+                any(term in user_lower for term in historical_index_terms)
+                or broad_stock_history_query
+                or len(requested_indices) >= 2
+            )
+        )
+        if historical_index_trigger:
+            yield json.dumps({
+                "type": "tool_call",
+                "tool": "get_index_historical_summary",
+                "years": requested_years,
+                "indices": requested_indices,
+            }) + "\n"
+            hist_out = await asyncio.to_thread(
+                _get_index_historical_summary_fast,
+                requested_years,
+                requested_indices,
+            )
+            yield json.dumps({
+                "type": "metadata",
+                "sql_query": None,
+                "has_data": hist_out.get("status") == "SUCCESS",
+                "intent": "GENERAL",
+                "tv_symbol": None,
+                "tv_symbols": [],
+            }) + "\n"
+            yield json.dumps({
+                "type": "chunk",
+                "content": _format_index_historical_summary(hist_out, req.language),
+            }) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+            return
+
+        news_watch_terms = [
+            "แจ้งฉัน", "แจ้งเตือน", "เตือนฉัน", "แจ้งด้วย", "ส่งเข้า telegram",
+            "notify me", "alert me", "let me know", "send to telegram",
+        ]
+        news_subject_terms = [
+            "ข่าว", "headline", "breaking news", "big news", "news",
+        ]
+        if any(term in user_lower for term in news_watch_terms) and any(term in user_lower for term in news_subject_terms):
+            watch_symbol = _extract_news_watch_symbol(user_input, default="BTC")
+            if watch_symbol == "XAU":
+                watch_symbol = "GOLD"
+            try:
+                created = await asyncio.to_thread(_create_news_watch_alert, watch_symbol, user_input, req.language)
+            except Exception as exc:
+                logger.warning(f"Unable to create chat news watcher: {exc}")
+                message = (
+                    "I understood the request, but saving the news watcher failed. Please try again in a moment."
+                    if req.language == "en"
+                    else "ผมเข้าใจคำสั่งแล้ว แต่บันทึก news watcher ไม่สำเร็จครับ ลองอีกครั้งในอีกสักครู่ได้เลย"
+                )
+                yield json.dumps({"type": "metadata", "sql_query": None, "has_data": False, "intent": "GENERAL", "tv_symbol": None, "tv_symbols": []}) + "\n"
+                yield json.dumps({"type": "chunk", "content": message}) + "\n"
+                yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+                return
+            tg_status = notifier.telegram_status()
+            already_active = created.get("status") == "exists"
+            if req.language == "en":
+                if tg_status.get("configured"):
+                    reply = (
+                        f"News watcher is {'already active' if already_active else 'active'} for {watch_symbol}. "
+                        "When a high-impact headline appears, I will send it to your configured Telegram chat automatically."
+                    )
+                else:
+                    missing = ", ".join(tg_status.get("missing") or [])
+                    reply = (
+                        f"I created the news watcher for {watch_symbol}, but Telegram is not ready yet "
+                        f"because {missing} is missing in the running process."
+                    )
+            else:
+                if tg_status.get("configured"):
+                    reply = (
+                        (f"มี news watcher ของ {watch_symbol} อยู่แล้วครับ " if already_active else f"เปิด news watcher ให้ {watch_symbol} แล้วครับ ")
+                        + "ถ้ามีข่าวแรงหรือ headline สำคัญเข้ามา ระบบจะส่งเข้า Telegram ที่ตั้งค่าไว้ให้อัตโนมัติ"
+                    )
+                else:
+                    missing = ", ".join(tg_status.get("missing") or [])
+                    reply = (
+                        f"ผมสร้าง news watcher ให้ {watch_symbol} แล้ว แต่ Telegram ของโปรเซสนี้ยังไม่พร้อม "
+                        f"เพราะยังไม่เห็นค่า {missing} ตอน runtime ครับ"
+                    )
+
+            yield json.dumps({"type": "metadata", "sql_query": None, "has_data": True, "intent": "GENERAL", "tv_symbol": None, "tv_symbols": []}) + "\n"
+            yield json.dumps({"type": "chunk", "content": reply}) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+            return
+
+        news_query_terms = [
+            "ข่าว", "news", "headline", "headlines", "breaking", "latest",
+            "ล่าสุด", "เกิดอะไร", "มีอะไรเกิดขึ้น", "ข่าวอะไร", "มีข่าวอะไร",
+        ]
+        impact_query_terms = [
+            "กระทบ", "impact", "affect", "effect", "bias", "sentiment", "มุมมอง", "ข้างไหน",
+            "bullish", "bearish", "บวก", "ลบ",
+        ]
+        broad_asset_news_terms = [
+            "crypto", "คริปโต", "bitcoin", "btc", "ethereum", "eth", "gold", "ทอง",
+            "nasdaq", "หุ้น", "stock", "oil", "น้ำมัน", "forex", "ค่าเงิน",
+        ]
+        if any(term in user_lower for term in news_query_terms) and any(term in user_lower for term in broad_asset_news_terms):
+            news_symbol = _extract_news_watch_symbol(user_input, default="BTC")
+            yield json.dumps({"type": "tool_call", "tool": "get_news_impact", "symbol": news_symbol}) + "\n"
+            news_out = await run_agent_tool_async("get_news_impact", {"symbol": news_symbol})
+            headlines = list(news_out.get("top_headlines") or [])
+            bias_key, sentiment_key = _estimate_news_bias(headlines)
+            wants_impact = any(term in user_lower for term in impact_query_terms)
+
+            yield json.dumps({
+                "type": "metadata",
+                "sql_query": None,
+                "has_data": bool(headlines),
+                "intent": "GENERAL",
+                "tv_symbol": None,
+                "tv_symbols": [],
+            }) + "\n"
+
+            if req.language == "en":
+                if not headlines:
+                    content = f"I could not find any fresh high-signal headlines for {news_symbol} right now."
+                else:
+                    bias_text = {
+                        "bullish": "The near-term news tone leans bullish.",
+                        "bearish": "The near-term news tone leans bearish.",
+                        "mixed": "The near-term news tone is mixed.",
+                    }[bias_key]
+                    lines = [f"Latest {news_symbol} news:"]
+                    lines.extend(f"- {headline}" for headline in headlines[:4])
+                    if wants_impact:
+                        lines.append("")
+                        lines.append(bias_text)
+                    content = "\n".join(lines)
+            else:
+                if not headlines:
+                    content = f"ตอนนี้ผมยังไม่เจอ headline ใหม่ที่ชัดพอสำหรับ {news_symbol} ครับ"
+                else:
+                    bias_text = {
+                        "bullish": "โทนข่าวระยะสั้นเอนบวกมากกว่า",
+                        "bearish": "โทนข่าวระยะสั้นเอนลบมากกว่า",
+                        "mixed": "โทนข่าวระยะสั้นยังคละกันอยู่",
+                    }[bias_key]
+                    lines = [f"ข่าวล่าสุดของ {news_symbol}:"]
+                    lines.extend(f"- {headline}" for headline in headlines[:4])
+                    if wants_impact:
+                        lines.append("")
+                        lines.append(f"ผลกระทบเบื้องต้น: {bias_text}")
+                    content = "\n".join(lines)
+
+            yield json.dumps({"type": "chunk", "content": content}) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
             return
 
         # 2. Market Snapshot Context (High Fidelity)
@@ -1488,6 +6575,24 @@ Even if the user writes in a different language, your reply must be in {target_l
 Do NOT switch languages mid-response. Do NOT add translations.
 {'Write every word, label, and number description in English.' if req.language == 'en' else 'เขียนทุกคำ ทุกประโยค เป็นภาษาไทยเท่านั้น ห้ามตอบเป็นภาษาอังกฤษโดยเด็ดขาด'}
 
+
+REAL INTEGRATION RULE:
+- For system readiness questions, rely on the `get_system_readiness` fast path/API state. Do not guess.
+- Live MT5 execution is available ONLY when MT5 tooling returns connected=true and the execute tool returns SUCCESS.
+- Telegram is available ONLY when TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are configured and the send tool returns SUCCESS.
+- If MT5 or Telegram is not ready, say exactly what is missing. Never claim a trade, ticket, alert, or external action succeeded without tool proof.
+
+USER-FACING OUTPUT RULE:
+- Never answer with Python code, pseudo-code, raw function calls, or internal tool syntax.
+- Never output examples such as `print(...)`, `get_market_opportunities(...)`, `get_market_analysis(...)`, or `execute_mt5_trade(...)`.
+- Use tools internally, then explain the result in plain end-user language only.
+- For leaderboard questions such as "top gainers", "strongest this week", "เดือนนี้อะไรขึ้นแรงสุด", or "ตัวไหนเด่นสุด", summarize the actual winners and why they stand out. Do not describe how to call a tool.
+
+QUESTION-FIRST RULE:
+- Answer the user's actual question first.
+- Do not switch into full technical analysis, trade setup, or price table format unless the user explicitly asks for analysis, entry, setup, signal, TP/SL, chart view, or trade plan.
+- If the user asks broad or informational questions (news, concepts, capabilities, macro context, comparisons, process, or "what happened"), answer them directly in normal language.
+- If an asset is mentioned casually inside a broader question, do not assume the user wants chart analysis.
 
 You have deep expertise in:
 - Crypto markets (BTC, ETH, altcoins, DeFi, on-chain analysis)
@@ -1524,7 +6629,7 @@ Check 'market_status' in tool outputs. Always do full analysis with the data ret
 - MARKET CLOSED (weekend): Do full analysis, add one-line disclaimer: "⚠️ ราคาเป็นข้อมูลสุดท้ายวันศุกร์ — ยืนยันอีกครั้งเมื่อตลาดเปิด"
 - MARKET OPENING (30-60m): Warn about Stop Hunting and widening spreads.
 
-RULE #7: AUTONOMOUS AUTHORITY — If the user gives a clear order (e.g., "จัดเลย", "0.01 lot", "ลุยเลย"), EXECUTE THE TRADE using `execute_mt5_trade` based on the MOST RECENT plan in the chat. Do not ask for further confirmation if Entry/SL/TP are already discussed.
+RULE #7: AUTONOMOUS AUTHORITY WITH HARD SAFETY — If the user gives a clear order (e.g., "จัดเลย", "0.01 lot", "ลุยเลย"), call `execute_mt5_trade` based on the MOST RECENT plan only when Symbol, Side, Volume, Entry/SL/TP are known. The tool must pass MT5 preflight, live bridge readiness, and ML/paper-trade readiness. If the tool returns BLOCKED/GUARD_BLOCKED/ERROR, report the blocker and do not claim execution.
 
 RULE #9: STOCK ANALYSIS FORMAT — When analyzing a STOCK (asset_class='STOCK'), the tool returns BOTH fundamentals AND chart_analysis. YOU MUST use this STRICT Data Dashboard format for Stocks. Do not write long paragraphs:
 
@@ -1608,9 +6713,9 @@ CRITICAL RULE #6 — AUTONOMOUS TRADE EXECUTION (LIVE):
   2. Search chat history for most recent trade plan (Symbol, Entry, SL, TP) provided by you. This applies to ANY asset (e.g., BTC, EURUSD, XAUUSD).
   3. If the user specifies a 'Lot Size' (e.g., '0.01' or '1 lot'), map this value directly to the `volume` parameter in the tool.
   4. If Lot Size / Volume is not specified → Call `calculate_risk_parameters` (default 1% risk) OR use 0.01-0.10 relative to account size.
-  5. CALL THE TOOL `execute_mt5_trade(symbol, side, volume, sl, tp)` IMMEDIATELY.
+  5. CALL THE TOOL `execute_mt5_trade(symbol, side, volume, sl, tp)` IMMEDIATELY only when the plan has a real Stop Loss and volume. The execution tool performs final live-readiness checks and may block.
   6. SAFETY EXCEPTION: If your most recent analysis result was "HOLD", "WAIT", or "NEUTRAL", DO NOT execute the trade. Explain clearly: "ฉันยังเทรดให้ไม่ได้ เพราะแผนล่าสุดระบุว่าต้อง [พักรอดูสถานการณ์]..."
-  7. CRITICAL: NEVER print a Ticket ID or say "กำลังดำเนินการ..." unless you have already called the tool and received a 'SUCCESS' response with a real ticket number.
+  7. CRITICAL: NEVER print a Ticket ID or say "กำลังดำเนินการ..." unless you have already called the tool and received a 'SUCCESS' response with a real ticket/order number. If the response is BLOCKED/GUARD_BLOCKED/ERROR, explain exactly which gate blocked it.
 
   6. DO NOT HALLUCINATE OR MAKE UP A TICKET ID.
   7. YOU MUST WAIT FOR THE TOOL RESPONSE. 
@@ -1840,6 +6945,43 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
                 )
             ),
             types.FunctionDeclaration(
+                name="get_index_historical_summary",
+                description=(
+                    "Summarize long-term performance and current trend context for major US equity indices. "
+                    "Best for questions like: '10 ปีที่ผ่านมา NASDAQ 100, S&P 500, NASDAQ Composite เป็นอย่างไร', "
+                    "'compare US indices over the last 5 years', or 'ภาพรวมดัชนีหุ้นสหรัฐย้อนหลัง'."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "years": types.Schema(type="INTEGER", description="Lookback window in years, default 10, max 15."),
+                        "indices": types.Schema(
+                            type="ARRAY",
+                            items=types.Schema(type="STRING"),
+                            description="Optional subset of indices: NASDAQ_100, SP500, NASDAQ_COMPOSITE."
+                        ),
+                    }
+                )
+            ),
+            types.FunctionDeclaration(
+                name="get_historical_stock_rankings",
+                description=(
+                    "Rank US stocks by multi-year total return over a requested window. "
+                    "Use for questions like 'top 10 best-performing stocks over the last 10 years' or "
+                    "'หุ้น 10 ตัวที่ลงมากที่สุดใน 10 ปี'."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "years": types.Schema(type="INTEGER", description="Lookback window in years, default 10, max 15."),
+                        "direction": types.Schema(type="STRING", description="'top' for best performers or 'bottom' for worst performers."),
+                        "limit": types.Schema(type="INTEGER", description="Number of ranked stocks to return, default 10."),
+                        "universe": types.Schema(type="STRING", description="COMBINED, NASDAQ100, or SP500."),
+                        "full_window_only": types.Schema(type="BOOLEAN", description="Keep only stocks with near-full history across the requested window."),
+                    }
+                )
+            ),
+            types.FunctionDeclaration(
                 name="recall_memories",
                 description="Retrieve past trade memories for a symbol. Pass `context` (description of current market conditions) to enable semantic similarity search — finds trades from situations most like the present, not just the most recent ones.",
                 parameters=types.Schema(
@@ -1866,6 +7008,53 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
                         "pnl_pct": types.Schema(type="NUMBER", description="Optional: Profit/Loss percentage")
                     },
                     required=["symbol", "side", "entry_price", "reasoning"]
+                )
+            ),
+            types.FunctionDeclaration(
+                name="retrieve_knowledge_context",
+                description=(
+                    "Retrieve RAG context from the CryptoStream AI knowledge base. "
+                    "Use this for questions that need ingested docs, project notes, research snippets, "
+                    "or prior unstructured knowledge. Returns cited chunks from PostgreSQL/pgvector."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "query": types.Schema(type="STRING", description="Natural-language retrieval query"),
+                        "limit": types.Schema(type="INTEGER", description="Number of chunks to retrieve, default 5"),
+                        "source_type": types.Schema(type="STRING", description="Optional filter such as pdf, md, news, research, text")
+                    },
+                    required=["query"]
+                )
+            ),
+            types.FunctionDeclaration(
+                name="get_data_anomalies",
+                description=(
+                    "Retrieve recent market data anomalies detected by the Airflow anomaly detection pipeline. "
+                    "Use when the user asks about abnormal prices, volume spikes, missing candles, data quality, "
+                    "or whether recent market data looks reliable."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "symbol": types.Schema(type="STRING", description="Optional symbol filter, e.g. BTC-USD or NVDA"),
+                        "severity": types.Schema(type="STRING", description="Optional severity filter: LOW, MEDIUM, HIGH, CRITICAL"),
+                        "hours": types.Schema(type="INTEGER", description="Lookback window in hours, default 24"),
+                        "limit": types.Schema(type="INTEGER", description="Maximum anomalies to return, default 20")
+                    },
+                )
+            ),
+            types.FunctionDeclaration(
+                name="get_data_anomaly_summary",
+                description=(
+                    "Return aggregate anomaly counts from the market data anomaly pipeline. "
+                    "Use for dashboard-style questions about total CRITICAL/HIGH anomalies and top affected symbols."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "hours": types.Schema(type="INTEGER", description="Lookback window in hours, default 24")
+                    },
                 )
             ),
             types.FunctionDeclaration(
@@ -2003,7 +7192,9 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
             "BUY","SELL","LONG","SHORT","HOLD","AND","THE","FOR","NOT","USD",
             "THB","ATR","RSI","EMA","ICT","HTF","LTF","BOS","SMC","FVG",
             "TP","SL","RR","ADX","OB","AI","TV","API","DB","LOT","LOTS",
-            "VOLUME","VOL"
+            "VOLUME","VOL","DATA","ANOMALY","ANOMALIES","QUALITY","PIPELINE",
+            "CRYPTO","COIN","COINS","STOCK","STOCKS","FOREX","MARKET","MARKETS",
+            "ASSET","ASSETS","NEWS","HEADLINE","HEADLINES"
         }
 
         def _resolve_asset_class(sym: str) -> str:
@@ -2092,6 +7283,62 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
             ]
             return any(_re.search(p, t) for p in patterns)
 
+        def _humanize_seconds(seconds: Any, language: str) -> str:
+            try:
+                total = int(seconds)
+            except (TypeError, ValueError):
+                total = 0
+            if total <= 0:
+                return "now" if language == "en" else "ตอนนี้"
+            days, rem = divmod(total, 86400)
+            hours, rem = divmod(rem, 3600)
+            minutes, _ = divmod(rem, 60)
+            parts = []
+            if days:
+                parts.append(f"{days}d" if language == "en" else f"{days} วัน")
+            if hours:
+                parts.append(f"{hours}h" if language == "en" else f"{hours} ชม.")
+            if minutes and len(parts) < 2:
+                parts.append(f"{minutes}m" if language == "en" else f"{minutes} นาที")
+            return " ".join(parts) if parts else ("<1m" if language == "en" else "<1 นาที")
+
+        def _is_market_status_query(text: str) -> bool:
+            raw = text.strip().lower()
+            market_terms = [
+                "ตลาด", "market", "crypto", "forex", "gold", "หุ้น", "stock",
+                "nasdaq", "nyse", "ทอง",
+            ]
+            status_terms = [
+                "เปิด", "ปิด", "เปิดบ้าง", "ปิดบ้าง", "เปิดอยู่", "ปิดอยู่",
+                "กี่โมงเปิด", "กี่โมงปิด", "status", "open today", "closed today",
+                "what's open", "what is open", "market open", "market closed",
+            ]
+            return any(term in raw for term in market_terms) and any(term in raw for term in status_terms)
+
+        def _looks_like_internal_tool_or_code_reply(text: str) -> bool:
+            snippet = text.strip().lower()
+            if not snippet:
+                return False
+            starts = (
+                "print(",
+                "```python",
+                "```",
+                "get_market_",
+                "get_custom_screener(",
+                "execute_mt5_trade(",
+                "send_telegram_alert(",
+            )
+            contains = (
+                "print(get_",
+                "get_market_opportunities(",
+                "get_market_analysis(",
+                "get_institutional_ml_stats(",
+                "get_trading_tactics(",
+                "function_call",
+                "tool_call",
+            )
+            return snippet.startswith(starts) or any(token in snippet for token in contains)
+
         if _is_greeting(user_input) and len(user_input.strip().split()) <= 5:
             _greet_replies = [
                 "สวัสดีครับ! 😊 มีอะไรให้ช่วยเรื่องการลงทุนไหมครับ?",
@@ -2108,6 +7355,45 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
             reply = _random.choice(_greet_replies)
             yield json.dumps({"type": "chunk", "content": reply}) + "\n"
             yield json.dumps({"type": "done", "intent": "CHAT", "tvSymbol": None}) + "\n"
+            return
+
+        if _is_market_status_query(user_input):
+            from intelligence.utils.market_hours import get_market_status_data
+
+            target_lang = 'English' if req.language == 'en' else 'Thai'
+            status_data = get_market_status_data()
+            crypto = status_data.get("crypto", {})
+            forex = status_data.get("forex", {})
+            stocks = status_data.get("stocks", {})
+
+            yield json.dumps({
+                "type": "metadata",
+                "sql_query": None,
+                "has_data": True,
+                "intent": "GENERAL",
+                "tv_symbol": None,
+                "tv_symbols": [],
+            }) + "\n"
+
+            if req.language == 'en':
+                content = (
+                    "Current market status:\n"
+                    f"- Crypto: {crypto.get('status', 'OPEN')} ({crypto.get('label', '24/7')})\n"
+                    f"- Forex / Gold: {forex.get('status', 'UNKNOWN')} | next {str(forex.get('next_event', 'event')).lower()} in {_humanize_seconds(forex.get('seconds_remaining'), 'en')}\n"
+                    f"- US Stocks: {stocks.get('status', 'UNKNOWN')} | next {str(stocks.get('next_event', 'event')).lower()} in {_humanize_seconds(stocks.get('seconds_remaining'), 'en')}\n"
+                    "If you want, I can also break this down into Thailand time and tell you which one is best to watch next."
+                )
+            else:
+                content = (
+                    "สถานะตลาดตอนนี้:\n"
+                    f"- Crypto: {crypto.get('status', 'OPEN')} ({crypto.get('label', '24/7')})\n"
+                    f"- Forex / Gold: {forex.get('status', 'UNKNOWN')} | {('ปิดอีกใน' if forex.get('next_event') == 'CLOSE' else 'เปิดอีกใน')} {_humanize_seconds(forex.get('seconds_remaining'), 'th')}\n"
+                    f"- หุ้นสหรัฐ: {stocks.get('status', 'UNKNOWN')} | {('ปิดอีกใน' if stocks.get('next_event') == 'CLOSE' else 'เปิดอีกใน')} {_humanize_seconds(stocks.get('seconds_remaining'), 'th')}\n"
+                    "ถ้าต้องการ ผมสรุปต่อให้เป็นเวลาไทยและบอกได้ว่าช่วงไหนน่าจับตาที่สุดครับ"
+                )
+
+            yield json.dumps({"type": "chunk", "content": content}) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
             return
 
         # Build history (plain user message — system prompt goes to system_instruction)
@@ -2133,22 +7419,61 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
             "สัปดาห์นี้มีอะไร", "อาทิตย์นี้มีอะไร", "คืนนี้มีอะไร", "วันนี้มีอะไร", "upcoming",
             "ประกาศงบ", "ผลประกอบการ", "ประกาศตัวเลข"
         ]
+        INDEX_HISTORY_KEYWORDS = [
+            "ย้อนหลัง", "ที่ผ่านมา", "historical", "history", "last ", "over the last", "year", "years",
+            "decade", "ภาพรวม", "performance", "return", "nasdaq 100", "nasdaq composite", "s&p 500", "sp500",
+        ]
+        STOCK_HISTORY_KEYWORDS = [
+            "ข้อมูลหุ้น 1ปี", "ข้อมูลหุ้น 1 ปี", "หุ้นย้อนหลัง", "หุ้น 1 ปี", "หุ้น 1ปี", "stock return", "stock performance",
+            "market return", "equity performance", "ผลตอบแทนหุ้น", "ภาพรวมหุ้นย้อนหลัง",
+        ]
+        NEWS_KEYWORDS = [
+            "ข่าว", "news", "headline", "headlines", "breaking", "latest",
+            "ข่าวล่าสุด", "มีข่าวอะไร", "ข่าวอะไร", "เกิดอะไรขึ้น", "what happened",
+        ]
+        CONCEPTUAL_KEYWORDS = [
+            "อธิบาย", "explain", "what is", "คืออะไร", "how it works", "how does", "ทำงานยังไง",
+            "difference", "different", "ต่าง", "compare", "comparison", "เปรียบเทียบ",
+            "พื้นฐาน", "basic", "basics", "เบื้องต้น", "เข้าใจง่าย", "ง่ายๆ", "simple",
+        ]
+        ANALYSIS_INTENT_KEYWORDS = [
+            "วิเคราะห์", "analysis", "analyze", "trend", "outlook", "bias", "มุมมอง",
+            "ราคา", "price", "chart", "กราฟ", "entry", "exit", "signal", "setup",
+            "trade plan", "tp", "sl", "take profit", "stop loss", "แนวรับ", "แนวต้าน",
+            "support", "resistance", "จุดเข้า", "จุดออก", "เข้าซื้อ", "เข้าขาย",
+        ]
         # General market scan → force get_market_opportunities
         # Split into stock-only vs broad (ALL) to avoid scanning unnecessary asset classes
+        ANOMALY_KEYWORDS = [
+            "anomaly", "anomalies", "data anomaly", "data anomalies",
+            "data quality", "dq", "missing candle", "missing candles",
+            "volume spike", "price spike", "candle gap", "schema drift",
+            "pipeline issue", "pipeline health",
+        ]
+
         SCREENER_STOCK_KEYWORDS = [
             "หุ้นขึ้นแรง", "หุ้นลงแรง", "หุ้นขึ้นเยอะ", "หุ้นลงเยอะ",
             "วันนี้หุ้น", "หุ้นอะไร", "หุ้นน่า", "หุ้นไหน", "หุ้นตัวไหน",
             "น่า buy", "น่าซื้อหุ้น", "หุ้นน่าซื้อ", "หุ้นดี", "หุ้นเด่น",
             "stock scan", "scan หุ้น", "top gainer", "top loser",
+            "หุ้นขึ้นเยอะที่สุด", "หุ้นตัวไหนขึ้นแรงสุด", "เดือนนี้หุ้น", "สัปดาห์นี้หุ้น",
+            "หุ้นตัวไหนเด่นสุด", "best performing stock", "best performing stocks",
+            "strongest stocks", "top stocks this month", "top stocks this week",
+            "stocks up the most", "outperforming stocks", "monthly stock leaders",
         ]
         SCREENER_CRYPTO_KEYWORDS = [
             "crypto น่า", "เหรียญน่า", "เหรียญขึ้น", "เหรียญลง",
             "coin น่า", "วันนี้ crypto", "วันนี้เหรียญ",
+            "คริปโตตัวไหนขึ้นแรงสุด", "เหรียญตัวไหนเด่นสุด", "เดือนนี้ crypto",
+            "สัปดาห์นี้ crypto", "สัปดาห์นี้เหรียญ", "best performing crypto",
+            "strongest crypto", "top crypto this month", "top crypto this week",
+            "coins up the most", "crypto leaders", "top gaining coins",
         ]
         SCREENER_ALL_KEYWORDS = [
             "ขึ้นเยอะ", "ลงเยอะ", "น่าสนใจ", "น่าซื้อ",
             "market scan", "scan ตลาด", "ภาพรวมตลาด", "วันนี้ตลาด",
             "ตลาดเป็นยังไง", "ดูตลาดให้หน่อย", "สรุปตลาด", "วันนี้มีตัวไหนแววดี",
+            "top movers", "best performers today", "strongest assets", "leaders this week",
         ]
         
         GOLD_KEYWORDS = ["ทอง", "gold", "xau", "xauusd", "ทองคำ"]
@@ -2162,6 +7487,47 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
         if is_numeric_lot and len(user_lower.strip()) < 10:
             EXECUTE_KEYWORDS.append(user_lower.strip())
         REANALYZE_KEYWORDS = ["แผนเทรดใหม่", "แผนใหม่", "วิเคราะห์ใหม่", "อีกรอบ", "ขอแผนอีก", "new plan", "reanalyze", "re-analyze", "วิเคราะห์อีกรอบ"]
+        asks_for_news = any(kw in user_lower for kw in NEWS_KEYWORDS)
+        asks_for_calendar = any(kw in user_lower for kw in CALENDAR_KEYWORDS)
+        asks_for_concept = any(kw in user_lower for kw in CONCEPTUAL_KEYWORDS)
+        asks_for_analysis = any(kw in user_lower for kw in ANALYSIS_INTENT_KEYWORDS)
+        asks_for_broad_info = asks_for_news or asks_for_calendar or asks_for_concept
+
+        if any(kw in user_lower for kw in ANOMALY_KEYWORDS):
+            hours_match = re.search(r"\b(24|72|168)\b", user_lower)
+            hours = int(hours_match.group(1)) if hours_match else 72
+            yield json.dumps({"type": "tool_call", "tool": "get_data_anomaly_summary", "symbol": "Market"}) + "\n"
+            summary_out = await run_agent_tool_async("get_data_anomaly_summary", {"hours": hours})
+            yield json.dumps({
+                "type": "metadata",
+                "sql_query": None,
+                "has_data": summary_out.get("status") == "SUCCESS",
+                "intent": "GENERAL",
+                "tv_symbol": None,
+                "tv_symbols": [],
+            }) + "\n"
+            if summary_out.get("status") != "SUCCESS":
+                yield json.dumps({"type": "chunk", "content": f"ยังดึงข้อมูล anomaly ไม่ได้: {summary_out.get('error', 'unknown error')}"}) + "\n"
+                yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+                return
+
+            summary = summary_out.get("summary", {})
+            top_symbols = summary_out.get("top_symbols", [])
+            top_text = ", ".join(
+                f"{item.get('symbol')} ({item.get('count')})"
+                for item in top_symbols[:5]
+            ) or "ไม่มี"
+            content = (
+                f"สรุป Data Anomalies {hours} ชั่วโมงล่าสุด:\n"
+                f"- ทั้งหมด: {summary.get('total', 0)} events\n"
+                f"- Critical: {summary.get('critical', 0)} | High: {summary.get('high', 0)}\n"
+                f"- Price spikes: {summary.get('price_spikes', 0)} | Volume spikes: {summary.get('volume_spikes', 0)} | Range spikes: {summary.get('range_spikes', 0)} | Missing gaps: {summary.get('missing_gaps', 0)}\n"
+                f"- Symbols ที่เจอบ่อย: {top_text}\n"
+                "ระบบ anomaly pipeline และ Postgres พร้อมตอบคำถามด้าน data quality แล้วครับ"
+            )
+            yield json.dumps({"type": "chunk", "content": content}) + "\n"
+            yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+            return
 
         if any(kw in user_lower for kw in REANALYZE_KEYWORDS):
             override = "[MANDATORY OVERRIDE: ผู้ใช้ต้องการ 'แผนเทรดใหม่' หรือให้ 'วิเคราะห์อีกรอบ' ห้ามใช้ข้อมูลเก่าจากประวัติการแชทเด็ดขาด ให้พิจารณาว่าผู้ใช้กำลังพูดถึง Symbol ไหน แล้วเรียกใช้เครื่องมือเพื่อวิเคราะห์กราฟใหม่หรือคำนวณ Entry, SL, TP ใหม่ทั้งหมด]"
@@ -2169,24 +7535,42 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
             override = "[MANDATORY OVERRIDE: ผู้ใช้สั่งให้ส่งข้อความเข้า Telegram ให้คุณแต่งข้อความสรุปตามสิ่งที่ผู้ใช้ต้องการ (ห้ามยาวเกินไป) แล้วเรียก send_telegram_alert(message) ทันที ห้ามปฏิเสธเด็ดขาด]"
         elif any(kw in user_lower for kw in EXECUTE_KEYWORDS):
             override = "[MANDATORY EXECUTION: ผู้ใช้สั่ง 'จัดเลย', 'นำแผนนี้ไปใช้' หรือระบุ 'Lot Size' (0.01, 0.1, ฯลฯ) ให้คุณทำตามขั้นตอนดังนี้: (1) ย้อนกลับไปดูแผนการเทรดล่าสุดจากประวัติการแชท (2) หากแผนล่าสุดคือ BUY หรือ SELL ให้เรียกใช้เครื่องมือ execute_mt5_trade ทันที ห้ามแสดงความเห็นก่อน ห้ามพูด 'กำลังเทรด' เฉยๆ (3) หากยังไม่มีแผนหรือแผนล่าสุดคือ HOLD/WAIT ให้บอกผู้ใช้ทันทีว่า 'ยังเปิดออเดอร์ไม่ได้' ห้ามมโน Ticket ID ขึ้นมาเองเด็ดขาด ต้องรอผลลัพธ์จากเครื่องมือเท่านั้น!]"
+        elif any(kw in user_lower for kw in ANOMALY_KEYWORDS):
+            override = "[MANDATORY OVERRIDE - DATA ANOMALIES: Call get_data_anomaly_summary(hours=72) first. If the user asks for examples or details, also call get_data_anomalies(hours=72, limit=10). Do not interpret DATA as a ticker symbol.]"
         elif any(kw in user_lower for kw in THEMATIC_KEYWORDS):
             override = "[MANDATORY OVERRIDE: ผู้ใช้ถามหา 'กลุ่มหุ้นเฉพาะทาง' หรือ 'หุ้น Laggard' ให้คุณทำดังนี้ทันที: (1) คิดรายชื่อหุ้น ticker สัก 8-12 ตัวที่อยู่ในกลุ่มนั้นขึ้นมาจากความรู้ของคุณเอง (2) เรียก get_custom_screener(tickers=[...]) ด้วยรายชื่อที่คิดได้ ห้ามเรียก get_market_opportunities เด็ดขาด]"
         elif any(kw in user_lower for kw in CALENDAR_KEYWORDS):
             override = "[MANDATORY OVERRIDE: ผู้ใช้ถามหา 'ปฏิทินเศรษฐกิจ' หรือ 'ข่าวสำคัญล่วงหน้า' ให้เรียก get_economic_calendar(query='...') ทันที]"
-        elif any(kw in user_lower for kw in GOLD_KEYWORDS):
+        elif any(kw in user_lower for kw in STOCK_HISTORY_KEYWORDS) or _is_broad_stock_history_query(user_input):
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามข้อมูลหุ้น/ดัชนีย้อนหลัง 1 ปีหรือหลายปี โดยยังไม่ได้ระบุหุ้นรายตัวชัดเจน ให้เรียก get_index_historical_summary(years=..., indices=['NASDAQ_100','SP500','NASDAQ_COMPOSITE']) ก่อน แล้วสรุปภาพรวมผลตอบแทนของตลาดหุ้นสหรัฐเป็นภาษาคน ห้ามเปลี่ยนไปตอบ crypto, gold หรือ technical analysis]"
+        elif (
+            any(kw in user_lower for kw in INDEX_HISTORY_KEYWORDS)
+            and _extract_index_history_targets(user_input)
+            and not any(term in user_lower for term in conceptual_index_stop_terms)
+            and (
+                any(term in user_lower for term in historical_index_terms)
+                or len(_extract_index_history_targets(user_input)) >= 2
+            )
+        ):
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเชิงย้อนหลัง/ภาพรวมของดัชนีหุ้นสหรัฐ ให้เรียก get_index_historical_summary(years=..., indices=[...]) ก่อน แล้วสรุปผลตอบแทนรวม CAGR max drawdown และภาพปัจจุบันของแต่ละดัชนีเป็นภาษาคน ห้ามเปลี่ยนไปตอบ top gainer/loser ของคริปโตหรือหุ้นรายตัว]"
+        elif asks_for_concept:
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเชิงอธิบาย เปรียบเทียบ หรือความรู้พื้นฐาน ให้ตอบตรงคำถามแบบภาษาคนอ่านง่ายก่อน ห้ามเปลี่ยนเป็น technical analysis ห้ามเรียก get_market_analysis หรือทำตารางราคา เว้นแต่ผู้ใช้ขอราคาปัจจุบันหรือแผนเทรดโดยตรง]"
+        elif any(kw in user_lower for kw in NEWS_KEYWORDS):
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเรื่องข่าวล่าสุดหรือผลกระทบของข่าว ให้เรียก get_news_impact(symbol='...') ก่อนเสมอ แล้วสรุป headline สำคัญและผลกระทบเป็นภาษาคนอ่านง่าย ห้ามเปลี่ยนเป็นการวิเคราะห์เทคนิคหรือแผนเทรดทันที]"
+        elif any(kw in user_lower for kw in GOLD_KEYWORDS) and asks_for_analysis and not asks_for_broad_info:
             override = "[MANDATORY OVERRIDE — GOLD: เรียก get_market_analysis(symbol='GOLD', asset_class='MACRO', timeframe='1h') + get_institutional_ml_stats(symbol='GOLD') + get_trading_tactics(symbol='GOLD') ทันที ห้ามใช้ข้อมูลเก่าจาก history ต้องสรุป BUY/SELL/HOLD จาก confluence ของ higher timeframe + statistical edge + tactics โดย 15m ใช้แค่ช่วยหา entry เท่านั้น]"
-        elif any(kw in user_lower for kw in OIL_KEYWORDS):
+        elif any(kw in user_lower for kw in OIL_KEYWORDS) and asks_for_analysis and not asks_for_broad_info:
             override = "[MANDATORY OVERRIDE — OIL: เรียก get_market_analysis(symbol='OIL', asset_class='MACRO', timeframe='1h') + get_institutional_ml_stats(symbol='OIL') + get_trading_tactics(symbol='OIL') ทันที ต้องสรุป Signal จาก higher timeframe + statistical edge + tactics และให้ Entry/SL/TP จากข้อมูล tool เท่านั้น]"
-        elif any(kw in user_lower for kw in CRYPTO_ASSET_KEYWORDS):
+        elif any(kw in user_lower for kw in CRYPTO_ASSET_KEYWORDS) and asks_for_analysis and not asks_for_broad_info:
             override = "[MANDATORY OVERRIDE — CRYPTO: ระบุ symbol ที่ถูกต้อง แล้วเรียก get_market_analysis(symbol='...', asset_class='CRYPTO', timeframe='1h') + get_institutional_ml_stats(symbol='...') + get_trading_tactics(symbol='...') ทันที ห้ามใช้ข้อมูลเก่าจาก history ต้องตัดสินสัญญาณจาก confluence ของ higher timeframe + structure + ML edge + tactics ไม่ใช่ยึด 15m อย่างเดียว]"
-        elif any(kw in user_lower for kw in FOREX_KEYWORDS):
+        elif any(kw in user_lower for kw in FOREX_KEYWORDS) and asks_for_analysis and not asks_for_broad_info:
             override = "[MANDATORY OVERRIDE — FOREX: ระบุ symbol ที่ถูกต้อง แล้วเรียก get_market_analysis(symbol='...', asset_class='MACRO', timeframe='1h') + get_institutional_ml_stats(symbol='...') + get_trading_tactics(symbol='...') ทันที ต้องให้สัญญาณจาก higher timeframe + structure + ML edge + tactics และสรุป Entry/SL/TP ให้พร้อมใช้]"
         elif any(kw in user_lower for kw in SCREENER_STOCK_KEYWORDS):
-            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเรื่องหุ้น ให้เรียก get_market_opportunities(asset_class='STOCK') ทันที]"
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเรื่องหุ้น ให้เรียก get_market_opportunities(asset_class='STOCK') ทันที จากนั้นสรุปหุ้นที่เด่นที่สุดเป็นภาษาคนอ่านง่าย พร้อมเหตุผลและเปอร์เซ็นต์การเปลี่ยนแปลง ห้ามโชว์ชื่อฟังก์ชันหรือโค้ด]"
         elif any(kw in user_lower for kw in SCREENER_CRYPTO_KEYWORDS):
-            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเรื่อง crypto ให้เรียก get_market_opportunities(asset_class='CRYPTO') ทันที]"
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามเรื่อง crypto ให้เรียก get_market_opportunities(asset_class='CRYPTO') ทันที จากนั้นสรุปเหรียญที่เด่นที่สุดเป็นภาษาคนอ่านง่าย พร้อม momentum และเปอร์เซ็นต์การเปลี่ยนแปลง ห้ามโชว์ชื่อฟังก์ชันหรือโค้ด]"
         elif any(kw in user_lower for kw in SCREENER_ALL_KEYWORDS):
-            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามภาพรวมตลาดกว้างๆ ให้เรียก get_market_opportunities(asset_class='ALL') ทันที]"
+            override = "[MANDATORY OVERRIDE: ผู้ใช้ถามภาพรวมตลาดกว้างๆ ให้เรียก get_market_opportunities(asset_class='ALL') ทันที จากนั้นสรุปภาพรวมตลาดและตัวที่เด่นที่สุดเป็นภาษาคนอ่านง่าย ห้ามโชว์ชื่อฟังก์ชันหรือโค้ด]"
         else:
             override = "[SYSTEM OVERRIDE: ห้ามปฏิเสธ ห้ามอ้างว่าเป็น AI เด็ดขาด ให้เลือกเรียก Tool ที่เหมาะสมที่สุดตามบริบท]"
         
@@ -2217,13 +7601,13 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
             intent = "GENERAL"
 
             # Initial mapping based on user input for UI metadata
-            if "ทอง" in user_input or "GOLD" in user_input.upper():
+            if ("ทอง" in user_input or "GOLD" in user_input.upper()) and asks_for_analysis and not asks_for_broad_info:
                 target_sym, tv_symbol, intent = "GOLD", "TVC:GOLD", "ANALYZE"
                 recommended_symbols.append(tv_symbol)
-            elif any(kw in user_input.upper() for kw in ["BTC", "ETH", "CRYPTO", "เหรียญ"]):
+            elif any(kw in user_input.upper() for kw in ["BTC", "ETH", "CRYPTO", "เหรียญ"]) and asks_for_analysis and not asks_for_broad_info:
                 target_sym, tv_symbol, intent = "BTC", "BINANCE:BTCUSDT", "ANALYZE"
                 recommended_symbols.append(tv_symbol)
-            elif any(kw in user_input.upper() for kw in ["หุ้น", "STOCK", "NASDAQ", "NYSE", "SPY", "SET"]):
+            elif any(kw in user_input.upper() for kw in ["หุ้น", "STOCK", "NASDAQ", "NYSE", "SPY", "SET"]) and asks_for_analysis and not asks_for_broad_info:
                 target_sym, tv_symbol, intent = "SPY", "AMEX:SPY", "ANALYZE"
                 recommended_symbols.append(tv_symbol)
             else:
@@ -2240,6 +7624,45 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
                     fn_args = dict(part.function_call.args)
 
                     yield json.dumps({"type": "tool_call", "tool": fn_name, "symbol": fn_args.get('symbol', 'Market')}) + "\n"
+                    yield json.dumps({
+                        "type": "status",
+                        "content": f"กำลังดึงข้อมูลจากเครื่องมือ {fn_name}..."
+                    }) + "\n"
+
+                    if fn_name == "get_historical_stock_rankings":
+                        requested_years = int(fn_args.get("years") or 10)
+                        requested_direction = str(fn_args.get("direction") or "top")
+                        requested_limit = int(fn_args.get("limit") or 10)
+                        requested_universe = str(fn_args.get("universe") or "COMBINED")
+                        requested_full_window = bool(fn_args.get("full_window_only", True))
+                        from intelligence.tools.market_tools import get_historical_stock_rankings
+
+                        yield json.dumps({
+                            "type": "status",
+                            "content": f"กำลังคำนวณอันดับหุ้นย้อนหลัง {requested_years} ปี..."
+                        }) + "\n"
+                        ranking_out = await asyncio.to_thread(
+                            get_historical_stock_rankings,
+                            requested_years,
+                            requested_direction,
+                            requested_limit,
+                            requested_universe,
+                            requested_full_window,
+                        )
+                        yield json.dumps({
+                            "type": "metadata",
+                            "sql_query": None,
+                            "has_data": ranking_out.get("status") == "SUCCESS",
+                            "intent": "GENERAL",
+                            "tv_symbol": None,
+                            "tv_symbols": [],
+                        }) + "\n"
+                        yield json.dumps({
+                            "type": "chunk",
+                            "content": _format_historical_stock_rankings(ranking_out, req.language),
+                        }) + "\n"
+                        yield json.dumps({"type": "done", "intent": "GENERAL", "tvSymbol": None}) + "\n"
+                        return
 
                     # Execute the tool using the global async runner
                     tool_out = await run_agent_tool_async(fn_name, fn_args)
@@ -2295,29 +7718,70 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
 
             # ── FALLBACK: Gemini skipped the tool — detect ticker and call it ourselves ──
             if not tool_results_parts:
-                # Disambiguation: If 'lot' is followed by a number, don't treat 'LOT' as a ticker
-                cleaned_input = re.sub(r'lot\s*\d+\.?\d*', '', user_input.lower())
-                # Extract uppercase word(s) that look like a ticker (2-6 chars, letters only)
-                ticker_candidates = re.findall(r'\b([A-Z]{2,6})\b', cleaned_input.upper())
-                auto_sym = next((t for t in ticker_candidates if t not in SKIP_WORDS), None)
+                screener_asset_class = None
+                if any(kw in user_lower for kw in SCREENER_STOCK_KEYWORDS):
+                    screener_asset_class = "STOCK"
+                elif any(kw in user_lower for kw in SCREENER_CRYPTO_KEYWORDS):
+                    screener_asset_class = "CRYPTO"
+                elif any(kw in user_lower for kw in SCREENER_ALL_KEYWORDS):
+                    screener_asset_class = "ALL"
 
-                if auto_sym:
-                    logger.info(f"🔄 Gemini skipped tool call — auto-fetching {auto_sym}")
-                    asset_class = _resolve_asset_class(auto_sym)
-                    yield json.dumps({"type": "tool_call", "tool": "get_market_analysis", "symbol": auto_sym}) + "\n"
-                    tool_out = await run_agent_tool_async("get_market_analysis", {
-                        "symbol": auto_sym,
-                        "asset_class": asset_class,
-                        "timeframe": "15m"
+                if screener_asset_class:
+                    logger.info(f"🔄 Gemini skipped screener tool call — auto-fetching market opportunities for {screener_asset_class}")
+                    yield json.dumps({"type": "tool_call", "tool": "get_market_opportunities", "symbol": screener_asset_class}) + "\n"
+                    yield json.dumps({
+                        "type": "status",
+                        "content": f"กำลังสแกนโอกาสในตลาด {screener_asset_class}..."
+                    }) + "\n"
+                    tool_out = await run_agent_tool_async("get_market_opportunities", {
+                        "asset_class": screener_asset_class,
                     })
                     tool_results_parts.append(types.Part(
-                        function_response=types.FunctionResponse(name="get_market_analysis", response=tool_out)
+                        function_response=types.FunctionResponse(name="get_market_opportunities", response=tool_out)
                     ))
-                    target_sym = auto_sym
-                    intent = "ANALYZE"
-                    tv_symbol = _resolve_tv_symbol(auto_sym)
-                    if tv_symbol not in recommended_symbols:
-                        recommended_symbols.append(tv_symbol)
+
+                    if isinstance(tool_out, dict):
+                        if tool_out.get("hero_symbol"):
+                            target_sym = tool_out["hero_symbol"]
+                            best_ex = tool_out.get("hero_exchange")
+                            tv_symbol = _resolve_tv_symbol(target_sym, exchange=best_ex)
+                            intent = "ANALYZE"
+                            recommended_symbols.insert(0, tv_symbol)
+                        elif screener_asset_class == "STOCK":
+                            target_sym, tv_symbol, intent = "SPY", "AMEX:SPY", "ANALYZE"
+                        elif screener_asset_class == "CRYPTO":
+                            target_sym, tv_symbol, intent = "BTC", "BINANCE:BTCUSDT", "ANALYZE"
+                        elif screener_asset_class == "ALL":
+                            intent = "GENERAL"
+
+                # Disambiguation: If 'lot' is followed by a number, don't treat 'LOT' as a ticker
+                if not tool_results_parts and not asks_for_concept and not broad_stock_history_query:
+                    cleaned_input = re.sub(r'lot\s*\d+\.?\d*', '', user_input.lower())
+                    # Extract uppercase word(s) that look like a ticker (2-6 chars, letters only)
+                    ticker_candidates = re.findall(r'\b([A-Z]{2,6})\b', cleaned_input.upper())
+                    auto_sym = next((t for t in ticker_candidates if t not in SKIP_WORDS), None)
+
+                    if auto_sym:
+                        logger.info(f"🔄 Gemini skipped tool call — auto-fetching {auto_sym}")
+                        asset_class = _resolve_asset_class(auto_sym)
+                        yield json.dumps({"type": "tool_call", "tool": "get_market_analysis", "symbol": auto_sym}) + "\n"
+                        yield json.dumps({
+                            "type": "status",
+                            "content": f"กำลังวิเคราะห์ {auto_sym} จากข้อมูลตลาดล่าสุด..."
+                        }) + "\n"
+                        tool_out = await run_agent_tool_async("get_market_analysis", {
+                            "symbol": auto_sym,
+                            "asset_class": asset_class,
+                            "timeframe": "15m"
+                        })
+                        tool_results_parts.append(types.Part(
+                            function_response=types.FunctionResponse(name="get_market_analysis", response=tool_out)
+                        ))
+                        target_sym = auto_sym
+                        intent = "ANALYZE"
+                        tv_symbol = _resolve_tv_symbol(auto_sym)
+                        if tv_symbol not in recommended_symbols:
+                            recommended_symbols.append(tv_symbol)
 
             # Yield metadata for UI
             # Unique symbols maintaining order
@@ -2341,13 +7805,22 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
             # calls in the stream, which the reader cannot handle and would
             # silently cut the response short.
             if tool_results_parts:
+                yield json.dumps({
+                    "type": "status",
+                    "content": "รวบรวมข้อมูลเสร็จแล้ว กำลังสรุปคำตอบ..."
+                }) + "\n"
                 # Add tool calls and responses to history
                 history_contents.append(agent_res.candidates[0].content)
                 # Append language reminder alongside tool results so Gemini sees it right before generating
+                yield json.dumps({
+                    "type": "status",
+                    "content": "กำลังร่างคำตอบ..."
+                }) + "\n"
                 lang_reminder = (
                     f"Now write your full analysis directly in {target_lang}. "
                     f"Do NOT start with 'Final Answer in {target_lang}:' or any preamble. "
-                    f"Just write the response immediately in {target_lang}."
+                    f"Just write the response immediately in {target_lang}. "
+                    f"Do NOT output code blocks, Python, or tool-call syntax."
                 )
                 tool_results_parts_with_reminder = tool_results_parts + [types.Part(text=lang_reminder)]
                 history_contents.append(types.Content(role="user", parts=tool_results_parts_with_reminder))
@@ -2361,7 +7834,31 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
                     )  # No tools → text-only, no thinking tokens
                 )
                 has_yielded_text = False
-                async for chunk in final_stream:
+                blocked_internal_reply = False
+                final_iter = final_stream.__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(final_iter.__anext__(), timeout=15.0)
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        logger.warning("Final Gemini stream stalled after tool execution; attempting non-stream recovery")
+                        retry_text = await _retry_plain_language_answer(
+                            f"Write the final user-facing answer now in {target_lang}. "
+                            "Use the tool results you already have. "
+                            "Be concise, plain-language, and do not show code, function calls, or tool syntax."
+                        )
+                        if retry_text:
+                            if has_yielded_text:
+                                yield json.dumps({"type": "chunk", "content": "\n\n" + retry_text}) + "\n"
+                            else:
+                                has_yielded_text = True
+                                yield json.dumps({"type": "chunk", "content": retry_text}) + "\n"
+                        elif has_yielded_text:
+                            yield json.dumps({"type": "chunk", "content": "\n\n(การวิเคราะห์ส่วนที่เหลือหยุดกลางทาง แต่ข้อมูลหลักถูกดึงมาแล้วครับ)"} ) + "\n"
+                        else:
+                            yield json.dumps({"type": "chunk", "content": "ผมดึงข้อมูลตลาดได้แล้ว แต่ข้อความสรุปจาก AI ค้างกลางทางครับ ลองส่งคำถามเดิมอีกครั้งได้เลย หรือพิมพ์ให้ผมสรุปแบบสั้นแทนได้ครับ"}) + "\n"
+                        break
                     try:
                         # Skip thinking tokens (Gemini 2.5 thinking model)
                         if chunk.candidates:
@@ -2369,19 +7866,33 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
                             if any(getattr(p, 'thought', False) for p in parts):
                                 continue
                         if chunk.text:
+                            if not has_yielded_text and _looks_like_internal_tool_or_code_reply(chunk.text):
+                                blocked_internal_reply = True
+                                logger.warning("Blocked raw code/tool reply after tool execution; retrying in plain language")
+                                continue
                             has_yielded_text = True
                             yield json.dumps({"type": "chunk", "content": chunk.text}) + "\n"
                     except ValueError:
                         has_yielded_text = True
                         yield json.dumps({"type": "chunk", "content": "⚠️ ถูกบล็อกโดยระบบรักษาความปลอดภัย (Safety Filter) ไม่สามารถแสดงผลได้"}) + "\n"
                 
+                if blocked_internal_reply and not has_yielded_text:
+                    retry_text = await _retry_plain_language_answer(
+                        f"Rewrite the answer for an end user in {target_lang}. "
+                        "Use plain language only. Do not show code, function calls, or tool syntax."
+                    )
+                    if retry_text:
+                        has_yielded_text = True
+                        yield json.dumps({"type": "chunk", "content": retry_text}) + "\n"
+
                 if not has_yielded_text:
                     yield json.dumps({"type": "chunk", "content": "*(AI ประมวลผลสำเร็จ แต่อาจถูกจำกัดการอธิบายข้อความ กรุณาอ้างอิงข้อมูลจากหน้าจอและผลลัพธ์การสแกนครับ)*"}) + "\n"
             else:
                 # No tool calls and no ticker detected — stream a language-enforced response
                 lang_reminder = (
                     f"Now write your response directly in {target_lang}. "
-                    f"Do NOT use any other language. Write immediately without preamble."
+                    f"Do NOT use any other language. Write immediately without preamble. "
+                    f"Do NOT output code blocks, Python, or tool-call syntax."
                 )
                 history_contents.append(agent_res.candidates[0].content)
                 history_contents.append(types.Content(role="user", parts=[types.Part(text=lang_reminder)]))
@@ -2394,16 +7905,44 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
                             thinking_config=types.ThinkingConfig(thinking_budget=0),
                         )
                     )
-                    async for chunk in no_tool_stream:
+                    no_tool_iter = no_tool_stream.__aiter__()
+                    blocked_internal_reply = False
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(no_tool_iter.__anext__(), timeout=15.0)
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            logger.warning("Final Gemini stream stalled without tool execution; attempting non-stream recovery")
+                            retry_text = await _retry_plain_language_answer(
+                                f"Write the final user-facing answer now in {target_lang}. "
+                                "Use plain language only and answer directly without code, function calls, or tool syntax."
+                            )
+                            if retry_text:
+                                yield json.dumps({"type": "chunk", "content": retry_text}) + "\n"
+                            else:
+                                yield json.dumps({"type": "chunk", "content": "AI เริ่มตอบแล้วแต่ stream ค้างกลางทางครับ ลองส่งคำถามอีกครั้งได้เลย"}) + "\n"
+                            break
                         try:
                             if chunk.candidates:
                                 parts = chunk.candidates[0].content.parts if chunk.candidates[0].content else []
                                 if any(getattr(p, 'thought', False) for p in parts):
                                     continue
                             if chunk.text:
+                                if _looks_like_internal_tool_or_code_reply(chunk.text):
+                                    blocked_internal_reply = True
+                                    logger.warning("Blocked raw code/tool reply without tool execution; retrying in plain language")
+                                    continue
                                 yield json.dumps({"type": "chunk", "content": chunk.text}) + "\n"
                         except ValueError:
                             pass
+                    if blocked_internal_reply:
+                        retry_text = await _retry_plain_language_answer(
+                            f"Rewrite the answer for an end user in {target_lang}. "
+                            "Use plain language only. Do not show code, function calls, or tool syntax."
+                        )
+                        if retry_text:
+                            yield json.dumps({"type": "chunk", "content": retry_text}) + "\n"
                 except Exception:
                     # Fallback to first-pass text
                     if agent_res.text:
@@ -2411,6 +7950,23 @@ FINAL REMINDER: Your response language is {target_lang}. Write in {target_lang} 
 
         except Exception as e:
             logging.error(f"Agent Workflow Error: {e}")
+            if (
+                _is_stock_top_performer_history_question(user_input)
+                or _is_ranked_stock_history_query(user_input)
+                or _is_explicit_stock_ranking_request(user_input)
+            ):
+                try:
+                    async for chunk in _stream_historical_stock_rankings(
+                        _extract_historical_years(user_input, default=10),
+                        _extract_stock_history_direction(user_input),
+                        _extract_stock_history_universe(user_input),
+                        10,
+                        True,
+                    ):
+                        yield chunk
+                    return
+                except Exception as fallback_exc:
+                    logging.error(f"Historical ranking fallback failed: {fallback_exc}")
             yield json.dumps({"type": "chunk", "content": f"⚠️ ระบบ AI Agent ขัดข้อง: {str(e)}"}) + "\n"
 
         return # End of agentic response
@@ -2447,6 +8003,12 @@ def health():
         "db": db_status,
         "kafka_broker": KAFKA_BROKER
     }
+
+
+@app.get("/api/system/readiness")
+def system_readiness():
+    """Return truthful readiness across core data systems and external integrations."""
+    return build_system_readiness()
 
 @app.get("/api/data/{category}")
 def get_dashboard_data(category: str):
@@ -2497,25 +8059,80 @@ def get_dashboard_data(category: str):
 
     return result
 
+def _filter_signal_rows(
+    signals: list[dict],
+    min_confidence: int = 0,
+    actionable_only: bool = False,
+    tradeable_only: bool = False,
+    grade: str | None = None,
+) -> list[dict]:
+    return _helper_filter_signal_rows(
+        signals,
+        min_confidence=min_confidence,
+        actionable_only=actionable_only,
+        tradeable_only=tradeable_only,
+        grade=grade,
+    )
+
+
 @app.get("/api/signals")
-def get_signals():
+def get_signals(
+    timeframe: str = "15m",
+    min_confidence: int = 0,
+    actionable_only: bool = False,
+    tradeable_only: bool = False,
+    grade: str | None = None,
+    limit: int = 12,
+):
     """
     [UPGRADED] Multi-Agent signals using technical indicators (RSI/MACD/ADX).
     Falls back to price-delta method if Intelligence Layer unavailable.
     """
-    cached = _cache_get("signals_v1")
+    cache_key = (
+        f"signals_v2:{timeframe}:{min_confidence}:"
+        f"{int(actionable_only)}:{int(tradeable_only)}:{(grade or '').upper()}:{limit}"
+    )
+    cached = _cache_get(cache_key)
     if cached:
         return cached
     # ── Try Intelligence Layer first ──────────────────────────────────────────
     if INTELLIGENCE_AVAILABLE and crypto_intel:
         try:
+            import concurrent.futures
+
             symbols = ["BTC", "ETH", "SOL", "XRP", "GOLD", "SILVER"]  # MT5-verified XM broker symbols only
-            signals = crypto_intel.get_quick_signals(symbols, timeframe="15m")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(crypto_intel.get_quick_signals, symbols, timeframe=timeframe)
+                signals = future.result(timeout=6)
+            signals = _filter_signal_rows(
+                signals,
+                min_confidence=min_confidence,
+                actionable_only=actionable_only,
+                tradeable_only=tradeable_only,
+                grade=grade,
+            )
+            signals = signals[: max(1, min(int(limit), 50))]
 
             if signals:
                 logging.info(f"✅ Intelligence signals: {len(signals)} symbols")
-                payload = {"signals": signals, "source": "multi_agent_indicators"}
-                _cache_set("signals_v1", payload)
+                for signal in signals:
+                    try:
+                        _record_signal_snapshot(signal, source="api_signals_multi_agent", timeframe=timeframe)
+                    except Exception as exc:
+                        logger.debug(f"Signal snapshot skipped: {exc}")
+                payload = {
+                    "signals": signals,
+                    "source": "multi_agent_indicators",
+                    "filters": {
+                        "timeframe": timeframe,
+                        "min_confidence": min_confidence,
+                        "actionable_only": actionable_only,
+                        "tradeable_only": tradeable_only,
+                        "grade": grade,
+                        "limit": limit,
+                    },
+                }
+                _cache_set(cache_key, payload)
                 return payload
         except Exception as e:
             logging.warning(f"Intelligence signals failed, falling back: {e}")
@@ -2534,48 +8151,32 @@ def get_signals():
                 """)
                 rows = cur.fetchall()
 
-        from collections import defaultdict
-        grouped = defaultdict(list)
-        for r in rows:
-            grouped[r['symbol']].append(r)
-
-        signals = []
-        for symbol, records in grouped.items():
-            if len(records) < 2:
-                continue
-            latest = records[0]
-            prev   = records[1]
-            price_now  = float(latest['avg_price'])
-            price_prev = float(prev['avg_price'])
-            vol_now    = float(latest['total_volume'])
-            vol_prev   = float(prev['total_volume'])
-
-            delta_pct = ((price_now - price_prev) / price_prev) * 100 if price_prev else 0
-            vol_surge = (vol_now / vol_prev) if vol_prev else 1.0
-
-            if delta_pct > 0.1 and vol_surge > 1.2:
-                direction, confidence = "BUY",  min(95, 60 + int(abs(delta_pct) * 10 + vol_surge * 5))
-                reason = f"Price +{delta_pct:.2f}% with volume surge x{vol_surge:.1f}"
-            elif delta_pct < -0.1 and vol_surge > 1.2:
-                direction, confidence = "SELL", min(95, 60 + int(abs(delta_pct) * 10 + vol_surge * 5))
-                reason = f"Price {delta_pct:.2f}% with volume surge x{vol_surge:.1f}"
-            elif abs(delta_pct) < 0.05:
-                direction, confidence = "HOLD", 50
-                reason = "Low momentum, tight range consolidation"
-            else:
-                direction, confidence = "WATCH", 45
-                reason = f"Mixed signal: Δ{delta_pct:.2f}%, vol x{vol_surge:.1f}"
-
-            signals.append({
-                "symbol": symbol, "direction": direction, "confidence": confidence,
-                "reason": reason, "price": price_now,
-                "delta_pct": round(delta_pct, 4), "vol_surge": round(vol_surge, 2),
-                "timestamp": str(latest['window_end'])
-            })
-
-        signals.sort(key=lambda x: x['confidence'], reverse=True)
-        payload = {"signals": signals[:10], "source": "price_delta_fallback"}
-        _cache_set("signals_v1", payload)
+        signals = _helper_build_price_delta_fallback_signals(rows)
+        signals = _filter_signal_rows(
+            signals,
+            min_confidence=min_confidence,
+            actionable_only=actionable_only,
+            tradeable_only=tradeable_only,
+            grade=grade,
+        )
+        payload = {
+            "signals": signals[: max(1, min(int(limit), 50))],
+            "source": "price_delta_fallback",
+            "filters": {
+                "timeframe": timeframe,
+                "min_confidence": min_confidence,
+                "actionable_only": actionable_only,
+                "tradeable_only": tradeable_only,
+                "grade": grade,
+                "limit": limit,
+            },
+        }
+        for signal in payload["signals"]:
+            try:
+                _record_signal_snapshot(signal, source="api_signals_fallback", timeframe=timeframe)
+            except Exception as exc:
+                logger.debug(f"Fallback signal snapshot skipped: {exc}")
+        _cache_set(cache_key, payload)
         return payload
 
     except Exception as e:
@@ -2690,31 +8291,20 @@ def calculate_risk(req: RiskRequest):
 @app.get("/api/sentiment")
 async def get_market_sentiment():
     """Returns real-time news sentiment analyzed by Gemini."""
-    try:
-        # We reuse the sentiment agent logic directly
-        client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY") or GEMINI_API_KEY, http_options={'api_version': 'v1alpha'})
-        agent = create_sentiment_agent(client)
-        
-        # Analyze general market sentiment
-        result = agent({"symbol": "Crypto Market"})
-        
-        # Also return the raw articles for the feed
-        articles = _fetch_rss_news()
-        
-        return {
-            "overall": result.get("sentiment_data", {}),
-            "articles": articles[:15]
-        }
-    except Exception as e:
-        logging.error(f"Sentiment API error: {e}")
-        return {
-            "overall": {
-                "sentiment": "NEUTRAL",
-                "score": 0,
-                "summary": f"Could not analyze sentiment: {str(e)}"
-            },
-            "articles": []
-        }
+    return await _run_cached_thread_task(
+        "market_sentiment_v1",
+        _build_market_sentiment_payload,
+        timeout=6.0,
+        fallback=lambda: _with_data_quality(
+            _default_sentiment_payload("Sentiment engine is temporarily unavailable."),
+            cache_key="market_sentiment_v1",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="Sentiment engine is temporarily unavailable.",
+        ),
+        label="Sentiment API",
+    )
 
 @app.get("/api/intelligence/status")
 def intelligence_status():
@@ -2730,20 +8320,50 @@ def intelligence_status():
     }
 
 
+@app.get("/api/status/data-quality")
+def data_quality_status():
+    return _cache_health_summary([
+        "market_sentiment_v1",
+        "dxy_news_v1",
+        "market_indices_v5",
+        "market_stocks_v2",
+        "etf_flows_v1",
+        "market_calendar_v1:7",
+        "market_calendar_v1:14",
+        "market_calendar_v1:30",
+        "crypto_fg_v2",
+        "cnn_fg_v2",
+    ])
+
+
 # ==========================================
 # Market Data Proxy Endpoints (Sentiment Hub)
 # Caches are refreshed on each call with TTL logic
 # ==========================================
 
 _market_cache: dict = {}  # { key: { data: ..., ts: float } }
+PERSISTENT_MARKET_CACHE_KEYS = {
+    "market_sentiment_v1",
+    "dxy_news_v1",
+    "market_indices_v5",
+    "market_stocks_v2",
+    "etf_flows_v1",
+    "market_calendar_v1",
+    "crypto_fg_v2",
+    "cnn_fg_v2",
+}
+MARKET_CACHE_SNAPSHOT_DIR = os.path.join(tempfile.gettempdir(), "crypto-stream-ai", "market-cache")
 MARKET_CACHE_TTL = 300  # 5 minutes
 MARKET_CACHE_TTL_RULES = {
+    "market_sentiment_v1": 180,
+    "dxy_news_v1": 180,
     "signals_v1": 30,
     "crypto_fg_v2": 900,
     "cnn_fg_v2": 900,
     "market_indices_v5": 180,
     "market_pulse_v1": 180,
     "market_stocks_v2": 120,
+    "market_calendar_v1": 900,
     "market_screener_v2_": 300,
     "tactics:": 300,
     "tactics_audit_logs_v1": 60,
@@ -2757,36 +8377,335 @@ MARKET_CACHE_TTL_RULES = {
 _tactics_inflight: dict[str, asyncio.Task] = {}
 _alerts_refresh_task: Optional[asyncio.Task] = None
 
-def _cache_ttl_for(key: str, ttl: Optional[int] = None) -> int:
-    if ttl is not None:
-        return ttl
-    for prefix, configured_ttl in MARKET_CACHE_TTL_RULES.items():
-        if key == prefix or key.startswith(prefix):
-            return configured_ttl
-    return MARKET_CACHE_TTL
 
 def _cache_get(key: str, ttl: Optional[int] = None, allow_stale: bool = False):
+    entry = _cache_get_entry(key, ttl=ttl, allow_stale=allow_stale)
+    return entry["data"] if entry else None
+
+def _cache_get_entry(key: str, ttl: Optional[int] = None, allow_stale: bool = False):
     entry = _market_cache.get(key)
+    if not entry:
+        entry = _read_market_cache_snapshot(key)
+        if entry:
+            _market_cache[key] = entry
     if not entry:
         return None
     effective_ttl = _cache_ttl_for(key, ttl=ttl if ttl is not None else entry.get("ttl"))
     if allow_stale or (time.time() - entry["ts"]) < effective_ttl:
-        return entry["data"]
+        return entry
     return None
 
 def _cache_get_stale(key: str):
     return _cache_get(key, allow_stale=True)
 
+def _cache_get_stale_entry(key: str):
+    return _cache_get_entry(key, allow_stale=True)
+
 def _cache_set(key: str, data, ttl: Optional[int] = None):
     _market_cache[key] = {"data": data, "ts": time.time(), "ttl": ttl}
+    _write_market_cache_snapshot(key, data, ttl=ttl)
 
 def _cache_delete(key: str):
     _market_cache.pop(key, None)
 
+
+
+
+def _utc_now_iso() -> str:
+    return _helper_utc_now_iso()
+
+
+def _payload_updated_at(payload: Any, fallback_ts: Optional[float] = None) -> str:
+    return _helper_payload_updated_at(payload, fallback_ts=fallback_ts)
+
+
+def _with_data_quality(
+    payload: Any,
+    *,
+    cache_key: Optional[str],
+    status: str,
+    data_quality: str,
+    source: str,
+    warning: Optional[str] = None,
+    error: Optional[str] = None,
+    fallback_ts: Optional[float] = None,
+    details: Optional[dict[str, Any]] = None,
+):
+    return _helper_with_data_quality(
+        payload,
+        cache_key=cache_key,
+        status=status,
+        data_quality=data_quality,
+        source=source,
+        warning=warning,
+        error=error,
+        fallback_ts=fallback_ts,
+        details=details,
+    )
+
+
+def _has_non_empty_sequence(value: Any) -> bool:
+    return _helper_has_non_empty_sequence(value)
+
+
+def _market_sentiment_has_content(payload: dict) -> bool:
+    return _helper_market_sentiment_has_content(payload)
+
+
+def _market_indices_has_content(payload: dict) -> bool:
+    return _helper_market_indices_has_content(payload)
+
+
+def _market_stocks_has_content(payload: dict) -> bool:
+    return _helper_market_stocks_has_content(payload)
+
+
+def _etf_flows_has_content(payload: dict) -> bool:
+    return _helper_etf_flows_has_content(payload)
+
+
+def _calendar_has_content(payload: dict) -> bool:
+    return _helper_calendar_has_content(payload)
+
+
+def _cache_ttl_for(key: str, ttl: Optional[int] = None) -> int:
+    return _helper_cache_ttl_for(
+        key,
+        ttl=ttl,
+        ttl_rules=MARKET_CACHE_TTL_RULES,
+        default_ttl=MARKET_CACHE_TTL,
+    )
+
+
+def _is_persistent_market_cache_key(key: str) -> bool:
+    return _helper_is_persistent_market_cache_key(key, PERSISTENT_MARKET_CACHE_KEYS)
+
+
+def _market_cache_snapshot_path(key: str) -> str:
+    return _helper_market_cache_snapshot_path(key, MARKET_CACHE_SNAPSHOT_DIR)
+
+
+def _cache_health_summary(keys: list[str]) -> dict[str, Any]:
+    return _helper_cache_health_summary(
+        keys,
+        get_stale_entry=_cache_get_stale_entry,
+        cache_ttl_for=_cache_ttl_for,
+        payload_updated_at=_payload_updated_at,
+        utc_now_iso=_utc_now_iso,
+        time_fn=time.time,
+    )
+
+
+def _read_market_cache_snapshot(key: str):
+    return _helper_read_market_cache_snapshot(
+        key,
+        is_persistent_key=_is_persistent_market_cache_key,
+        snapshot_path_for=_market_cache_snapshot_path,
+        exists=os.path.exists,
+        open_fn=open,
+        load_fn=json.load,
+        time_fn=time.time,
+        warn_fn=logger.warning,
+    )
+
+
+def _write_market_cache_snapshot(key: str, data, ttl: Optional[int] = None):
+    return _helper_write_market_cache_snapshot(
+        key,
+        data,
+        ttl=ttl,
+        is_persistent_key=_is_persistent_market_cache_key,
+        snapshot_dir=MARKET_CACHE_SNAPSHOT_DIR,
+        snapshot_path_for=_market_cache_snapshot_path,
+        makedirs=os.makedirs,
+        open_fn=open,
+        dump_fn=json.dump,
+        time_fn=time.time,
+        warn_fn=logger.warning,
+    )
+    items = {}
+    now_ts = time.time()
+    for key in keys:
+        entry = _cache_get_stale_entry(key)
+        if not entry:
+            items[key] = {
+                "status": "missing",
+                "data_quality": "unavailable",
+                "updated_at": None,
+                "age_seconds": None,
+            }
+            continue
+        ttl = _cache_ttl_for(key, ttl=entry.get("ttl"))
+        age = max(0, int(now_ts - entry["ts"]))
+        items[key] = {
+            "status": "ok" if age < ttl else "stale",
+            "data_quality": "live" if age < ttl else "stale",
+            "updated_at": _payload_updated_at(entry["data"], fallback_ts=entry.get("ts")),
+            "age_seconds": age,
+            "ttl_seconds": ttl,
+        }
+    return {
+        "updated_at": _utc_now_iso(),
+        "items": items,
+    }
+
+
+async def _run_cached_thread_task(
+    cache_key: Optional[str],
+    fn,
+    *,
+    timeout: float,
+    fallback,
+    label: str,
+):
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("%s timed out after %.1fs", label, timeout)
+    except Exception as exc:
+        logger.warning("%s failed: %s", label, exc)
+
+    cached_entry = _cache_get_stale_entry(cache_key) if cache_key else None
+    if cached_entry is not None:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key=cache_key,
+            status="ok",
+            data_quality="stale",
+            source="snapshot_cache",
+            warning=f"{label} is temporarily unavailable. Showing the latest verified snapshot.",
+            fallback_ts=cached_entry.get("ts"),
+        )
+    return fallback() if callable(fallback) else fallback
+
+
+def _default_sentiment_payload(message: str) -> dict:
+    return {
+        "overall": {
+            "sentiment": "NEUTRAL",
+            "score": 0,
+            "summary": message,
+        },
+        "articles": [],
+    }
+
+
+def _build_market_sentiment_payload() -> dict:
+    cached_entry = _cache_get_entry("market_sentiment_v1")
+    if cached_entry:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key="market_sentiment_v1",
+            status="ok",
+            data_quality="live",
+            source="fresh_cache",
+            fallback_ts=cached_entry.get("ts"),
+        )
+
+    client = genai.Client(
+        api_key=os.environ.get("GOOGLE_API_KEY") or GEMINI_API_KEY,
+        http_options={"api_version": "v1alpha"},
+    )
+    agent = create_sentiment_agent(client)
+    result = agent({"symbol": "Crypto Market"})
+    articles = _fetch_rss_news()
+    payload = {
+        "overall": result.get("sentiment_data", {}),
+        "articles": articles[:15],
+    }
+    if not _market_sentiment_has_content(payload):
+        stale_entry = _cache_get_stale_entry("market_sentiment_v1")
+        if stale_entry:
+            return _with_data_quality(
+                stale_entry["data"],
+                cache_key="market_sentiment_v1",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="Sentiment live feed is incomplete. Showing the latest verified snapshot.",
+                fallback_ts=stale_entry.get("ts"),
+            )
+        return _with_data_quality(
+            _default_sentiment_payload("Sentiment engine is temporarily unavailable."),
+            cache_key="market_sentiment_v1",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="Sentiment live feed returned no usable data.",
+        )
+    _cache_set("market_sentiment_v1", payload)
+    return _with_data_quality(
+        payload,
+        cache_key="market_sentiment_v1",
+        status="ok",
+        data_quality="live",
+        source="live_analysis",
+    )
+
+
+def _build_dxy_news_payload() -> dict:
+    cached_entry = _cache_get_entry("dxy_news_v1")
+    if cached_entry:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key="dxy_news_v1",
+            status="ok",
+            data_quality="live",
+            source="fresh_cache",
+            fallback_ts=cached_entry.get("ts"),
+        )
+
+    client = genai.Client(
+        api_key=os.environ.get("GOOGLE_API_KEY") or GEMINI_API_KEY,
+        http_options={"api_version": "v1alpha"},
+    )
+    agent = create_sentiment_agent(client)
+    result = agent({"symbol": "DXY", "asset_class": "MACRO"})
+    articles = _fetch_rss_news(symbol_hint="DXY")
+    payload = {
+        "overall": result.get("sentiment_data", {}),
+        "articles": articles[:10],
+    }
+    if not _market_sentiment_has_content(payload):
+        stale_entry = _cache_get_stale_entry("dxy_news_v1")
+        if stale_entry:
+            return _with_data_quality(
+                stale_entry["data"],
+                cache_key="dxy_news_v1",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="DXY live news is incomplete. Showing the latest verified snapshot.",
+                fallback_ts=stale_entry.get("ts"),
+            )
+        return _with_data_quality(
+            _default_sentiment_payload("Macro news feed is temporarily unavailable."),
+            cache_key="dxy_news_v1",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="DXY live feed returned no usable data.",
+        )
+    _cache_set("dxy_news_v1", payload)
+    return _with_data_quality(
+        payload,
+        cache_key="dxy_news_v1",
+        status="ok",
+        data_quality="live",
+        source="live_analysis",
+    )
+
 def _fetch_crypto_fear_greed_sync():
-    cached = _cache_get("crypto_fg_v2")
-    if cached:
-        return cached
+    cached_entry = _cache_get_entry("crypto_fg_v2")
+    if cached_entry:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key="crypto_fg_v2",
+            status="ok",
+            data_quality="live",
+            source="fresh_cache",
+            fallback_ts=cached_entry.get("ts"),
+        )
     r = requests.get(
         "https://api.alternative.me/fng/?limit=31&format=json",
         timeout=8,
@@ -2812,12 +8731,25 @@ def _fetch_crypto_fear_greed_sync():
         }
     }
     _cache_set("crypto_fg_v2", result)
-    return result
+    return _with_data_quality(
+        result,
+        cache_key="crypto_fg_v2",
+        status="ok",
+        data_quality="live",
+        source="live_api",
+    )
 
 def _fetch_cnn_fear_greed_sync():
-    cached = _cache_get("cnn_fg_v2")
-    if cached:
-        return cached
+    cached_entry = _cache_get_entry("cnn_fg_v2")
+    if cached_entry:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key="cnn_fg_v2",
+            status="ok",
+            data_quality="live",
+            source="fresh_cache",
+            fallback_ts=cached_entry.get("ts"),
+        )
     r = requests.get(
         "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
         timeout=10,
@@ -2842,12 +8774,25 @@ def _fetch_cnn_fear_greed_sync():
         }
     }
     _cache_set("cnn_fg_v2", result)
-    return result
+    return _with_data_quality(
+        result,
+        cache_key="cnn_fg_v2",
+        status="ok",
+        data_quality="live",
+        source="live_api",
+    )
 
 def _build_market_indices_payload():
-    cached = _cache_get("market_indices_v5")
-    if cached:
-        return cached
+    cached_entry = _cache_get_entry("market_indices_v5")
+    if cached_entry:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key="market_indices_v5",
+            status="ok",
+            data_quality="live",
+            source="fresh_cache",
+            fallback_ts=cached_entry.get("ts"),
+        )
 
     def _fetch_yahoo_chart(symbol: str, range_: str, interval: str):
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
@@ -2925,8 +8870,27 @@ def _build_market_indices_payload():
             logger.warning(f"Yahoo chart API {sym} error: {inner_e}")
             result[meta["key"]] = {"name": meta["name"], "price": 0, "change_pct": 0, "previous_close": 0, "series": []}
 
+    if not _market_indices_has_content(result):
+        stale_entry = _cache_get_stale_entry("market_indices_v5")
+        if stale_entry:
+            return _with_data_quality(
+                stale_entry["data"],
+                cache_key="market_indices_v5",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="Market indices live feed is incomplete. Showing the latest verified snapshot.",
+                fallback_ts=stale_entry.get("ts"),
+            )
     _cache_set("market_indices_v5", result)
-    return result
+    return _with_data_quality(
+        result,
+        cache_key="market_indices_v5",
+        status="ok" if _market_indices_has_content(result) else "degraded",
+        data_quality="live" if _market_indices_has_content(result) else "partial",
+        source="live_quotes",
+        warning=None if _market_indices_has_content(result) else "Some market indices could not be refreshed from live sources.",
+    )
 
 @app.get("/api/market/crypto-fear-greed")
 async def crypto_fear_greed():
@@ -2935,15 +8899,32 @@ async def crypto_fear_greed():
         return await asyncio.to_thread(_fetch_crypto_fear_greed_sync)
     except Exception as e:
         logger.warning(f"Crypto F&G fetch error: {e}")
-        cached_fallback = _cache_get_stale("crypto_fg_v2")
-        return cached_fallback or {
-            "value": 50, "label": "Neutral", "timestamp": "",
-            "history": {
-                "yesterday": {"value": 50, "label": "Neutral"},
-                "last_week": {"value": 50, "label": "Neutral"},
-                "last_month": {"value": 50, "label": "Neutral"},
-            }
-        }
+        cached_entry = _cache_get_stale_entry("crypto_fg_v2")
+        if cached_entry:
+            return _with_data_quality(
+                cached_entry["data"],
+                cache_key="crypto_fg_v2",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="Crypto Fear & Greed live feed is unavailable. Showing the latest verified snapshot.",
+                fallback_ts=cached_entry.get("ts"),
+            )
+        return _with_data_quality(
+            {
+                "value": 50, "label": "Neutral", "timestamp": "",
+                "history": {
+                    "yesterday": {"value": 50, "label": "Neutral"},
+                    "last_week": {"value": 50, "label": "Neutral"},
+                    "last_month": {"value": 50, "label": "Neutral"},
+                }
+            },
+            cache_key="crypto_fg_v2",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="Crypto Fear & Greed live feed is unavailable.",
+        )
 
 @app.get("/api/market/cnn-fear-greed")
 async def cnn_fear_greed():
@@ -2952,137 +8933,74 @@ async def cnn_fear_greed():
         return await asyncio.to_thread(_fetch_cnn_fear_greed_sync)
     except Exception as e:
         logger.warning(f"CNN F&G fetch error: {e}")
-        cached_fallback = _cache_get_stale("cnn_fg_v2")
-        return cached_fallback or {
-            "value": 50, "label": "Neutral", "timestamp": "",
-            "history": {
-                "yesterday": {"value": 50, "label": "Neutral"},
-                "last_week": {"value": 50, "label": "Neutral"},
-                "last_month": {"value": 50, "label": "Neutral"},
-            }
-        }
+        cached_entry = _cache_get_stale_entry("cnn_fg_v2")
+        if cached_entry:
+            return _with_data_quality(
+                cached_entry["data"],
+                cache_key="cnn_fg_v2",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="CNN Fear & Greed live feed is unavailable. Showing the latest verified snapshot.",
+                fallback_ts=cached_entry.get("ts"),
+            )
+        return _with_data_quality(
+            {
+                "value": 50, "label": "Neutral", "timestamp": "",
+                "history": {
+                    "yesterday": {"value": 50, "label": "Neutral"},
+                    "last_week": {"value": 50, "label": "Neutral"},
+                    "last_month": {"value": 50, "label": "Neutral"},
+                }
+            },
+            cache_key="cnn_fg_v2",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="CNN Fear & Greed live feed is unavailable.",
+        )
 
 @app.get("/api/market/indices")
 async def market_indices():
     """Nasdaq Composite (^IXIC), Dow Jones (^DJI), and VIX (^VIX) via Yahoo Finance with Intraday History."""
-    try:
-        return await asyncio.to_thread(_build_market_indices_payload)
-        def _fetch_yahoo_chart(symbol: str, range_: str, interval: str):
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
-            r = requests.get(
-                url,
-                params={
-                    "range": range_,
-                    "interval": interval,
-                    "includePrePost": "false",
-                    "events": "div,splits",
-                },
-                timeout=12,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json,text/plain,*/*",
-                    "Referer": "https://finance.yahoo.com/",
-                },
-            )
-            r.raise_for_status()
-            payload = r.json()
-            chart = (payload or {}).get("chart", {})
-            err = chart.get("error")
-            if err:
-                raise ValueError(str(err))
-            results = chart.get("result") or []
-            if not results:
-                raise ValueError("Empty chart result")
-            return results[0]
-
-        def _series_from_chart_result(chart_result: dict):
-            ts = chart_result.get("timestamp") or []
-            ind = (chart_result.get("indicators") or {}).get("quote") or []
-            closes = (ind[0] if ind else {}).get("close") or []
-            series = []
-            for t, c in zip(ts, closes):
-                if c is None:
-                    continue
-                series.append({"time": int(t), "value": round(float(c), 2)})
-            return series
-
-        result = {}
-        symbols_map = {
-            "^NDX": {"key": "nasdaq", "name": "Nasdaq 100"},
-            "^DJI": {"key": "dow", "name": "Dow Jones"},
-            "^GSPC": {"key": "sp500", "name": "S&P 500"},
-            "DX-Y.NYB": {"key": "dxy", "name": "US Dollar Index"},
-            "^VIX": {"key": "vix", "name": "CBOE VIX"},
-        }
-
-        for sym, meta in symbols_map.items():
-            try:
-                chart_result = _fetch_yahoo_chart(sym, "5d", "15m")
-                series = _series_from_chart_result(chart_result)
-                if not series:
-                    chart_result = _fetch_yahoo_chart(sym, "1mo", "1d")
-                    series = _series_from_chart_result(chart_result)
-
-                meta_info = chart_result.get("meta") or {}
-                prev_close = meta_info.get("previousClose")
-                if prev_close is None:
-                    prev_close = meta_info.get("chartPreviousClose")
-
-                price = float(series[-1]["value"]) if series else 0.0
-                prev = float(prev_close) if prev_close not in (None, 0, "0") else (float(series[-2]["value"]) if len(series) > 1 else price)
-                chg_pct = ((price - prev) / prev) * 100 if prev else 0.0
-
-                result[meta["key"]] = {
-                    "name": meta["name"],
-                    "price": round(price, 2),
-                    "change_pct": round(chg_pct, 2),
-                    "previous_close": round(prev, 2),
-                    "series": series,
-                }
-            except Exception as inner_e:
-                logger.warning(f"❌ Yahoo chart API {sym} error: {inner_e}")
-                result[meta["key"]] = {"name": meta["name"], "price": 0, "change_pct": 0, "previous_close": 0, "series": []}
-
-        _cache_set("market_indices_v5", result)
-        return result
-    except Exception as e:
-        logger.warning(f"Market indices fetch error: {e}")
-        cached_fallback = _cache_get_stale("market_indices_v5")
-        return cached_fallback or {
-            "nasdaq": {"name": "Nasdaq 100", "price": 0, "change_pct": 0, "previous_close": 0, "series": []}, 
-            "dow": {"name": "Dow Jones", "price": 0, "change_pct": 0, "previous_close": 0, "series": []}, 
-            "sp500": {"name": "S&P 500", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
-            "dxy": {"name": "US Dollar Index", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
-            "vix": {"name": "VIX", "price": 0, "change_pct": 0, "previous_close": 0, "series": []}
-        }
+    return await _run_cached_thread_task(
+        "market_indices_v5",
+        _build_market_indices_payload,
+        timeout=6.0,
+        fallback=lambda: _with_data_quality(
+            {
+                "nasdaq": {"name": "Nasdaq 100", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
+                "dow": {"name": "Dow Jones", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
+                "sp500": {"name": "S&P 500", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
+                "dxy": {"name": "US Dollar Index", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
+                "vix": {"name": "VIX", "price": 0, "change_pct": 0, "previous_close": 0, "series": []},
+            },
+            cache_key="market_indices_v5",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="Market indices feed is temporarily unavailable.",
+        ),
+        label="Market indices API",
+    )
 
 @app.get("/api/market/dxy-news")
 async def get_dxy_news():
     """Returns real-time macro analysis for the US Dollar Index (DXY) using Gemini."""
-    try:
-        client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY") or GEMINI_API_KEY, http_options={'api_version': 'v1alpha'})
-        agent = create_sentiment_agent(client)
-        
-        # Focus analysis on US Dollar and Macro drivers
-        result = agent({"symbol": "DXY", "asset_class": "MACRO"})
-        
-        # Fetch relevant news articles using macro feeds
-        articles = _fetch_rss_news(symbol_hint="DXY")
-        
-        return {
-            "overall": result.get("sentiment_data", {}),
-            "articles": articles[:10]
-        }
-    except Exception as e:
-        logging.error(f"DXY News API error: {e}")
-        return {
-            "overall": {
-                "sentiment": "NEUTRAL",
-                "score": 0,
-                "summary": "Analyzing current macro drivers for Dollar strength..."
-            },
-            "articles": []
-        }
+    return await _run_cached_thread_task(
+        "dxy_news_v1",
+        _build_dxy_news_payload,
+        timeout=6.0,
+        fallback=lambda: _with_data_quality(
+            _default_sentiment_payload("Macro news feed is temporarily unavailable."),
+            cache_key="dxy_news_v1",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="Macro news feed is temporarily unavailable.",
+        ),
+        label="DXY news API",
+    )
 
 @app.get("/api/market/pulse")
 async def market_pulse():
@@ -3146,6 +9064,17 @@ async def market_calendar(days: int = 7):
         from intelligence.tools.market_tools import get_economic_calendar_v2, get_economic_calendar_estimated
 
         days = max(1, min(int(days), 30))
+        cache_key = f"market_calendar_v1:{days}"
+        cached_entry = _cache_get_entry(cache_key)
+        if cached_entry:
+            return _with_data_quality(
+                cached_entry["data"],
+                cache_key=cache_key,
+                status="ok",
+                data_quality="live",
+                source="fresh_cache",
+                fallback_ts=cached_entry.get("ts"),
+            )
         try:
             payload = await asyncio.wait_for(
                 asyncio.to_thread(get_economic_calendar_v2, days),
@@ -3156,18 +9085,34 @@ async def market_calendar(days: int = 7):
             payload = await asyncio.to_thread(get_economic_calendar_estimated, days)
 
         if not isinstance(payload, dict):
-            return {
+            stale_entry = _cache_get_stale_entry(cache_key)
+            if stale_entry:
+                return _with_data_quality(
+                    stale_entry["data"],
+                    cache_key=cache_key,
+                    status="ok",
+                    data_quality="stale",
+                    source="snapshot_cache",
+                    warning="Calendar engine returned an unexpected payload. Showing the latest verified snapshot.",
+                    fallback_ts=stale_entry.get("ts"),
+                )
+            return _with_data_quality({
                 "status": "ERROR",
                 "events": [],
                 "macro_watch": [],
                 "trading_note": "Calendar engine returned an unexpected response.",
                 "source_status": "invalid_payload",
-            }
+            },
+            cache_key=cache_key,
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="Calendar engine returned an unexpected response.",
+            )
 
         events = payload.get("events") or []
         macro_watch = payload.get("macro_watch") or []
-
-        return {
+        result = {
             "status": payload.get("status", "SUCCESS"),
             "period": payload.get("period"),
             "events": events,
@@ -3179,9 +9124,43 @@ async def market_calendar(days: int = 7):
             "source_status": "live_feed" if any(not event.get("is_estimated") for event in events) else ("watch_only" if events else "error"),
             "updated_at": datetime.utcnow().isoformat(),
         }
+        source_status = result["source_status"]
+        if not _calendar_has_content(result):
+            stale_entry = _cache_get_stale_entry(cache_key)
+            if stale_entry:
+                return _with_data_quality(
+                    stale_entry["data"],
+                    cache_key=cache_key,
+                    status="ok",
+                    data_quality="stale",
+                    source="snapshot_cache",
+                    warning="Calendar live feed is unavailable. Showing the latest verified snapshot.",
+                    fallback_ts=stale_entry.get("ts"),
+                )
+        _cache_set(cache_key, result)
+        return _with_data_quality(
+            result,
+            cache_key=cache_key,
+            status="ok" if source_status == "live_feed" else ("degraded" if events or macro_watch else "error"),
+            data_quality="live" if source_status == "live_feed" else ("partial" if events or macro_watch else "unavailable"),
+            source="calendar_live" if source_status == "live_feed" else "calendar_estimated",
+            warning="Calendar is using estimated guidance." if source_status == "watch_only" else None,
+            error="Calendar source is currently unavailable." if source_status == "error" and not events and not macro_watch else None,
+        )
     except Exception as e:
         logger.error(f"Market calendar API error: {e}")
-        return {
+        stale_entry = _cache_get_stale_entry(f"market_calendar_v1:{max(1, min(int(days), 30))}")
+        if stale_entry:
+            return _with_data_quality(
+                stale_entry["data"],
+                cache_key=f"market_calendar_v1:{max(1, min(int(days), 30))}",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="Calendar feed failed. Showing the latest verified snapshot.",
+                fallback_ts=stale_entry.get("ts"),
+            )
+        return _with_data_quality({
             "status": "ERROR",
             "events": [],
             "macro_watch": [],
@@ -3189,7 +9168,13 @@ async def market_calendar(days: int = 7):
             "source_status": "error",
             "error": str(e),
             "updated_at": datetime.utcnow().isoformat(),
-        }
+        },
+        cache_key=f"market_calendar_v1:{max(1, min(int(days), 30))}",
+        status="error",
+        data_quality="unavailable",
+        source="fallback",
+        error=str(e),
+        )
 
 
 
@@ -3233,49 +9218,91 @@ def _yahoo_batch_quotes(symbols: list[str]) -> dict:
     return result
 
 
+def _build_market_stocks_payload() -> dict:
+    cached_entry = _cache_get_entry("market_stocks_v2")
+    if cached_entry:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key="market_stocks_v2",
+            status="ok",
+            data_quality="live",
+            source="fresh_cache",
+            fallback_ts=cached_entry.get("ts"),
+        )
+
+    symbols_map = {
+        "NVDA": "NVDA",
+        "TSLA": "TSLA",
+        "AAPL": "AAPL",
+        "MSFT": "MSFT",
+        "META": "META",
+        "GOOGL": "GOOGL",
+        "AMD": "AMD",
+        "GOLD": "GC=F",
+        "OIL": "CL=F",
+        "DXY": "DX-Y.NYB",
+        "NASDAQ": "^IXIC",
+        "SP500": "^GSPC",
+        "BTC": "BTC-USD",
+        "ETH": "ETH-USD",
+        "SOL": "SOL-USD",
+    }
+    raw = _yahoo_batch_quotes(list(symbols_map.values()))
+
+    result = {}
+    for key, ysym in symbols_map.items():
+        q = raw.get(ysym, {})
+        price = float(q.get("regularMarketPrice") or 0)
+        chg = float(q.get("regularMarketChangePercent") or 0)
+        prev = float(q.get("regularMarketPreviousClose") or price)
+        name = q.get("shortName") or key
+        result[key] = {
+            "price": round(price, 2),
+            "change_pct": round(chg, 4),
+            "previous_close": round(prev, 2),
+            "name": name,
+        }
+
+    if not _market_stocks_has_content(result):
+        stale_entry = _cache_get_stale_entry("market_stocks_v2")
+        if stale_entry:
+            return _with_data_quality(
+                stale_entry["data"],
+                cache_key="market_stocks_v2",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="Ticker feed is incomplete. Showing the latest verified snapshot.",
+                fallback_ts=stale_entry.get("ts"),
+            )
+    _cache_set("market_stocks_v2", result)
+    return _with_data_quality(
+        result,
+        cache_key="market_stocks_v2",
+        status="ok" if _market_stocks_has_content(result) else "degraded",
+        data_quality="live" if _market_stocks_has_content(result) else "partial",
+        source="live_quotes",
+        warning=None if _market_stocks_has_content(result) else "Some tickers could not be refreshed from live sources.",
+    )
+
+
 @app.get("/api/market/stocks")
 async def market_stocks():
     """Real-time prices for ticker tape symbols (NVDA, TSLA, GOLD, NASDAQ, SP500) via Yahoo Finance batch."""
-    cached = _cache_get("market_stocks_v2")
-    if cached:
-        return cached
-    try:
-        # Key → Yahoo symbol (Expanded)
-        symbols_map = {
-            "NVDA":   "NVDA",
-            "TSLA":   "TSLA",
-            "AAPL":   "AAPL",
-            "MSFT":   "MSFT",
-            "META":   "META",
-            "GOOGL":  "GOOGL",
-            "AMD":    "AMD",
-            "GOLD":   "GC=F",
-            "OIL":    "CL=F",
-            "DXY":    "DX-Y.NYB",
-            "NASDAQ": "^IXIC",
-            "SP500":  "^GSPC",
-            "BTC":    "BTC-USD",
-            "ETH":    "ETH-USD",
-            "SOL":    "SOL-USD",
-        }
-        yahoo_symbols = list(symbols_map.values())
-        raw = await asyncio.to_thread(_yahoo_batch_quotes, yahoo_symbols)
-
-        result = {}
-        for key, ysym in symbols_map.items():
-            q = raw.get(ysym, {})
-            price = float(q.get("regularMarketPrice") or 0)
-            chg   = float(q.get("regularMarketChangePercent") or 0)
-            prev  = float(q.get("regularMarketPreviousClose") or price)
-            name  = q.get("shortName") or key
-            result[key] = {"price": round(price, 2), "change_pct": round(chg, 4),
-                           "previous_close": round(prev, 2), "name": name}
-
-        _cache_set("market_stocks_v2", result)
-        return result
-    except Exception as e:
-        logger.warning(f"market_stocks error: {e}")
-        return {k: {"price": 0, "change_pct": 0} for k in ["NVDA", "TSLA", "GOLD", "NASDAQ", "SP500"]}
+    return await _run_cached_thread_task(
+        "market_stocks_v2",
+        _build_market_stocks_payload,
+        timeout=6.0,
+        fallback=lambda: _with_data_quality(
+            {k: {"price": 0, "change_pct": 0} for k in ["NVDA", "TSLA", "GOLD", "NASDAQ", "SP500"]},
+            cache_key="market_stocks_v2",
+            status="degraded",
+            data_quality="unavailable",
+            source="fallback",
+            error="Ticker feed is temporarily unavailable.",
+        ),
+        label="Market stocks API",
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -3425,15 +9452,38 @@ def _read_tactics_audit_logs():
     cached = _cache_get("tactics_audit_logs_v1")
     if cached:
         return cached
-    conn = sqlite3.connect(PERSISTENCE_DB)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tactics_audit_log ORDER BY timestamp DESC LIMIT 100")
-    rows = cursor.fetchall()
-    conn.close()
-    payload = {"logs": [dict(r) for r in rows]}
+    try:
+        with get_persistence_conn() as conn:
+            rows = conn.execute("SELECT * FROM tactics_audit_log ORDER BY timestamp DESC LIMIT 100").fetchall()
+        payload = {"logs": [dict(r) for r in rows]}
+    except Exception as exc:
+        logger.warning(f"Tactics audit log read failed: {exc}")
+        payload = {"logs": []}
     _cache_set("tactics_audit_logs_v1", payload)
     return payload
+
+
+def _degraded_tactics_payload(symbol: str, message: str) -> dict:
+    return {
+        "symbol": symbol,
+        "price": 0.0,
+        "recommendation": "WATCH",
+        "best_persona": "GENERAL_AI",
+        "tactics": [
+            {
+                "name": "Fallback Monitor",
+                "style": "Defensive",
+                "score": 35,
+                "move": "WATCH",
+                "trigger": "Wait for backend recovery and fresh market confirmation.",
+                "invalidation": "Discard this placeholder once live tactics return.",
+                "tp": "No target while degraded.",
+                "logic": message,
+            }
+        ],
+        "timestamp": time.time(),
+        "status": "DEGRADED",
+    }
 
 @app.get("/api/tactics/{symbol}")
 async def get_tactics(symbol: str, x_api_key: str = Header(None)):
@@ -3441,8 +9491,11 @@ async def get_tactics(symbol: str, x_api_key: str = Header(None)):
     [V7-RESTORED] Fetch institutional-grade tactics for a symbol.
     Aggregates indicators and SMC structure into a tactical plan.
     """
-    if APP_API_KEY and x_api_key != APP_API_KEY and x_api_key != "demo":
-        raise HTTPException(status_code=401, detail="Unauthorized institutional key required.")
+    verify_token(
+        x_api_key,
+        detail="Unauthorized institutional key required.",
+        status_code=401,
+    )
 
     normalized_symbol = str(symbol).upper()
     cache_key = f"tactics:{normalized_symbol}"
@@ -3455,10 +9508,21 @@ async def get_tactics(symbol: str, x_api_key: str = Header(None)):
         if inflight_task is None or inflight_task.done():
             inflight_task = asyncio.create_task(_compute_tactics_payload(normalized_symbol))
             _tactics_inflight[cache_key] = inflight_task
-        return await inflight_task
+        return await asyncio.wait_for(inflight_task, timeout=8.0)
+    except asyncio.TimeoutError:
+        logger.warning("Tactics API timed out for %s", normalized_symbol)
+        cached_stale = _cache_get_stale(cache_key)
+        return cached_stale or _degraded_tactics_payload(
+            normalized_symbol,
+            "Tactical engine timed out while upstream market sources were slow.",
+        )
     except Exception as e:
         logger.error(f"Tactics API error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        cached_stale = _cache_get_stale(cache_key)
+        return cached_stale or _degraded_tactics_payload(
+            normalized_symbol,
+            f"Tactical engine error: {str(e)[:160]}",
+        )
     finally:
         inflight_task = _tactics_inflight.get(cache_key)
         if inflight_task and inflight_task.done():
@@ -3797,12 +9861,24 @@ class WatchlistItem(BaseModel):
     symbol: str
     note: Optional[str] = None
 
+
+class AlertCreateRequest(BaseModel):
+    symbol: str
+    condition: str
+    price: float
+    message: Optional[str] = None
+    entry_source: Optional[str] = None
+    timeframe: Optional[str] = None
+    meta: Optional[dict] = None
+
+
+class TelegramTestRequest(BaseModel):
+    message: Optional[str] = None
+
 @app.get("/api/watchlist")
 async def get_watchlist(request: Request):
     """Retrieve the user's priority watchlist with live performance metrics."""
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     try:
         # 1. Fetch symbols from SQLite persistence
@@ -3856,6 +9932,9 @@ async def get_watchlist(request: Request):
             })
 
         return {"watchlist": enriched_watchlist}
+    except sqlite3.OperationalError as e:
+        logger.warning(f"Watchlist storage unavailable, returning empty state: {e}")
+        return {"watchlist": []}
     except Exception as e:
         logger.error(f"Error fetching watchlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3863,9 +9942,7 @@ async def get_watchlist(request: Request):
 @app.post("/api/watchlist")
 async def add_to_watchlist(item: WatchlistItem, request: Request):
     """Add or update a symbol in the surveillance list."""
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     try:
         with get_persistence_conn() as conn:
@@ -3876,6 +9953,9 @@ async def add_to_watchlist(item: WatchlistItem, request: Request):
             )
             conn.commit()
         return {"status": "success", "symbol": item.symbol}
+    except sqlite3.OperationalError as e:
+        logger.warning(f"Watchlist add skipped due to SQLite issue: {e}")
+        return {"status": "degraded", "symbol": item.symbol, "message": "Watchlist storage is temporarily unavailable."}
     except Exception as e:
         logger.error(f"Error adding to watchlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3883,15 +9963,16 @@ async def add_to_watchlist(item: WatchlistItem, request: Request):
 @app.delete("/api/watchlist/{symbol}")
 async def remove_from_watchlist(symbol: str, request: Request):
     """Remove a symbol from the surveillance list."""
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     try:
         with get_persistence_conn() as conn:
             conn.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper(),))
             conn.commit()
         return {"status": "deleted", "symbol": symbol}
+    except sqlite3.OperationalError as e:
+        logger.warning(f"Watchlist delete skipped due to SQLite issue: {e}")
+        return {"status": "degraded", "symbol": symbol, "message": "Watchlist storage is temporarily unavailable."}
     except Exception as e:
         logger.error(f"Error removing from watchlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3906,14 +9987,26 @@ class PaperTradeCreateRequest(BaseModel):
     side: str
     volume: float = 1.0
     price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    entry_source: Optional[str] = None
+    entry_reason: Optional[str] = None
+    ml_score: Optional[float] = None
+    signal_grade: Optional[str] = None
+    macro_bias: Optional[str] = None
+    features: Optional[dict] = None
 
 
 class AutoPaperConfigUpdate(BaseModel):
     enabled: Optional[bool] = None
+    shadow_labeling_enabled: Optional[bool] = None
+    shadow_min_probability: Optional[float] = None
+    shadow_label_max_age_minutes: Optional[int] = None
     confidence_threshold: Optional[float] = None
     volume: Optional[float] = None
     cooldown_minutes: Optional[int] = None
     max_open_positions: Optional[int] = None
+    scan_interval_seconds: Optional[int] = None
     symbols: Optional[List[str]] = None
 
 
@@ -3953,29 +10046,15 @@ def _lookup_ai_score(symbol: str) -> Optional[float]:
 
 
 def _serialize_paper_trade(row: sqlite3.Row) -> dict:
-    current_price = float(row["current_price"] or row["entry_price"] or 0.0)
-    pnl_usd = float(row["pnl_usd"] if row["pnl_usd"] is not None else row["pnl"] or 0.0)
-    return {
-        "id": row["id"],
-        "symbol": row["symbol"],
-        "side": row["side"],
-        "quantity": float(row["quantity"] or row["volume"] or 0.0),
-        "volume": float(row["volume"] or row["quantity"] or 0.0),
-        "entry_price": float(row["entry_price"] or 0.0),
-        "current_price": current_price,
-        "exit_price": row["exit_price"],
-        "pnl": pnl_usd,
-        "pnl_usd": pnl_usd,
-        "status": row["status"],
-        "opened_at": row["opened_at"],
-        "closed_at": row["closed_at"],
-        "ml_score": row["ml_score"],
-        "outcome": row["outcome"],
-        "entry_source": row["entry_source"] if "entry_source" in row.keys() else None,
-        "entry_reason": row["entry_reason"] if "entry_reason" in row.keys() else None,
-        "close_reason": row["close_reason"] if "close_reason" in row.keys() else None,
-        "label_source": row["label_source"] if "label_source" in row.keys() else None,
-    }
+    return _helper_serialize_paper_trade(row)
+
+
+def _num(value: Any, default: float = 0.0) -> float:
+    return _helper_num(value, default)
+
+
+def _paper_summary(open_trades: list[dict], closed_trades: list[dict]) -> dict:
+    return _helper_paper_summary(open_trades, closed_trades)
 
 
 def _paper_trade_snapshot() -> dict:
@@ -3989,10 +10068,17 @@ def _paper_trade_snapshot() -> dict:
 
     with get_persistence_conn() as conn:
         open_rows = conn.execute(
-            "SELECT id, symbol FROM paper_trades WHERE status = 'OPEN'"
+            "SELECT id, symbol, side, current_price, entry_price FROM paper_trades WHERE status = 'OPEN'"
         ).fetchall()
         for open_row in open_rows:
-            latest_price = _get_live_price(open_row["symbol"])
+            try:
+                latest_price = _get_live_price(open_row["symbol"])
+            except Exception:
+                latest_price = _telegram_resolve_paper_entry_price(
+                    open_row["symbol"],
+                    open_row["side"],
+                    open_row["current_price"] or open_row["entry_price"],
+                )
             if latest_price > 0:
                 conn.execute(
                     "UPDATE paper_trades SET current_price = ? WHERE id = ?",
@@ -4006,10 +10092,12 @@ def _paper_trade_snapshot() -> dict:
     trades = [_serialize_paper_trade(row) for row in rows]
     open_trades = [t for t in trades if t["status"] == "OPEN"]
     closed_trades = [t for t in trades if t["status"] == "CLOSED"]
+    summary = _paper_summary(open_trades, closed_trades)
     return {
         "open_trades": open_trades,
         "closed_trades": closed_trades,
-        "total_simulated_pnl": round(sum(float(t["pnl_usd"] or 0.0) for t in closed_trades), 2),
+        "summary": summary,
+        "total_simulated_pnl": round(summary["closed_pnl_usd"], 2),
     }
 
 
@@ -4267,6 +10355,7 @@ def _read_alert_rows():
     cached = _cache_get("alerts_payload_v1")
     if cached:
         return cached
+    _refresh_user_price_alerts()
     with get_persistence_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM alerts ORDER BY datetime(created_at) DESC LIMIT 200"
@@ -4275,10 +10364,317 @@ def _read_alert_rows():
     _cache_set("alerts_payload_v1", payload)
     return payload
 
+
+def _normalize_alert_condition(condition: str) -> str:
+    normalized = str(condition or "").strip().lower()
+    if normalized not in {"above", "below"}:
+        raise HTTPException(status_code=400, detail="Alert condition must be 'above' or 'below'")
+    return normalized
+
+
+NEWS_WATCH_POLL_SECONDS = max(30, int(os.getenv("NEWS_WATCH_POLL_SECONDS", "90")))
+
+
+def _news_watch_aliases(symbol: str) -> list[str]:
+    return _helper_news_watch_aliases(symbol)
+
+
+def _extract_news_watch_symbol(text: str, default: str = "BTC") -> str:
+    return _helper_extract_news_watch_symbol(
+        text,
+        default=default,
+        trade_symbol_aliases=TRADE_SYMBOL_ALIASES,
+        fallback_extractor=_telegram_extract_symbol,
+    )
+
+
+def _estimate_news_bias(headlines: list[str]) -> tuple[str, str]:
+    return _helper_estimate_news_bias(headlines)
+
+
+def _score_news_watch_article(article: dict, symbol: str) -> tuple[int, list[str]]:
+    return _helper_score_news_watch_article(article, symbol, aliases=_news_watch_aliases(symbol))
+
+
+def _make_news_watch_hash(article: dict) -> str:
+    return _helper_make_news_watch_hash(article)
+
+
+def _create_news_watch_alert(symbol: str, original_text: str, language: str = "th") -> dict[str, Any]:
+    import sqlite3
+
+    normalized_symbol = _telegram_extract_symbol(symbol, default=symbol or "BTC").upper().strip()
+    if normalized_symbol in {"BTCUSD", "BTCUSDT"}:
+        normalized_symbol = "BTC"
+    elif normalized_symbol in {"ETHUSD", "ETHUSDT"}:
+        normalized_symbol = "ETH"
+
+    for attempt in range(4):
+        try:
+            existing = None
+            with get_persistence_conn() as conn:
+                existing = conn.execute(
+                    """
+                    SELECT * FROM alerts
+                    WHERE user_id = 'chat_news_watch'
+                      AND symbol = ?
+                      AND condition = 'news'
+                      AND status = 'ACTIVE'
+                    ORDER BY datetime(created_at) DESC
+                    LIMIT 1
+                    """,
+                    (normalized_symbol,),
+                ).fetchone()
+                if existing:
+                    return {"status": "exists", "alert": dict(existing)}
+
+                created_at = datetime.now(timezone.utc).isoformat()
+                meta = {
+                    "watch_type": "news",
+                    "symbol_aliases": _news_watch_aliases(normalized_symbol),
+                    "importance_threshold": 5,
+                    "seen_hashes": [],
+                    "created_from": "chat",
+                    "language": language,
+                    "original_text": original_text[:500],
+                    "notify_channel": "telegram",
+                }
+                message = (
+                    f"News watcher active for {normalized_symbol}. "
+                    f"Telegram will notify when a high-impact headline appears."
+                )
+                cursor = conn.execute(
+                    """
+                    INSERT INTO alerts (
+                        user_id,
+                        symbol,
+                        condition,
+                        price,
+                        timeframe,
+                        entry_source,
+                        message,
+                        meta_json,
+                        status,
+                        created_at
+                    )
+                    VALUES (?, ?, 'news', 0, 'news', 'chat_news_watch', ?, ?, 'ACTIVE', ?)
+                    """,
+                    (
+                        "chat_news_watch",
+                        normalized_symbol,
+                        message,
+                        json.dumps(meta, ensure_ascii=False),
+                        created_at,
+                    ),
+                )
+                conn.commit()
+                alert_id = int(cursor.lastrowid)
+                row = conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+            _cache_delete("alerts_payload_v1")
+            return {"status": "created", "alert": dict(row) if row else {"id": alert_id, "symbol": normalized_symbol}}
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == 3:
+                raise
+            time.sleep(0.75 * (attempt + 1))
+    raise RuntimeError("unable to create news watch alert")
+
+
+def _scan_news_watch_alerts(limit: int = 25) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    try:
+        with get_persistence_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, symbol, meta_json, message, created_at
+                FROM alerts
+                WHERE status = 'ACTIVE'
+                  AND condition = 'news'
+                  AND user_id = 'chat_news_watch'
+                ORDER BY datetime(created_at) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        for row in rows:
+            meta = {}
+            try:
+                meta = json.loads(row["meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            seen_hashes = set(meta.get("seen_hashes") or [])
+            importance_threshold = int(meta.get("importance_threshold", 5) or 5)
+            symbol = str(row["symbol"] or "").upper().strip()
+            articles = _fetch_rss_news(symbol_hint=symbol)
+            for article in articles[:10]:
+                article_hash = _make_news_watch_hash(article)
+                if article_hash in seen_hashes:
+                    continue
+                score, reasons = _score_news_watch_article(article, symbol)
+                if score < importance_threshold:
+                    continue
+                hits.append({
+                    "alert_id": int(row["id"]),
+                    "symbol": symbol,
+                    "article_hash": article_hash,
+                    "article": article,
+                    "score": score,
+                    "reasons": reasons,
+                })
+                break
+    except Exception as exc:
+        logger.warning(f"Unable to scan news watch alerts: {exc}")
+    return hits
+
+
+def _ack_news_watch_hit(alert_id: int, article_hash: str, article: dict, score: int) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with get_persistence_conn() as conn:
+        row = conn.execute("SELECT meta_json FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+        meta = {}
+        try:
+            meta = json.loads((row["meta_json"] if row else "{}") or "{}")
+        except Exception:
+            meta = {}
+        seen_hashes = list(meta.get("seen_hashes") or [])
+        if article_hash not in seen_hashes:
+            seen_hashes.append(article_hash)
+        meta["seen_hashes"] = seen_hashes[-80:]
+        meta["last_triggered_at"] = now
+        meta["last_triggered_title"] = article.get("title")
+        meta["last_triggered_link"] = article.get("link")
+        meta["last_importance_score"] = score
+        conn.execute(
+            """
+            UPDATE alerts
+            SET meta_json = ?, triggered_at = ?, message = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(meta, ensure_ascii=False),
+                now,
+                f"Latest high-impact news for {article.get('title') or 'watcher'}",
+                alert_id,
+            ),
+        )
+        conn.commit()
+    _cache_delete("alerts_payload_v1")
+
+
+async def news_watch_poller_task():
+    while True:
+        try:
+            hits = await asyncio.to_thread(_scan_news_watch_alerts)
+            for hit in hits:
+                article = hit["article"]
+                symbol = hit["symbol"]
+                title = str(article.get("title") or "Untitled headline").strip()
+                summary = str(article.get("summary") or "").strip()
+                source = str(article.get("source") or "RSS").strip()
+                link = str(article.get("link") or "").strip()
+                reasons = ", ".join(hit.get("reasons") or ["high impact"])
+                message = (
+                    f"Breaking news watch triggered for {symbol}\n"
+                    f"Headline: {title}\n"
+                    f"Source: {source}\n"
+                    f"Importance score: {hit['score']} ({reasons})"
+                )
+                if summary:
+                    message += f"\nSummary: {summary[:220]}"
+                if link:
+                    message += f"\nLink: {link}"
+                sent = await notifier.send_telegram_alert(message)
+                if sent:
+                    await asyncio.to_thread(
+                        _ack_news_watch_hit,
+                        hit["alert_id"],
+                        hit["article_hash"],
+                        article,
+                        hit["score"],
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"news_watch_poller_task error: {exc}")
+        await asyncio.sleep(NEWS_WATCH_POLL_SECONDS)
+
+
+def _refresh_user_price_alerts() -> dict[str, int]:
+    triggered = 0
+    checked = 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with get_persistence_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, symbol, condition, price, timeframe, entry_source
+                FROM alerts
+                WHERE status = 'ACTIVE'
+                  AND user_id = 'signal_feed_ui'
+                  AND condition IN ('above', 'below')
+                ORDER BY datetime(created_at) DESC
+                LIMIT 200
+                """
+            ).fetchall()
+
+            for row in rows:
+                target_price = float(row["price"] or 0.0)
+                if target_price <= 0:
+                    continue
+
+                checked += 1
+                live_price = _get_live_price(str(row["symbol"] or ""))
+                if live_price <= 0:
+                    continue
+
+                condition = str(row["condition"] or "").lower()
+                hit = (condition == "above" and live_price >= target_price) or (
+                    condition == "below" and live_price <= target_price
+                )
+                if not hit:
+                    continue
+
+                conn.execute(
+                    """
+                    UPDATE alerts
+                    SET status = 'FIRED', triggered_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, row["id"]),
+                )
+                triggered += 1
+
+                try:
+                    timeframe = str(row["timeframe"] or "15m").upper()
+                    entry_source = str(row["entry_source"] or "signal_feed_analysis").replace("_", " ")
+                    condition_label = "above" if condition == "above" else "below"
+                    message = (
+                        f"Price alert fired for {row['symbol']}\n"
+                        f"Condition: {condition_label} ${target_price:,.2f}\n"
+                        f"Live price: ${live_price:,.2f}\n"
+                        f"Timeframe: {timeframe}\n"
+                        f"Source: {entry_source}"
+                    )
+                    asyncio.run(notifier.send_telegram_alert(message))
+                except Exception as notify_error:
+                    logger.warning(f"Unable to send Telegram alert for {row['symbol']}: {notify_error}")
+
+            if triggered:
+                conn.commit()
+                _cache_delete("alerts_payload_v1")
+            elif checked:
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"Unable to refresh user price alerts: {e}")
+
+    return {"checked": checked, "triggered": triggered}
+
 async def _run_alert_refresh():
     global _alerts_refresh_task
     try:
         await asyncio.to_thread(_upsert_ml_alerts_from_signals)
+        await asyncio.to_thread(_refresh_user_price_alerts)
         _cache_delete("alerts_payload_v1")
         _cache_set("alerts_refresh_v1", {"status": "fresh"})
     except Exception as e:
@@ -4364,7 +10760,7 @@ PORTFOLIO_IDENTITY_MAP = {
 
 
 def _is_eth_address(address: str) -> bool:
-    return bool(re.fullmatch(r"0x[a-fA-F0-9]{40}", address or ""))
+    return _helper_is_eth_address(address)
 
 
 def _build_eth_portfolio_payload(address: str) -> dict:
@@ -4395,135 +10791,60 @@ def _build_eth_portfolio_payload(address: str) -> dict:
         error_message = payload["error"].get("message") if isinstance(payload.get("error"), dict) else str(payload.get("error"))
         raise HTTPException(status_code=502, detail=error_message or "Wallet lookup failed.")
 
-    eth_section = payload.get("ETH") or {}
-    assets = []
-    total_usd = 0.0
-
-    eth_balance = float(eth_section.get("balance") or 0.0)
-    eth_price = float(((eth_section.get("price") or {}).get("rate")) or 0.0)
-    eth_change = float(((eth_section.get("price") or {}).get("diff")) or 0.0)
-    eth_usd = eth_balance * eth_price if eth_price > 0 else 0.0
-    if eth_balance > 0 or eth_usd > 0:
-        assets.append({
-            "symbol": "ETH",
-            "name": "Ethereum",
-            "balance": round(eth_balance, 8),
-            "price": round(eth_price, 8),
-            "usd_value": round(eth_usd, 2),
-            "change_24h": round(eth_change, 4),
-            "allocation": 0.0,
-            "kind": "native",
-            "token_address": None,
-            "logo": "",
-            "priced": eth_price > 0,
-        })
-        total_usd += eth_usd
-
-    for token_entry in payload.get("tokens") or []:
-        token_info = token_entry.get("tokenInfo") or {}
-        symbol = (token_info.get("symbol") or "").strip() or "TOKEN"
-        decimals_raw = token_info.get("decimals")
-        try:
-            decimals = int(decimals_raw) if decimals_raw is not None and str(decimals_raw).strip() != "" else 0
-        except Exception:
-            decimals = 0
-        raw_balance = token_entry.get("balance") or 0
-        try:
-            balance = float(raw_balance) / (10 ** decimals if decimals >= 0 else 1)
-        except Exception:
-            balance = 0.0
-
-        price_info = token_info.get("price") or {}
-        price = float(price_info.get("rate") or 0.0)
-        change_24h = float(price_info.get("diff") or 0.0)
-        usd_value = balance * price if price > 0 else 0.0
-        if balance <= 0:
-            continue
-        # Drop near-zero or unpriced dust/spam balances so the UI stays usable on whale wallets.
-        if price <= 0 and balance < 1:
-            continue
-        if usd_value < 1 and price > 0:
-            continue
-        total_usd += usd_value
-        assets.append({
-            "symbol": symbol.upper(),
-            "name": token_info.get("name") or symbol.upper(),
-            "balance": round(balance, 8),
-            "price": round(price, 8),
-            "usd_value": round(usd_value, 2),
-            "change_24h": round(change_24h, 4),
-            "allocation": 0.0,
-            "kind": "token",
-            "token_address": token_info.get("address"),
-            "logo": token_info.get("image") or "",
-            "priced": price > 0,
-        })
-
-    total_usd = round(total_usd, 2)
-    for asset in assets:
-        asset["allocation"] = round((float(asset["usd_value"]) / total_usd) * 100, 2) if total_usd > 0 and float(asset["usd_value"]) > 0 else 0.0
-
-    assets.sort(key=lambda item: (float(item["usd_value"]), float(item["balance"])), reverse=True)
-
-    result = {
-        "address": normalized,
-        "chain": "ETH",
-        "total_usd": total_usd,
-        "assets": assets,
-        "source": "Ethplorer public API (filtered positions)",
-        "identity": {
-            "display_name": identity.get("display_name", "") if identity else "",
-            "resolved_name": identity.get("resolved_name", "") if identity else "",
-            "avatar": identity.get("avatar", "") if identity else "",
-            "description": identity.get("description", "") if identity else "",
-            "twitter": identity.get("twitter", "") if identity else "",
-            "website": identity.get("website", "") if identity else "",
-            "explorer_url": explorer_url,
-        } if identity else None,
-        "explorer_url": explorer_url,
-    }
+    assets, total_usd = _helper_build_eth_assets(payload)
+    result = _helper_build_eth_portfolio_result(
+        address=normalized,
+        explorer_url=explorer_url,
+        assets=assets,
+        total_usd=total_usd,
+        identity=identity,
+    )
     _cache_set(cache_key, result)
     return result
 
 
 @app.get("/api/whales/all")
 async def whales_all(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     return {"data": await asyncio.to_thread(_fetch_binance_whales)}
 
 
 @app.get("/api/market/funding-rates")
 async def market_funding_rates(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     return await asyncio.to_thread(_fetch_funding_rates_sync)
 
 
 @app.get("/api/market/etf-flows")
 async def market_etf_flows(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
-    cached = _cache_get("etf_flows_v1")
-    if cached:
-        return cached
+    cached_entry = _cache_get_entry("etf_flows_v1")
+    if cached_entry:
+        return _with_data_quality(
+            cached_entry["data"],
+            cache_key="etf_flows_v1",
+            status="ok",
+            data_quality="live",
+            source="fresh_cache",
+            fallback_ts=cached_entry.get("ts"),
+        )
 
     etf_symbols = ["SPY", "QQQ", "IBIT", "ETHA", "GLD", "TLT", "ARKK", "SOXL"]
     flows = []
     try:
         import yfinance as yf
-        data = await asyncio.to_thread(
-            yf.download,
-            " ".join(etf_symbols),
-            period="1mo",
-            interval="1d",
-            progress=False,
-            group_by="ticker",
-            auto_adjust=False,
+        data = await asyncio.wait_for(
+            asyncio.to_thread(
+                yf.download,
+                " ".join(etf_symbols),
+                period="1mo",
+                interval="1d",
+                progress=False,
+                group_by="ticker",
+                auto_adjust=False,
+            ),
+            timeout=6.0,
         )
         for symbol in etf_symbols:
             try:
@@ -4565,32 +10886,164 @@ async def market_etf_flows(request: Request):
         "top_outflows": top_outflows,
         "market_theme": market_theme,
     }
+    if not _etf_flows_has_content(payload):
+        stale_entry = _cache_get_stale_entry("etf_flows_v1")
+        if stale_entry:
+            return _with_data_quality(
+                stale_entry["data"],
+                cache_key="etf_flows_v1",
+                status="ok",
+                data_quality="stale",
+                source="snapshot_cache",
+                warning="ETF flow feed is incomplete. Showing the latest verified snapshot.",
+                fallback_ts=stale_entry.get("ts"),
+            )
     _cache_set("etf_flows_v1", payload)
-    return payload
+    return _with_data_quality(
+        payload,
+        cache_key="etf_flows_v1",
+        status="ok" if _etf_flows_has_content(payload) else "degraded",
+        data_quality="live" if _etf_flows_has_content(payload) else "unavailable",
+        source="live_quotes",
+        error=None if _etf_flows_has_content(payload) else "ETF flow feed returned no usable data.",
+    )
 
 
 @app.get("/api/portfolio/wallet")
 async def portfolio_wallet(address: str, request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     return await asyncio.to_thread(_build_eth_portfolio_payload, address)
 
 
 @app.get("/api/alerts")
 async def get_alerts(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     _schedule_alert_refresh_if_needed()
     return await asyncio.to_thread(_read_alert_rows)
 
 
+@app.post("/api/alerts")
+async def create_alert(payload: AlertCreateRequest, request: Request):
+    require_request_api_key(request)
+
+    symbol = str(payload.symbol or "").upper().strip()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Alert symbol is required")
+
+    price = float(payload.price or 0.0)
+    if price <= 0:
+        raise HTTPException(status_code=400, detail="Alert price must be greater than 0")
+
+    condition = _normalize_alert_condition(payload.condition)
+    timeframe = str(payload.timeframe or "15m").strip()
+    entry_source = str(payload.entry_source or "signal_feed_analysis").strip()
+    created_at = datetime.now(timezone.utc).isoformat()
+    meta_json = json.dumps(payload.meta or {}, ensure_ascii=False)
+    message = (
+        payload.message
+        or f"Alert when {symbol} moves {condition} ${price:,.2f} on {timeframe.upper()}."
+    )
+
+    with get_persistence_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO alerts (
+                user_id,
+                symbol,
+                condition,
+                price,
+                timeframe,
+                entry_source,
+                message,
+                meta_json,
+                status,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+            """,
+            (
+                "signal_feed_ui",
+                symbol,
+                condition,
+                price,
+                timeframe,
+                entry_source,
+                message,
+                meta_json,
+                created_at,
+            ),
+        )
+        conn.commit()
+        alert_id = int(cursor.lastrowid)
+        row = conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+
+    _cache_delete("alerts_payload_v1")
+    return {"status": "created", "alert": dict(row) if row else {"id": alert_id}}
+
+
+@app.post("/api/notifications/telegram/test")
+async def test_telegram_notification(payload: TelegramTestRequest, request: Request):
+    require_request_api_key(request)
+
+    message = (
+        payload.message
+        or "Telegram test from CryptoStream AI\nIf you received this, your bot token and chat id are configured correctly."
+    )
+    sent = await notifier.send_telegram_alert(message)
+    if not sent:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Telegram test failed. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your environment.",
+                "telegram_error": notifier.telegram_status().get("last_error"),
+            },
+        )
+    return {"status": "sent", "message": message}
+
+
+@app.get("/api/notifications/telegram/status")
+async def telegram_notification_status(request: Request):
+    require_request_api_key(request)
+    status = notifier.telegram_status()
+    status["bot_polling_enabled"] = str(os.getenv("TELEGRAM_BOT_POLLING_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    status["last_update_id"] = notifier.last_update_id
+    status["commands"] = [
+        "/start", "/help", "/status", "/best", "/signals", "/signal", "/mt5", "/paper", "/feedback",
+        "/bestalt", "/why", "/whybest", "/beststats", "/riskguard", "/rag", "/alerts", "/audit", "/profile", "/watch", "/setlot", "/setrisk", "/trade",
+        "/alert",
+    ]
+    return status
+
+
+@app.post("/api/notifications/telegram/bot/test")
+async def test_telegram_bot_menu(request: Request):
+    require_request_api_key(request)
+    sent = await notifier.send_telegram_message(
+        notifier.default_chat_id,
+        _telegram_help_text(),
+        reply_markup=_telegram_keyboard(),
+    )
+    if not sent:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Telegram bot menu test failed.",
+                "telegram_error": notifier.telegram_status().get("last_error"),
+            },
+        )
+    return {
+        "status": "sent",
+        "commands": [
+            "/start", "/status", "/best", "/bestalt", "/signals", "/signal BTC", "/mt5", "/paper", "/feedback",
+            "/why BTC BUY", "/whybest", "/beststats", "/riskguard", "/rag", "/alerts", "/audit", "/profile", "/watch BTC GOLD", "/setlot 0.01", "/setrisk 1",
+            "/alert GOLD above 4700",
+        ],
+    }
+
+
 @app.delete("/api/alerts/{alert_id}")
 async def dismiss_alert(alert_id: int, request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     with get_persistence_conn() as conn:
         conn.execute("UPDATE alerts SET status = 'DISMISSED' WHERE id = ?", (alert_id,))
         conn.commit()
@@ -4601,9 +11054,7 @@ async def dismiss_alert(alert_id: int, request: Request):
 
 @app.delete("/api/alerts/ml/stale")
 async def purge_stale_ml_alerts(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     with get_persistence_conn() as conn:
         conn.execute(
@@ -4621,9 +11072,7 @@ async def purge_stale_ml_alerts(request: Request):
 
 @app.get("/api/trade-reviews")
 async def get_trade_reviews(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     _ensure_trade_review_snapshots()
     with get_persistence_conn() as conn:
         rows = conn.execute(
@@ -4634,36 +11083,203 @@ async def get_trade_reviews(request: Request):
 
 @app.get("/api/paper-trades")
 async def get_paper_trades(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
-    return _paper_trade_snapshot()
+    require_request_api_key(request)
+    return await asyncio.to_thread(_paper_trade_snapshot)
+
+
+@app.get("/api/paper-trades/summary")
+async def get_paper_trades_summary(request: Request):
+    require_request_api_key(request)
+    snapshot = await asyncio.to_thread(_paper_trade_snapshot)
+    return {
+        "summary": snapshot.get("summary", {}),
+        "recent_open_trades": snapshot.get("open_trades", [])[:8],
+        "recent_closed_trades": snapshot.get("closed_trades", [])[:8],
+    }
+
+
+@app.get("/api/paper-trades/scorecard")
+async def get_paper_trades_scorecard(request: Request):
+    require_request_api_key(request)
+
+    def _build():
+        from intelligence.ml.performance_feedback import get_feedback_snapshot
+
+        feedback = get_feedback_snapshot(force_refresh=True)
+        return {
+            "strategy": feedback.get("strategy", {}),
+            "symbol": feedback.get("symbol", {}),
+            "symbol_side": feedback.get("symbol_side", {}),
+            "recommendations": feedback.get("recommendations", []),
+        }
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/paper-trades/side-scorecard")
+async def get_paper_trades_side_scorecard(request: Request, limit: int = 50):
+    require_request_api_key(request)
+
+    def _build():
+        from intelligence.ml.paper_analytics import build_side_scorecard
+
+        return build_side_scorecard(limit=limit)
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/best-setup")
+async def get_best_setup(request: Request, force_refresh: bool = False):
+    require_request_api_key(request)
+
+    def _build():
+        return _build_best_setup_payload(use_cache=not force_refresh)
+
+    payload = await asyncio.to_thread(_build)
+    payload["scanner"] = {
+        "last_run_at": _best_setup_state.get("last_run_at"),
+        "last_error": _best_setup_state.get("last_error"),
+        "scan_interval_seconds": BEST_SETUP_SCAN_INTERVAL_SECONDS,
+    }
+    payload["model_trust"] = payload.get("model_trust") or _ml_model_trust_snapshot()
+    return payload
+
+
+@app.get("/api/best-setup/metrics")
+async def get_best_setup_metrics(request: Request, limit: int = 500, evaluate: bool = False):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_best_setup_metrics, min(max(int(limit), 50), 2000), bool(evaluate))
+
+
+@app.get("/api/risk/daily-guard")
+async def get_daily_risk_guard(request: Request, chat_id: str | None = None):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_daily_risk_guard, chat_id)
+
+
+@app.post("/api/rag/trade-memory/sync")
+async def sync_rag_trade_memory(request: Request, force: bool = False):
+    require_request_api_key(request)
+    result = await asyncio.to_thread(_sync_trade_memory_to_rag, force)
+    if result.get("status") == "ERROR":
+        raise HTTPException(status_code=500, detail=result)
+    return result
+
+
+@app.get("/api/rag/pre-graph-readiness")
+async def rag_pre_graph_readiness(request: Request):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_pre_graph_rag_readiness)
+
+
+@app.post("/api/rag/graph/build")
+async def build_rag_trade_graph(request: Request, limit: int = 1000):
+    require_request_api_key(request)
+    readiness = await asyncio.to_thread(_pre_graph_rag_readiness)
+    if readiness.get("blockers"):
+        return {
+            "status": "BUILT_WITH_WARNINGS",
+            "readiness": readiness,
+            "graph": await asyncio.to_thread(_build_trade_knowledge_graph, limit),
+        }
+    return await asyncio.to_thread(_build_trade_knowledge_graph, limit)
+
+
+@app.get("/api/rag/graph/status")
+async def get_rag_trade_graph_status(request: Request):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_trade_graph_status)
+
+
+@app.get("/api/rag/graph/query")
+async def query_rag_trade_graph(
+    request: Request,
+    symbol: str | None = None,
+    side: str | None = None,
+    limit: int = 25,
+):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_query_trade_graph, symbol, side, limit)
+
+
+@app.get("/api/rag/graph/guard")
+async def get_rag_trade_graph_guard(
+    request: Request,
+    symbol: str,
+    side: str,
+):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_trade_graph_guard, symbol, side)
+
+
+@app.get("/api/symbols/resolve")
+async def api_resolve_trade_symbol(request: Request, symbol: str):
+    require_request_api_key(request)
+    return resolve_trade_symbol(symbol)
+
+
+@app.get("/api/signals/memory")
+async def get_signal_memory(request: Request, limit: int = 1000, evaluate: bool = False):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_signal_snapshot_metrics, limit, evaluate)
+
+
+@app.get("/api/decision/why")
+async def get_decision_why(request: Request, symbol: str, side: str = "BUY"):
+    require_request_api_key(request)
+    return {
+        "symbol_resolution": resolve_trade_symbol(symbol),
+        "graph_guard": await asyncio.to_thread(_trade_graph_guard, symbol, side),
+        "signal_memory": await asyncio.to_thread(_signal_snapshot_metrics, 1000, False),
+        "daily_guard": await asyncio.to_thread(_daily_risk_guard, None),
+        "market_regime": _current_market_regime(),
+    }
+
+
+@app.get("/api/decision/best-alternative")
+async def get_decision_best_alternative(request: Request, chat_id: str | None = None):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_best_alternative_candidates, chat_id)
+
+
+@app.post("/api/decision/open-best-paper")
+async def post_decision_open_best_paper(
+    request: Request,
+    chat_id: str | None = None,
+    volume: float | None = None,
+):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_open_best_paper_evidence, chat_id, volume)
 
 
 @app.get("/api/paper-trades/auto")
 async def get_auto_paper_status(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     return _auto_paper_status()
 
 
 @app.post("/api/paper-trades/auto")
 async def update_auto_paper_status(payload: AutoPaperConfigUpdate, request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     try:
         if payload.enabled is not None:
             _auto_paper_state["enabled"] = bool(payload.enabled)
+        if payload.shadow_labeling_enabled is not None:
+            _auto_paper_state["shadow_labeling_enabled"] = bool(payload.shadow_labeling_enabled)
         if payload.confidence_threshold is not None:
             _auto_paper_state["confidence_threshold"] = min(max(float(payload.confidence_threshold), 0.5), 0.95)
+        if payload.shadow_min_probability is not None:
+            _auto_paper_state["shadow_min_probability"] = min(max(float(payload.shadow_min_probability), 0.30), 0.75)
+        if payload.shadow_label_max_age_minutes is not None:
+            _auto_paper_state["shadow_label_max_age_minutes"] = max(int(payload.shadow_label_max_age_minutes), 30)
         if payload.volume is not None:
             _auto_paper_state["volume"] = max(float(payload.volume), 0.001)
         if payload.cooldown_minutes is not None:
             _auto_paper_state["cooldown_minutes"] = max(int(payload.cooldown_minutes), 5)
         if payload.max_open_positions is not None:
             _auto_paper_state["max_open_positions"] = max(int(payload.max_open_positions), 1)
+        if payload.scan_interval_seconds is not None:
+            _auto_paper_state["scan_interval_seconds"] = max(int(payload.scan_interval_seconds), 10)
         if payload.symbols is not None:
             cleaned = [str(symbol).upper().strip() for symbol in payload.symbols if str(symbol).strip()]
             _auto_paper_state["symbols"] = cleaned or list(AUTO_PAPER_DEFAULTS["symbols"])
@@ -4671,7 +11287,11 @@ async def update_auto_paper_status(payload: AutoPaperConfigUpdate, request: Requ
         try:
             _append_audit_event(
                 "AUTO_PAPER",
-                f"Updated auto paper config | enabled={_auto_paper_state['enabled']} | symbols={','.join(_auto_paper_state['symbols'])}",
+                (
+                    f"Updated auto paper config | enabled={_auto_paper_state['enabled']} | "
+                    f"shadow={_auto_paper_state['shadow_labeling_enabled']} | "
+                    f"symbols={','.join(_auto_paper_state['symbols'])}"
+                ),
             )
         except Exception as audit_error:
             logger.warning(f"Auto paper audit log failed: {audit_error}")
@@ -4683,38 +11303,66 @@ async def update_auto_paper_status(payload: AutoPaperConfigUpdate, request: Requ
 
 @app.post("/api/paper-trades/auto/run")
 async def run_auto_paper_once(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
-    loop = asyncio.get_event_loop()
-    summary = await loop.run_in_executor(None, _auto_paper_cycle_sync)
-    _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
-    _auto_paper_state["last_summary"] = summary
-    _auto_paper_state["last_error"] = None
-    return {"status": "completed", "summary": summary, "config": _auto_paper_status()}
+    try:
+        loop = asyncio.get_event_loop()
+        summary = await loop.run_in_executor(None, _auto_paper_cycle_sync)
+        _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _auto_paper_state["last_summary"] = summary
+        _auto_paper_state["last_error"] = None
+        return {"status": "completed", "summary": summary, "config": _auto_paper_status()}
+    except sqlite3.OperationalError as exc:
+        if "locked" not in str(exc).lower():
+            raise
+        _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+        _auto_paper_state["last_error"] = str(exc)
+        return {
+            "status": "deferred",
+            "message": "Paper scan deferred because SQLite is busy. The background scanner will retry automatically.",
+            "error": str(exc),
+            "config": _auto_paper_status(),
+        }
 
 
 @app.post("/api/paper-trades")
 async def create_paper_trade(payload: PaperTradeCreateRequest, request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
-    return _open_paper_trade_internal(
+    require_request_api_key(request)
+    _assert_daily_risk_guard_allows("api_paper_trade")
+    opened = _open_paper_trade_internal(
         symbol=payload.symbol,
         side=payload.side,
         volume=float(payload.volume or 1.0),
         price=payload.price,
-        entry_source="manual_ui",
-        entry_reason="Manual paper trade",
+        entry_source=payload.entry_source or "manual_ui",
+        entry_reason=payload.entry_reason or "Manual paper trade",
     )
+    if payload.stop_loss is not None or payload.take_profit is not None or payload.features:
+        try:
+            from intelligence.ml.outcome_tracker import attach_sl_tp_features
+
+            stop_loss = float(payload.stop_loss) if payload.stop_loss is not None else None
+            take_profit = float(payload.take_profit) if payload.take_profit is not None else None
+            attach_sl_tp_features(
+                opened["trade_id"],
+                stop_loss,
+                take_profit,
+                payload.features or {},
+                payload.ml_score,
+                payload.signal_grade,
+                payload.macro_bias,
+            )
+            opened["custom_levels_attached"] = True
+        except Exception as e:
+            logger.warning(f"Failed to attach custom paper trade metadata: {e}")
+            opened["custom_levels_attached"] = False
+            opened["custom_levels_error"] = str(e)
+    return opened
 
 
 @app.post("/api/paper-trades/{trade_id}/close")
 async def close_paper_trade(trade_id: str, payload: PaperTradeCloseRequest, request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     with get_persistence_conn() as conn:
         row = conn.execute("SELECT * FROM paper_trades WHERE id = ?", (trade_id,)).fetchone()
@@ -4759,9 +11407,7 @@ async def close_paper_trade(trade_id: str, payload: PaperTradeCloseRequest, requ
 
 @app.delete("/api/paper-trades")
 async def reset_paper_trades(request: Request):
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
     with get_persistence_conn() as conn:
         conn.execute("DELETE FROM paper_trades")
         conn.commit()
@@ -4793,14 +11439,37 @@ def _ml_paper_trade_stats() -> dict:
         return {"total_labeled": 0, "wins": 0, "losses": 0, "win_rate": None}
 
 
+def _int_env(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(int(os.getenv(name, str(default))), minimum)
+    except Exception:
+        return default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
 AUTO_PAPER_DEFAULTS = {
-    "enabled": False,
-    "symbols": ["BTCUSD", "ETHUSD", "GOLD", "EURUSD"],
+    "enabled": _bool_env("AUTO_PAPER_ENABLED", True),
+    "shadow_labeling_enabled": _bool_env("AUTO_PAPER_SHADOW_LABELING_ENABLED", True),
+    "symbols": [
+        "BTCUSD",
+        "ETHUSD",
+        "SOLUSDT",
+        "XRPUSDT",
+        "BNBUSD",
+    ],
     "confidence_threshold": 0.68,
+    "shadow_min_probability": 0.35,
+    "shadow_label_max_age_minutes": _int_env("AUTO_PAPER_SHADOW_LABEL_MAX_AGE_MINUTES", 240, 30),
     "volume": 0.01,
-    "cooldown_minutes": 90,
-    "max_open_positions": 2,
-    "scan_interval_seconds": 60,
+    "cooldown_minutes": _int_env("AUTO_PAPER_COOLDOWN_MINUTES", 5, 5),
+    "max_open_positions": _int_env("AUTO_PAPER_MAX_OPEN_POSITIONS", 12, 1),
+    "scan_interval_seconds": _int_env("AUTO_PAPER_SCAN_INTERVAL_SECONDS", 30, 10),
 }
 _auto_paper_state = {
     **AUTO_PAPER_DEFAULTS,
@@ -4813,8 +11482,11 @@ _auto_paper_state = {
 def _auto_paper_status() -> dict:
     return {
         "enabled": bool(_auto_paper_state["enabled"]),
+        "shadow_labeling_enabled": bool(_auto_paper_state["shadow_labeling_enabled"]),
         "symbols": list(_auto_paper_state["symbols"]),
         "confidence_threshold": float(_auto_paper_state["confidence_threshold"]),
+        "shadow_min_probability": float(_auto_paper_state["shadow_min_probability"]),
+        "shadow_label_max_age_minutes": int(_auto_paper_state["shadow_label_max_age_minutes"]),
         "volume": float(_auto_paper_state["volume"]),
         "cooldown_minutes": int(_auto_paper_state["cooldown_minutes"]),
         "max_open_positions": int(_auto_paper_state["max_open_positions"]),
@@ -4846,6 +11518,221 @@ def _recent_trade_exists(symbol: str, cooldown_minutes: int) -> bool:
     return bool(row)
 
 
+def _auto_paper_performance_gate(symbol: str, side: str, entry_source: str) -> dict:
+    try:
+        from intelligence.ml.performance_feedback import paper_entry_performance_gate
+
+        return paper_entry_performance_gate(symbol=symbol, side=side, entry_source=entry_source)
+    except Exception as exc:
+        return {"ok": True, "blockers": [], "warnings": [f"performance_gate_unavailable:{exc}"]}
+
+
+def _expire_stale_paper_labels(max_age_minutes: int) -> dict:
+    """Close stale automated paper labels with the current mark price."""
+    max_age = max(int(max_age_minutes or AUTO_PAPER_DEFAULTS["shadow_label_max_age_minutes"]), 30)
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_age)).isoformat()
+    closed_at = datetime.now(timezone.utc).isoformat()
+    close_reason = f"time_expiry_{max_age}m"
+    summary = {
+        "max_age_minutes": max_age,
+        "close_reason": close_reason,
+        "closed_count": 0,
+        "closed": [],
+        "skipped": [],
+        "auto_retrain": {"checked": False},
+    }
+
+    with get_persistence_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM paper_trades
+            WHERE status = 'OPEN'
+              AND entry_source IN ('shadow_label', 'auto_paper')
+              AND datetime(opened_at) <= datetime(?)
+            ORDER BY datetime(opened_at) ASC
+            LIMIT 25
+            """,
+            (cutoff,),
+        ).fetchall()
+
+        for row in rows:
+            trade_id = row["id"]
+            symbol = str(row["symbol"]).upper().strip()
+            side = str(row["side"]).upper().strip()
+            exit_price = _get_live_price(symbol)
+            if exit_price <= 0:
+                exit_price = float(row["current_price"] or row["entry_price"] or 0.0)
+            if exit_price <= 0:
+                summary["skipped"].append({"trade_id": trade_id, "symbol": symbol, "reason": "no_exit_price"})
+                continue
+
+            entry_price = float(row["entry_price"] or 0.0)
+            quantity = float(row["quantity"] or row["volume"] or 0.0)
+            direction = 1 if side == "BUY" else -1
+            pnl_usd = direction * (exit_price - entry_price) * quantity
+            outcome = "WIN" if pnl_usd > 0 else "LOSS"
+
+            conn.execute(
+                """
+                UPDATE paper_trades
+                SET current_price = ?, exit_price = ?, pnl = ?, pnl_usd = ?, outcome = ?,
+                    status = 'CLOSED', closed_at = ?, close_reason = ?, label_source = ?
+                WHERE id = ?
+                """,
+                (
+                    exit_price,
+                    exit_price,
+                    pnl_usd,
+                    pnl_usd,
+                    outcome,
+                    closed_at,
+                    close_reason,
+                    "time_expiry",
+                    trade_id,
+                ),
+            )
+            summary["closed_count"] += 1
+            summary["closed"].append(
+                {
+                    "trade_id": trade_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "pnl_usd": round(pnl_usd, 6),
+                    "outcome": outcome,
+                    "entry_source": row["entry_source"],
+                }
+            )
+
+        if summary["closed_count"]:
+            conn.commit()
+
+    if summary["closed_count"]:
+        try:
+            _append_audit_event(
+                "AUTO_PAPER",
+                f"Closed {summary['closed_count']} stale paper label(s) via {close_reason}",
+            )
+        except Exception as audit_error:
+            logger.warning(f"Paper label expiry audit failed: {audit_error}")
+        _ensure_trade_review_snapshots()
+        summary["auto_retrain"] = _maybe_trigger_auto_retrain("paper_label_time_expiry")
+
+    return summary
+
+
+def _quick_signal_symbol(symbol: str) -> str:
+    return str(resolve_trade_symbol(symbol).get("quick_symbol") or symbol).upper()
+
+
+def _shadow_label_cycle_sync(
+    status: dict,
+    summary: dict,
+    open_symbols: set[str],
+    open_position_count: int,
+) -> int:
+    """Open paper-only labels from gated signal candidates so the model can learn."""
+    if not status.get("shadow_labeling_enabled"):
+        return open_position_count
+    if not INTELLIGENCE_AVAILABLE or not crypto_intel:
+        summary["skipped"].append({"symbol": "*", "reason": "shadow:intelligence_unavailable"})
+        return open_position_count
+
+    min_prob = float(status.get("shadow_min_probability") or 0.35)
+    for symbol in status["symbols"]:
+        paper_symbol = str(symbol).upper().strip()
+        if paper_symbol not in summary["checked_symbols"]:
+            summary["checked_symbols"].append(paper_symbol)
+        if open_position_count >= status["max_open_positions"]:
+            summary["skipped"].append({"symbol": paper_symbol, "reason": "shadow:max_open_positions"})
+            break
+        if paper_symbol in open_symbols:
+            summary["skipped"].append({"symbol": paper_symbol, "reason": "shadow:already_open"})
+            continue
+        if _recent_trade_exists(paper_symbol, status["cooldown_minutes"]):
+            summary["skipped"].append({"symbol": paper_symbol, "reason": "shadow:cooldown_active"})
+            continue
+
+        quick_symbol = _quick_signal_symbol(paper_symbol)
+        try:
+            signals = crypto_intel.get_quick_signals([quick_symbol], timeframe="15m")
+        except Exception as exc:
+            summary["skipped"].append({"symbol": paper_symbol, "reason": f"shadow:signal_error:{exc}"})
+            continue
+        if not signals:
+            summary["skipped"].append({"symbol": paper_symbol, "reason": "shadow:no_signal"})
+            continue
+
+        signal = signals[0]
+        side = str(signal.get("candidate_direction") or signal.get("direction") or "").upper()
+        probability = float(signal.get("ml_win_prob") or 0.0)
+        if side not in {"BUY", "SELL"}:
+            summary["skipped"].append({"symbol": paper_symbol, "reason": f"shadow:candidate:{side or 'NONE'}"})
+            continue
+        if probability < min_prob:
+            summary["skipped"].append({"symbol": paper_symbol, "reason": f"shadow:probability:{probability:.4f}"})
+            continue
+        if signal.get("tradeable"):
+            summary["skipped"].append({"symbol": paper_symbol, "reason": "shadow:already_tradeable"})
+            continue
+        perf_gate = _auto_paper_performance_gate(paper_symbol, side, "shadow_label")
+        if not perf_gate.get("ok", True):
+            summary["skipped"].append(
+                {
+                    "symbol": paper_symbol,
+                    "reason": "shadow:performance_block",
+                    "detail": perf_gate.get("blockers", [])[:3],
+                }
+            )
+            continue
+        graph_guard = _trade_graph_guard(paper_symbol, side)
+        if graph_guard.get("blockers"):
+            summary["skipped"].append(
+                {
+                    "symbol": paper_symbol,
+                    "reason": "shadow:graph_guard_block",
+                    "detail": graph_guard.get("blockers", [])[:3],
+                }
+            )
+            continue
+
+        gate = signal.get("quality_gate") or {}
+        blockers = ",".join((gate.get("blockers") or [])[:4])
+        reason = (
+            f"ShadowLabel {side} | win_prob {probability:.4f} | "
+            f"gate={gate.get('mode', 'unknown')} | blockers={blockers or 'none'}"
+        )
+        price = float(signal.get("price") or 0.0) or None
+        try:
+            opened = _open_paper_trade_internal(
+                symbol=paper_symbol,
+                side=side,
+                volume=max(float(status["volume"]) / 10.0, 0.001),
+                price=price,
+                entry_source="shadow_label",
+                entry_reason=reason,
+            )
+        except Exception as exc:
+            summary["skipped"].append({"symbol": paper_symbol, "reason": f"shadow:open_error:{exc}"})
+            continue
+
+        summary.setdefault("shadow_opened", []).append(
+            {
+                "symbol": paper_symbol,
+                "side": side,
+                "trade_id": opened["trade_id"],
+                "ml_win_prob": round(probability, 4),
+                "price": opened["entry_price"],
+                "ml_snapshot_attached": opened.get("ml_snapshot_attached"),
+            }
+        )
+        open_symbols.add(paper_symbol)
+        open_position_count += 1
+    return open_position_count
+
+
 def _auto_paper_cycle_sync() -> dict:
     from intelligence.tools.market_tools import get_trading_tactics
 
@@ -4853,18 +11740,27 @@ def _auto_paper_cycle_sync() -> dict:
     summary = {
         "checked_symbols": [],
         "opened": [],
+        "shadow_opened": [],
+        "expired_labels": None,
         "skipped": [],
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
+    summary["expired_labels"] = _expire_stale_paper_labels(status["shadow_label_max_age_minutes"])
+
     with get_persistence_conn() as conn:
         open_rows = conn.execute("SELECT symbol FROM paper_trades WHERE status = 'OPEN'").fetchall()
     open_symbols = {str(row["symbol"]).upper() for row in open_rows}
+    open_position_count = len(open_rows)
+
+    if not status["enabled"]:
+        _shadow_label_cycle_sync(status, summary, open_symbols, open_position_count)
+        return summary
 
     for symbol in status["symbols"]:
         summary["checked_symbols"].append(symbol)
 
-        if len(open_symbols) >= status["max_open_positions"]:
+        if open_position_count >= status["max_open_positions"]:
             summary["skipped"].append({"symbol": symbol, "reason": "max_open_positions"})
             continue
 
@@ -4895,6 +11791,26 @@ def _auto_paper_cycle_sync() -> dict:
         if confidence < status["confidence_threshold"]:
             summary["skipped"].append({"symbol": symbol, "reason": f"confidence:{confidence:.2f}"})
             continue
+        perf_gate = _auto_paper_performance_gate(symbol, recommendation, "auto_paper")
+        if not perf_gate.get("ok", True):
+            summary["skipped"].append(
+                {
+                    "symbol": symbol,
+                    "reason": "performance_block",
+                    "detail": perf_gate.get("blockers", [])[:3],
+                }
+            )
+            continue
+        graph_guard = _trade_graph_guard(symbol, recommendation)
+        if graph_guard.get("blockers"):
+            summary["skipped"].append(
+                {
+                    "symbol": symbol,
+                    "reason": "graph_guard_block",
+                    "detail": graph_guard.get("blockers", [])[:3],
+                }
+            )
+            continue
 
         price = float(setup.get("price") or 0.0)
         if price <= 0:
@@ -4923,7 +11839,9 @@ def _auto_paper_cycle_sync() -> dict:
             }
         )
         open_symbols.add(symbol)
+        open_position_count += 1
 
+    _shadow_label_cycle_sync(status, summary, open_symbols, open_position_count)
     return summary
 
 
@@ -4933,19 +11851,58 @@ async def auto_paper_trader_task():
 
     while True:
         try:
-            if _auto_paper_state["enabled"]:
+            if _auto_paper_state["enabled"] or _auto_paper_state["shadow_labeling_enabled"]:
                 loop = asyncio.get_event_loop()
+
+                # Scan and close finished trades first — notify per closed trade
+                try:
+                    from intelligence.ml.outcome_tracker import scan_and_update
+                    close_summary = await loop.run_in_executor(None, scan_and_update)
+                    for ct in close_summary.get("closed_trades", []):
+                        try:
+                            pnl = ct.get("pnl_usd")
+                            asyncio.create_task(notifier.notify_paper_trade_closed(
+                                symbol=ct.get("symbol", "?"),
+                                outcome=ct.get("outcome", "?"),
+                                close_reason=ct.get("close_reason", ""),
+                                exit_price=float(ct.get("exit_price") or 0),
+                                pnl_usd=float(pnl) if pnl is not None else None,
+                            ))
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"Auto-paper close scan: {e}")
+
                 summary = await loop.run_in_executor(None, _auto_paper_cycle_sync)
                 _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
                 _auto_paper_state["last_summary"] = summary
                 _auto_paper_state["last_error"] = None
-                if summary["opened"]:
+                opened_count = len(summary.get("opened", []))
+                shadow_count = len(summary.get("shadow_opened", []))
+                if opened_count or shadow_count:
                     _append_audit_event(
                         "AUTO_PAPER",
-                        f"Opened {len(summary['opened'])} auto paper trade(s): "
-                        + ", ".join(f"{item['side']} {item['symbol']}" for item in summary["opened"]),
+                        (
+                            f"Opened {opened_count} auto paper trade(s), "
+                            f"{shadow_count} shadow label(s): "
+                            + ", ".join(
+                                f"{item['side']} {item['symbol']}"
+                                for item in (summary.get("opened", []) + summary.get("shadow_opened", []))
+                            )
+                        ),
                     )
-                    _maybe_trigger_auto_retrain("auto_paper_open")
+                    # Notify Telegram for each opened auto-paper trade
+                    for item in summary.get("opened", []):
+                        try:
+                            asyncio.create_task(notifier.notify_paper_trade_opened(
+                                symbol=item["symbol"],
+                                side=item["side"],
+                                price=float(item.get("price", 0)),
+                                confidence=float(item.get("confidence", 0)),
+                                trade_id=item.get("trade_id", ""),
+                            ))
+                        except Exception:
+                            pass
         except Exception as e:
             _auto_paper_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
             _auto_paper_state["last_error"] = str(e)
@@ -5010,6 +11967,9 @@ def _open_paper_trade_internal(
     side = side.upper().strip()
     if side not in {"BUY", "SELL"}:
         raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+    if entry_source not in {"shadow_label"}:
+        _assert_daily_risk_guard_allows(f"paper_trade:{entry_source}")
+        _assert_trade_graph_guard_allows(symbol, side, f"paper_trade:{entry_source}")
 
     entry_price = float(price or 0.0) or _get_live_price(symbol)
     if entry_price <= 0:
@@ -5082,7 +12042,12 @@ def _open_paper_trade_internal(
 
 @app.get("/api/ml/stats")
 async def ml_stats():
-    from intelligence.ml.signal_model import MODEL_PATH, ML_CORE_SYMBOLS, ML_SUFFICIENCY_TARGETS, get_auto_retrain_status, get_live_sufficiency_status
+    from intelligence.ml.signal_model import MODEL_PATH, ML_CORE_SYMBOLS, ML_SUFFICIENCY_TARGETS, get_auto_retrain_status, get_live_sufficiency_status, get_paper_label_quality_report
+    from intelligence.ml.paper_analytics import build_side_scorecard
+    from intelligence.ml.performance_feedback import get_feedback_snapshot
+    from intelligence.ml.readiness import evaluate_readiness
+    from intelligence.ml.reporting import build_promotion_summary
+    from intelligence.ml.symbol_policy import get_symbol_policy_snapshot
     import pickle as _pickle
     model_exists = MODEL_PATH.exists()
     bundle: dict = {}
@@ -5095,6 +12060,24 @@ async def ml_stats():
 
     global _retrain_task
     is_training = bool(_retrain_task and not _retrain_task.done())
+
+    def _safe(label: str, fn, fallback):
+        try:
+            return fn()
+        except Exception as exc:
+            logger.warning(f"/api/ml/stats degraded while loading {label}: {exc}")
+            if isinstance(fallback, dict):
+                payload = dict(fallback)
+                payload.setdefault("status", "error")
+                payload.setdefault("error", str(exc))
+                return payload
+            return fallback
+
+    feedback_snapshot = _safe("performance_feedback", lambda: get_feedback_snapshot(), {"items": [], "status": "error"})
+    readiness = _safe("readiness", lambda: evaluate_readiness(require_mt5_audit=False), {"status": "error"})
+    promotion_summary = _safe("promotion_history", lambda: build_promotion_summary(limit=12), {"items": [], "summary": {}, "status": "error"})
+    symbol_policy = _safe("symbol_policy", lambda: get_symbol_policy_snapshot(force_refresh=True), {"items": [], "summary": {}, "status": "error"})
+    side_analytics = _safe("side_analytics", lambda: build_side_scorecard(limit=12), {"available": False, "side_scorecard": [], "weak_slices": [], "status": "error"})
 
     return {
         "is_training": is_training,
@@ -5114,12 +12097,18 @@ async def ml_stats():
             "dataset_quality": bundle.get("dataset_quality"),
             "dataset_report": bundle.get("dataset_report"),
             "slice_pruning": bundle.get("slice_pruning"),
+            "paper_label_quality": bundle.get("paper_label_quality") or get_paper_label_quality_report(force_refresh=True),
             "calibration": bundle.get("calibration"),
             "walk_forward": bundle.get("walk_forward"),
             "sufficiency": get_live_sufficiency_status(bundle if model_exists else None),
             "auto_retrain": get_auto_retrain_status(bundle if model_exists else None),
         },
         "paper_trades": _ml_paper_trade_stats(),
+        "performance_feedback": feedback_snapshot,
+        "side_analytics": side_analytics,
+        "readiness": readiness,
+        "promotion_history": promotion_summary,
+        "symbol_policy": symbol_policy,
         "focus": {
             "core_symbols": ML_CORE_SYMBOLS,
             "targets": ML_SUFFICIENCY_TARGETS,
@@ -5159,11 +12148,249 @@ async def ml_dataset_report():
             "walk_forward": bundle.get("walk_forward"),
             "dataset_quality": bundle.get("dataset_quality"),
             "slice_pruning": bundle.get("slice_pruning"),
+            "paper_label_quality": bundle.get("paper_label_quality"),
             "calibration": bundle.get("calibration"),
             "sufficiency": bundle.get("sufficiency"),
         }
     except Exception as e:
         return {"available": False, "report": [], "walk_forward": None, "error": str(e)}
+
+
+@app.get("/api/ml/paper-label-quality")
+async def ml_paper_label_quality():
+    def _build():
+        from intelligence.ml.signal_model import get_paper_label_quality_report
+
+        return get_paper_label_quality_report(force_refresh=True)
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/ml/promotion-history")
+async def ml_promotion_history(limit: int = 20):
+    def _build():
+        from intelligence.ml.reporting import build_promotion_summary
+
+        return build_promotion_summary(limit=limit)
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/ml/policies")
+async def ml_policies():
+    def _build():
+        from intelligence.ml.symbol_policy import get_symbol_policy_snapshot
+
+        return get_symbol_policy_snapshot(force_refresh=True)
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/ml/policy-overrides")
+async def ml_policy_overrides():
+    def _build():
+        from intelligence.ml.symbol_policy import list_symbol_policy_overrides
+
+        return {"items": list_symbol_policy_overrides()}
+
+    return await asyncio.to_thread(_build)
+
+
+@app.post("/api/ml/policy-overrides")
+async def upsert_ml_policy_override(payload: "SymbolPolicyOverrideRequest"):
+    def _build():
+        from intelligence.ml.symbol_policy import upsert_symbol_policy_override
+
+        return upsert_symbol_policy_override(
+            payload.symbol,
+            payload.side,
+            payload.action,
+            size_multiplier=payload.size_multiplier,
+            note=payload.note or "",
+        )
+
+    result = await asyncio.to_thread(_build)
+    return {"status": "ok", "item": result}
+
+
+@app.delete("/api/ml/policy-overrides")
+async def clear_ml_policy_override(symbol: str, side: str):
+    def _build():
+        from intelligence.ml.symbol_policy import upsert_symbol_policy_override
+
+        return upsert_symbol_policy_override(symbol, side, "allow")
+
+    result = await asyncio.to_thread(_build)
+    return {"status": "ok", "item": result}
+
+
+@app.get("/api/ml/readiness-report")
+async def ml_readiness_report():
+    def _build():
+        from intelligence.ml.readiness import evaluate_readiness
+
+        return evaluate_readiness(require_mt5_audit=False)
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/ml/ops-report")
+async def ml_ops_report():
+    def _build():
+        from intelligence.ml.performance_feedback import get_feedback_snapshot
+        from intelligence.ml.paper_analytics import build_side_scorecard
+        from intelligence.ml.readiness import evaluate_readiness
+        from intelligence.ml.reporting import build_promotion_summary
+        from intelligence.ml.signal_model import get_paper_label_quality_report
+        from intelligence.ml.symbol_policy import get_symbol_policy_snapshot
+        from intelligence.ml.watchdog import build_watchdog_report
+
+        return {
+            "readiness": evaluate_readiness(require_mt5_audit=False),
+            "paper_label_quality": get_paper_label_quality_report(force_refresh=True),
+            "performance_feedback": get_feedback_snapshot(force_refresh=True),
+            "promotion_history": build_promotion_summary(limit=20),
+            "symbol_policy": get_symbol_policy_snapshot(force_refresh=True),
+            "side_analytics": build_side_scorecard(limit=20),
+            "watchdog": build_watchdog_report(),
+        }
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/ml/weak-slices")
+async def ml_weak_slices(limit: int = 20):
+    def _build():
+        from intelligence.ml.paper_analytics import build_side_scorecard
+
+        scorecard = build_side_scorecard(limit=limit)
+        return {
+            "available": scorecard.get("available", False),
+            "weak_slices": scorecard.get("weak_slices", []),
+        }
+
+    return await asyncio.to_thread(_build)
+
+
+@app.get("/api/ml/watchdog")
+async def ml_watchdog():
+    def _build():
+        from intelligence.ml.watchdog import build_watchdog_report, write_watchdog_report
+
+        report = build_watchdog_report()
+        write_watchdog_report()
+        return report
+
+    return await asyncio.to_thread(_build)
+
+
+def _build_ml_diagnostics() -> dict[str, Any]:
+    import pickle as _pickle
+    from intelligence.ml.performance_feedback import get_feedback_snapshot
+    from intelligence.ml.signal_model import MODEL_PATH, get_paper_label_quality_report
+
+    bundle: dict[str, Any] = {}
+    if MODEL_PATH.exists():
+        try:
+            with open(MODEL_PATH, "rb") as f:
+                bundle = _pickle.load(f)
+        except Exception as exc:
+            bundle = {"load_error": str(exc)}
+
+    dataset_report = bundle.get("dataset_report") or []
+    slice_rows: dict[str, dict[str, Any]] = {}
+    for row in dataset_report:
+        symbol = str(row.get("symbol") or "")
+        asset_class = _symbol_asset_class(symbol)
+        target = slice_rows.setdefault(
+            asset_class,
+            {"samples": 0, "wins": 0, "losses": 0, "symbols": set(), "timeframes": set(), "weak_slices": []},
+        )
+        samples = int(row.get("samples", 0) or 0)
+        wins = int(row.get("wins", 0) or 0)
+        losses = int(row.get("losses", 0) or 0)
+        target["samples"] += samples
+        target["wins"] += wins
+        target["losses"] += losses
+        target["symbols"].add(symbol)
+        target["timeframes"].add(str(row.get("timeframe") or "unknown"))
+        win_rate = float(row.get("win_rate", 0.0) or 0.0)
+        if samples < 100 or win_rate < 0.35 or win_rate > 0.75:
+            target["weak_slices"].append(row)
+
+    slices = {}
+    for key, value in slice_rows.items():
+        total = max(int(value["wins"]) + int(value["losses"]), 1)
+        slices[key] = {
+            "samples": int(value["samples"]),
+            "win_rate": round(float(value["wins"]) / total, 4),
+            "symbols": sorted(value["symbols"]),
+            "timeframes": sorted(value["timeframes"]),
+            "weak_slices": sorted(value["weak_slices"], key=lambda item: int(item.get("samples", 0) or 0))[:12],
+        }
+
+    feedback = get_feedback_snapshot(force_refresh=True)
+    paper_quality = get_paper_label_quality_report(force_refresh=True)
+    weak_symbols = []
+    strong_symbols = []
+    for symbol, stats in (feedback.get("symbol") or {}).items():
+        row = {"symbol": symbol, **stats}
+        if int(stats.get("trades", 0) or 0) < 3:
+            continue
+        if float(stats.get("pnl", 0.0) or 0.0) < 0 or float(stats.get("avg_pnl", 0.0) or 0.0) < 0:
+            weak_symbols.append(row)
+        else:
+            strong_symbols.append(row)
+    weak_symbols.sort(key=lambda item: float(item.get("pnl", 0.0) or 0.0))
+    strong_symbols.sort(key=lambda item: float(item.get("pnl", 0.0) or 0.0), reverse=True)
+
+    recommendations = []
+    trust = _ml_model_trust_snapshot()
+    if not trust.get("trusted"):
+        recommendations.append("Keep ML win probability out of /best ranking until model trust passes stricter thresholds.")
+    if paper_quality.get("excluded", 0):
+        recommendations.append("Continue pruning noisy paper labels before retraining.")
+    human_feedback = _setup_feedback_summary(limit=200)
+    if human_feedback.get("total", 0):
+        recommendations.extend((human_feedback.get("recommendations") or [])[:2])
+    if weak_symbols:
+        recommendations.append("Throttle or paper-only weak symbols: " + ", ".join(row["symbol"] for row in weak_symbols[:5]))
+    if slices:
+        recommendations.append("Train/evaluate separate slice models for CRYPTO, MACRO/FOREX, and INDEX instead of one global model.")
+
+    return {
+        "model_trust": trust,
+        "model": {
+            "n_samples": bundle.get("n_samples"),
+            "accuracy": bundle.get("accuracy"),
+            "roc_auc": bundle.get("roc_auc"),
+            "trained_at": bundle.get("trained_at"),
+            "promotion_gate": bundle.get("promotion_gate"),
+            "walk_forward": bundle.get("walk_forward"),
+        },
+        "slices": slices,
+        "paper_label_quality": paper_quality,
+        "human_feedback": human_feedback,
+        "performance": {
+            "weak_symbols": weak_symbols[:10],
+            "strong_symbols": strong_symbols[:10],
+            "strategy": feedback.get("strategy", {}),
+            "symbol_side": feedback.get("symbol_side", {}),
+        },
+        "recommendations": recommendations,
+    }
+
+
+@app.get("/api/ml/diagnostics")
+async def ml_diagnostics(request: Request):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_build_ml_diagnostics)
+
+
+@app.get("/api/setup-feedback")
+async def setup_feedback(request: Request, chat_id: str | None = None):
+    require_request_api_key(request)
+    return await asyncio.to_thread(_setup_feedback_summary, chat_id, 500)
 
 
 @app.get("/api/ml/sufficiency")
@@ -5199,6 +12426,40 @@ async def ml_sufficiency():
         return payload
 
 
+@app.get("/api/ml/trading-readiness")
+async def ml_trading_readiness(symbol: str | None = None, force_refresh: bool = False):
+    def _build():
+        from intelligence.ml.trading_quality_gate import get_trading_quality_gate
+        from intelligence.ml.readiness import evaluate_readiness
+
+        gate = get_trading_quality_gate(
+            symbol=symbol,
+            entry_source="signal_feed_analysis",
+            force_refresh=force_refresh,
+        )
+        readiness = evaluate_readiness(require_mt5_audit=False)
+        return gate, readiness
+
+    gate, readiness = await asyncio.to_thread(_build)
+    return {
+        "ready_for_live_ai_trading": bool(gate.get("live_ready")),
+        "signal_mode": gate.get("mode"),
+        "quality_gate": gate,
+        "readiness": {
+            "passed": bool(readiness.get("passed")),
+            "blockers": readiness.get("blockers", []),
+            "thresholds": readiness.get("thresholds", {}),
+            "model": readiness.get("model", {}),
+            "paper": readiness.get("paper", {}),
+        },
+        "message": (
+            "AI signals are live-trading ready."
+            if gate.get("live_ready")
+            else "AI signals are restricted to observe/paper mode until model and paper-trade evidence improves."
+        ),
+    }
+
+
 _retrain_task: asyncio.Task | None = None
 
 
@@ -5208,14 +12469,37 @@ def _start_ml_retrain_task(trigger_reason: str = "manual") -> bool:
         return False
 
     async def _run():
-        from intelligence.ml.signal_model import train_model, TRAIN_SYMBOLS
+        from intelligence.ml.reporting import record_promotion_event
+        from intelligence.ml.train_v8 import train
         import intelligence.ml.signal_model as _sm
-        import functools
         loop = asyncio.get_event_loop()
-        fn = functools.partial(train_model, symbols=TRAIN_SYMBOLS, limit=5000)
-        result = await loop.run_in_executor(None, fn)
+        result = await loop.run_in_executor(None, train)
+        history_row = await loop.run_in_executor(None, record_promotion_event, result, trigger_reason)
         _sm._MODEL_CACHE = None  # invalidate in-memory cache so next load picks up new model
+        _append_audit_event(
+            "ML_RETRAIN",
+            f"{trigger_reason} -> {result.get('status')} auc={result.get('roc_auc')} acc={result.get('accuracy')}",
+        )
         logger.info(f"[ML-Retrain] done ({trigger_reason}): {result}")
+        try:
+            summary_lines = [
+                f"ML retrain: {result.get('status')}",
+                f"Trigger: {trigger_reason}",
+                f"AUC: {result.get('roc_auc')}",
+                f"Accuracy: {result.get('accuracy')}",
+                f"WF AUC: {((result.get('walk_forward') or {}).get('summary') or {}).get('avg_roc_auc')}",
+                f"Paper labels: {(result.get('paper_label_quality') or {}).get('included')}",
+                f"History row: {history_row.get('id')}",
+            ]
+            override_reason = ((result.get("promotion_gate") or {}).get("override_reason") or "").strip()
+            if override_reason:
+                summary_lines.append(f"Override: {override_reason}")
+            blockers = (result.get("promotion_gate") or {}).get("blockers") or []
+            if blockers:
+                summary_lines.append("Blockers: " + ", ".join(str(item) for item in blockers[:3]))
+            await notifier.send_telegram_alert("\n".join(summary_lines))
+        except Exception as exc:
+            logger.warning(f"[ML-Retrain] notification failed: {exc}")
 
     _retrain_task = asyncio.create_task(_run())
     logger.info(f"[ML-Retrain] started ({trigger_reason})")
@@ -5229,12 +12513,23 @@ def _maybe_trigger_auto_retrain(trigger_source: str) -> dict:
     if not status.get("recommended"):
         return {"checked": True, "recommended": False, "started": False, "reasons": status.get("reasons", [])}
 
+    reasons = status.get("reasons", [])
+    outcome_reasons = [reason for reason in reasons if reason != "model_age"]
+    if not outcome_reasons:
+        return {
+            "checked": True,
+            "recommended": True,
+            "started": False,
+            "reasons": reasons,
+            "deferred": "model_age_only_waiting_for_closed_labels",
+        }
+
     started = _start_ml_retrain_task(f"auto:{trigger_source}")
     return {
         "checked": True,
         "recommended": True,
         "started": started,
-        "reasons": status.get("reasons", []),
+        "reasons": reasons,
     }
 
 
@@ -5256,10 +12551,7 @@ async def ml_retrain():
 @app.get("/api/history")
 async def get_history(request: Request):
     """Fetch all chat sessions from SQLite, ordered by last update."""
-    # Auth check (optional, but good for demo/institutional separation)
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     try:
         with get_persistence_conn() as conn:
@@ -5275,9 +12567,7 @@ async def get_history(request: Request):
 @app.get("/api/history/{session_id}")
 async def get_session_messages(session_id: str, request: Request):
     """Fetch all messages for a specific session."""
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     try:
         with get_persistence_conn() as conn:
@@ -5306,12 +12596,18 @@ class ChatSessionSave(BaseModel):
     updatedAt: Optional[float] = None
     last_message: Optional[str] = None
 
+
+class SymbolPolicyOverrideRequest(BaseModel):
+    symbol: str
+    side: str
+    action: str
+    size_multiplier: Optional[float] = None
+    note: Optional[str] = ""
+
 @app.post("/api/history")
 async def save_history(session: ChatSessionSave, request: Request):
     """Save or update a chat session and its full message history."""
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     try:
         with get_persistence_conn() as conn:
@@ -5354,9 +12650,7 @@ async def save_history(session: ChatSessionSave, request: Request):
 @app.delete("/api/history/{session_id}")
 async def delete_history(session_id: str, request: Request):
     """Delete a specific chat session and all its messages."""
-    auth_key = request.headers.get("X-API-Key")
-    if APP_API_KEY and auth_key != APP_API_KEY and auth_key != "demo":
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    require_request_api_key(request)
 
     try:
         with get_persistence_conn() as conn:

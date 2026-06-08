@@ -1,9 +1,20 @@
+import json
 import logging
+import os
+import math
 from typing import Any, Dict, List, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from intelligence.event_logger import log_guard_failure, log_trade_attempt
 
 logger = logging.getLogger(__name__)
+MT5_BRIDGE_URL = os.getenv("MT5_BRIDGE_URL", "").rstrip("/")
+MT5_BRIDGE_API_KEY = os.getenv("MT5_BRIDGE_API_KEY", "")
+MT5_BRIDGE_TIMEOUT = float(os.getenv("MT5_BRIDGE_TIMEOUT", "8"))
+MT5_REQUIRE_STOP_LOSS = os.getenv("MT5_REQUIRE_STOP_LOSS", "1").strip().lower() not in {"0", "false", "no"}
+MT5_MAX_LIVE_VOLUME = float(os.getenv("MT5_MAX_LIVE_VOLUME", "0.10"))
 
 # Optional MT5 import — graceful fallback if not installed
 try:
@@ -14,6 +25,48 @@ except ImportError:
     _MT5_AVAILABLE = False
     logger.warning("MetaTrader5 not installed — MT5 execution disabled. Analysis tools will still work.")
 
+def _bridge_enabled() -> bool:
+    return bool(MT5_BRIDGE_URL)
+
+
+def _bridge_request(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if not MT5_BRIDGE_URL:
+        return {"error": "MT5 bridge is not configured"}
+
+    body = None
+    headers = {"Accept": "application/json"}
+    if MT5_BRIDGE_API_KEY:
+        headers["X-MT5-Bridge-Key"] = MT5_BRIDGE_API_KEY
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    try:
+        req = Request(f"{MT5_BRIDGE_URL}{path}", data=body, headers=headers, method=method.upper())
+        with urlopen(req, timeout=MT5_BRIDGE_TIMEOUT) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            detail = {"error": str(exc)}
+        return {"error": detail.get("error") or detail.get("detail") or str(exc), "status_code": exc.code}
+    except (URLError, TimeoutError) as exc:
+        return {"error": f"MT5 bridge unavailable: {exc}"}
+    except Exception as exc:
+        return {"error": f"MT5 bridge request failed: {exc}"}
+
+
+def _bridge_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    query = f"?{urlencode(params)}" if params else ""
+    return _bridge_request("GET", f"{path}{query}")
+
+
+def _bridge_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    return _bridge_request("POST", path, payload)
+
+
 def _get_guard_pipeline():
     from intelligence.guards import CooldownGuard, GuardPipeline, MaxPositionSizeGuard
     return GuardPipeline([
@@ -23,6 +76,9 @@ def _get_guard_pipeline():
 
 def initialize_mt5() -> bool:
     """Initialize connection to MetaTrader 5."""
+    if _bridge_enabled():
+        status = _bridge_get("/health")
+        return bool(status.get("connected"))
     if not _MT5_AVAILABLE:
         logger.warning("MT5: MetaTrader5 package not installed.")
         return False
@@ -34,6 +90,17 @@ def initialize_mt5() -> bool:
 
 def get_mt5_account_info() -> Dict[str, Any]:
     """Fetch MT5 account details."""
+    if _bridge_enabled():
+        health = _bridge_get("/health")
+        if health.get("error"):
+            return health
+        account = _bridge_get("/account")
+        if account.get("error"):
+            return account
+        account["bridge_connected"] = bool(health.get("connected"))
+        account["bridge_live_trading_enabled"] = bool(health.get("live_trading_enabled"))
+        account["bridge_url"] = MT5_BRIDGE_URL
+        return account
     if not _MT5_AVAILABLE:
         return {"error": "MetaTrader5 not installed. Install it to enable live trading."}
     if not initialize_mt5():
@@ -47,6 +114,12 @@ def get_mt5_account_info() -> Dict[str, Any]:
 
 def get_mt5_positions() -> List[Dict[str, Any]]:
     """Fetch all open positions from MT5."""
+    if _bridge_enabled():
+        result = _bridge_get("/positions")
+        if "error" in result:
+            logger.warning("MT5 bridge positions unavailable: %s", result["error"])
+            return []
+        return result.get("positions", [])
     if not _MT5_AVAILABLE:
         return []
     if not initialize_mt5():
@@ -60,6 +133,8 @@ def get_mt5_positions() -> List[Dict[str, Any]]:
 
 def get_mt5_quote(symbol: str) -> Dict[str, Any]:
     """Fetch current MT5 bid/ask and basic symbol trading metadata."""
+    if _bridge_enabled():
+        return _bridge_get("/quote", {"symbol": symbol})
     if not _MT5_AVAILABLE:
         return {"error": "MetaTrader5 not installed. Install it to enable live trading."}
     if not initialize_mt5():
@@ -89,6 +164,70 @@ def get_mt5_quote(symbol: str) -> Dict[str, Any]:
         "trade_contract_size": info.trade_contract_size,
     }
 
+def _is_positive_number(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value)) and float(value) > 0
+    except Exception:
+        return False
+
+
+def validate_live_order_request(
+    symbol: str,
+    action: str,
+    volume: float,
+    sl: Optional[float] = None,
+    tp: Optional[float] = None,
+    price: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Return a safe preflight report before any live MT5 order can be sent."""
+    issues: list[str] = []
+    action_upper = str(action or "").upper().strip()
+    if not symbol or not str(symbol).strip():
+        issues.append("symbol_required")
+    if action_upper not in {"BUY", "SELL"}:
+        issues.append("side_must_be_buy_or_sell")
+    if not _is_positive_number(volume):
+        issues.append("volume_must_be_positive")
+    elif MT5_MAX_LIVE_VOLUME > 0 and float(volume) > MT5_MAX_LIVE_VOLUME:
+        issues.append(f"volume_exceeds_max_{MT5_MAX_LIVE_VOLUME:g}")
+    if MT5_REQUIRE_STOP_LOSS and not _is_positive_number(sl):
+        issues.append("stop_loss_required_for_live_order")
+    if price is not None and price != 0 and not _is_positive_number(price):
+        issues.append("price_must_be_positive")
+    if tp is not None and tp != 0 and not _is_positive_number(tp):
+        issues.append("take_profit_must_be_positive")
+
+    return {
+        "passed": not issues,
+        "issues": issues,
+        "symbol": str(symbol or "").upper().strip(),
+        "action": action_upper,
+        "volume": float(volume or 0),
+        "sl": float(sl or 0),
+        "tp": float(tp or 0),
+        "price": float(price or 0),
+        "max_live_volume": MT5_MAX_LIVE_VOLUME,
+        "requires_stop_loss": MT5_REQUIRE_STOP_LOSS,
+    }
+
+
+def resolve_broker_symbol(symbol: str) -> Dict[str, Any]:
+    """Resolve a user symbol to the first broker symbol that returns a quote."""
+    candidates = normalize_broker_symbol(symbol)
+    last_error = None
+    for candidate in candidates:
+        quote = get_mt5_quote(candidate)
+        if not quote.get("error"):
+            return {"status": "SUCCESS", "symbol": candidate, "quote": quote, "candidates": candidates}
+        last_error = quote.get("error") or quote.get("last_error")
+    return {
+        "status": "ERROR",
+        "symbol": str(symbol or "").upper().strip(),
+        "candidates": candidates,
+        "error": last_error or "No broker symbol candidate returned a quote",
+    }
+
+
 def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[float] = None,
                       sl: Optional[float] = None, tp: Optional[float] = None,
                       comment: str = "CryptoStream AI Trade",
@@ -100,6 +239,27 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
     Execute a trade on MT5.
     action: 'BUY', 'SELL'
     """
+    preflight = validate_live_order_request(symbol, action, volume, sl=sl, tp=tp, price=price)
+    if not preflight["passed"]:
+        return {
+            "status": "GUARD_BLOCKED",
+            "message": "Live order failed MT5 preflight checks.",
+            "preflight": preflight,
+        }
+    if _bridge_enabled():
+        return _bridge_post("/trade", {
+            "symbol": symbol,
+            "action": action,
+            "volume": volume,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "comment": comment,
+            "order_kind": order_kind,
+            "filling_policy": filling_policy,
+            "deviation": deviation,
+            "expiration": expiration,
+        })
     if not _MT5_AVAILABLE:
         return {"error": "MetaTrader5 not installed. Install it to enable live trading."}
     if not initialize_mt5():
@@ -215,6 +375,8 @@ def mt5_execute_trade(symbol: str, action: str, volume: float, price: Optional[f
 
 def mt5_close_position(ticket: int) -> Dict[str, Any]:
     """Close an open position by ticket ID."""
+    if _bridge_enabled():
+        return _bridge_post("/close", {"ticket": ticket})
     if not _MT5_AVAILABLE:
         return {"error": "MetaTrader5 not installed. Install it to enable live trading."}
     if not initialize_mt5():
@@ -254,6 +416,8 @@ def mt5_modify_position(ticket: int, sl: float, tp: float = 0.0) -> Dict[str, An
     Modify an open position's Stop Loss and Take Profit.
     Uses TRADE_ACTION_SLTP.
     """
+    if _bridge_enabled():
+        return _bridge_post("/modify", {"ticket": ticket, "sl": sl, "tp": tp})
     if not _MT5_AVAILABLE:
         return {"error": "MetaTrader5 not installed."}
     if not initialize_mt5():
@@ -297,6 +461,16 @@ def mt5_get_rates(symbol: str, timeframe: str = "15m", count: int = 100) -> Opti
     Fetch OHLCV data directly from MetaTrader 5.
     Returns bars as a pandas-ready format or None if failed.
     """
+    if _bridge_enabled():
+        result = _bridge_get("/rates", {"symbol": symbol, "timeframe": timeframe, "count": count})
+        rows = result.get("rates") if isinstance(result, dict) else None
+        if not rows:
+            return None
+        import pandas as pd
+        df = pd.DataFrame(rows)
+        if "Datetime" in df.columns:
+            df["Datetime"] = pd.to_datetime(df["Datetime"])
+        return df[["Datetime", "Open", "High", "Low", "Close", "Volume"]]
     if not _MT5_AVAILABLE:
         return None
     if not initialize_mt5():
@@ -356,6 +530,35 @@ def normalize_broker_symbol(symbol: str) -> List[str]:
     """
     symbol_upper = symbol.strip().upper()
     candidates = [symbol_upper]
+
+    universal_map = {
+        "GOLD":   ["GOLD", "XAUUSD", "XAUUSDm", "GOLDm"],
+        "XAU":    ["XAUUSD", "GOLD", "XAUUSDm", "GOLDm"],
+        "XAUUSD": ["XAUUSD", "GOLD", "XAUUSDm", "GOLDm"],
+        "SILVER": ["SILVER", "XAGUSD", "XAGUSDm"],
+        "XAG":    ["XAGUSD", "SILVER", "XAGUSDm"],
+        "OIL":    ["USOIL", "WTI", "XTIUSD", "OILCash"],
+        "USOIL":  ["USOIL", "WTI", "XTIUSD", "OILCash"],
+        "WTI":    ["WTI", "USOIL", "XTIUSD", "OILCash"],
+        "NASDAQ": ["US100Cash", "US100", "NAS100", "NASDAQ"],
+        "NAS100": ["US100Cash", "US100", "NAS100", "NASDAQ"],
+        "US100":  ["US100Cash", "US100", "NAS100", "NASDAQ"],
+        "SP500":  ["US500Cash", "US500", "SPX", "SP500"],
+        "SPX":    ["US500Cash", "US500", "SPX", "SP500"],
+        "US500":  ["US500Cash", "US500", "SPX", "SP500"],
+        "DOW":    ["US30Cash", "US30", "DOW"],
+        "US30":   ["US30Cash", "US30", "DOW"],
+        "BTC":    ["BTCUSD", "BTCUSDT", "BTC"],
+        "ETH":    ["ETHUSD", "ETHUSDT", "ETH"],
+        "SOL":    ["SOLUSD", "SOLUSDT", "SOL"],
+        "BNB":    ["BNBUSD", "BNBUSDT", "BNB"],
+        "XRP":    ["XRPUSD", "XRPUSDT", "XRP"],
+        "DOGE":   ["DOGEUSD", "DOGEUSDT", "DOGE"],
+        "MATIC":  ["POLUSD", "MATICUSD", "POLUSDT", "MATICUSDT"],
+    }
+    for candidate in universal_map.get(symbol_upper, []):
+        if candidate not in candidates:
+            candidates.append(candidate)
 
     try:
         if _MT5_AVAILABLE:

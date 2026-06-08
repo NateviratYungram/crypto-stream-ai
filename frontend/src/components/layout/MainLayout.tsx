@@ -2,8 +2,7 @@ import React, { useState } from 'react';
 import { AppSidebar } from './AppSidebar';
 import { AppNavbar } from './AppNavbar';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TrendingUp, MessageSquare, Zap, SlidersHorizontal, Star } from 'lucide-react';
-import { useLanguage } from '../../contexts/LanguageContext';
+import { TrendingUp, MessageSquare, Zap, SlidersHorizontal } from 'lucide-react';
 import { useMode } from '../../contexts/ModeContext';
 
 const MOBILE_TAB_IDS = [
@@ -34,7 +33,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
 }) => {
   const TICKER_SYMBOLS = ['BTC', 'ETH', 'SOL', 'NVDA', 'TSLA', 'GOLD', 'NASDAQ', 'SP500'];
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const { t } = useLanguage();
   const { theme } = useMode();
 
   return (

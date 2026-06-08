@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   TrendingUp, TrendingDown, Plus, X, RefreshCw, Trash2,
   CheckCircle2, AlertCircle, FlaskConical, DollarSign, BarChart3, Target, Brain,
-  Activity, Award, Zap, ShieldCheck
+  Activity, Award, Zap, ShieldCheck, Copy, Download
 } from 'lucide-react';
 import { useMode } from '../contexts/ModeContext';
 
@@ -20,6 +20,21 @@ interface PaperTrade {
   closed_at?: string;
   ml_score?: number | null;
   outcome?: string | null;
+  stop_loss?: number | null;
+  take_profit?: number | null;
+  signal_grade?: string | null;
+  macro_bias?: string | null;
+  features?: {
+    signal_timeframe?: string | null;
+    signal_direction?: string | null;
+    signal_confidence?: number | null;
+    signal_grade?: string | null;
+    ml_win_pct?: number | null;
+    confluence_score?: number | null;
+    risk_reward?: number | null;
+    master_decision?: string | null;
+    master_confidence?: number | null;
+  } | null;
   entry_source?: string | null;
   entry_reason?: string | null;
   close_reason?: string | null;
@@ -51,8 +66,86 @@ interface AutoPaperStatus {
   } | null;
 }
 
+interface FeedbackRow {
+  trades: number;
+  wins?: number;
+  pnl: number;
+  win_rate: number;
+  avg_pnl?: number;
+}
+
+interface MlStatsPayload {
+  performance_feedback?: {
+    strategy?: Record<string, FeedbackRow>;
+    symbol?: Record<string, FeedbackRow>;
+    recommendations?: string[];
+  };
+}
+
+interface SideScoreRow {
+  key: string;
+  trades: number;
+  win_rate: number;
+  net_pnl: number;
+  profit_factor: number;
+  expectancy_usd: number;
+}
+
+interface SideScorecardPayload {
+  available?: boolean;
+  side?: SideScoreRow[];
+  symbol_side?: SideScoreRow[];
+  weak_slices?: SideScoreRow[];
+}
+
+type TradeSourceFilter = 'all' | 'signal_feed_analysis' | 'auto_paper' | 'manual_ui';
+type TradeGradeFilter = 'all' | 'A' | 'B' | 'C' | 'none';
+type TradeOutcomeFilter = 'all' | 'win' | 'loss';
+type TradeSortOption = 'newest' | 'oldest' | 'pnl_desc' | 'pnl_asc' | 'ml_desc' | 'ml_asc';
+
 const POPULAR_SYMBOLS = ['BTC', 'ETH', 'SOL', 'NVDA', 'TSLA', 'GOLD', 'AAPL', 'AMZN'];
-const AUTO_SYMBOLS = ['BTCUSD', 'ETHUSD', 'GOLD', 'EURUSD'];
+const AUTO_SYMBOLS = [
+  'BTCUSD',
+  'ETHUSD',
+  'SOLUSDT',
+  'XRPUSDT',
+  'GOLD',
+  'SILVER',
+  'OIL',
+  'EURUSD',
+  'GBPUSD',
+  'USDJPY',
+  'NASDAQ',
+  'SP500',
+];
+
+const gradeTone = (theme: 'light' | 'dark', grade?: string | null) => {
+  if (!grade) {
+    return theme === 'dark' ? 'bg-slate-800 text-slate-300' : 'bg-slate-100 text-slate-600';
+  }
+  if (grade.startsWith('A')) {
+    return theme === 'dark' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-emerald-50 text-emerald-700';
+  }
+  if (grade === 'B') {
+    return theme === 'dark' ? 'bg-amber-500/15 text-amber-300' : 'bg-amber-50 text-amber-700';
+  }
+  return theme === 'dark' ? 'bg-blue-500/15 text-blue-300' : 'bg-blue-50 text-blue-700';
+};
+
+const sourceTone = (theme: 'light' | 'dark', source?: string | null) => {
+  if (source === 'signal_feed_analysis') {
+    return theme === 'dark' ? 'bg-violet-500/15 text-violet-300' : 'bg-violet-50 text-violet-700';
+  }
+  if (source === 'auto_paper') {
+    return theme === 'dark' ? 'bg-indigo-500/15 text-indigo-300' : 'bg-indigo-50 text-indigo-700';
+  }
+  return theme === 'dark' ? 'bg-slate-800 text-slate-300' : 'bg-slate-100 text-slate-600';
+};
+
+const labelSource = (source?: string | null) => {
+  if (!source) return 'manual_ui';
+  return source.replaceAll('_', ' ');
+};
 
 export const PaperTradingDashboard = () => {
   const { theme } = useMode();
@@ -64,6 +157,10 @@ export const PaperTradingDashboard = () => {
   const [resetting,    setResetting]    = useState(false);
   const [showForm,     setShowForm]     = useState(false);
   const [tab,          setTab]          = useState<'open' | 'history'>('open');
+  const [sourceFilter, setSourceFilter] = useState<TradeSourceFilter>('all');
+  const [gradeFilter, setGradeFilter] = useState<TradeGradeFilter>('all');
+  const [outcomeFilter, setOutcomeFilter] = useState<TradeOutcomeFilter>('all');
+  const [sortBy, setSortBy] = useState<TradeSortOption>('newest');
   const [toast,        setToast]        = useState<{ type: 'ok' | 'err'; msg: string } | null>(null);
   const [autoPaper,    setAutoPaper]    = useState<AutoPaperStatus | null>(null);
   const [autoForm,     setAutoForm]     = useState({
@@ -76,6 +173,8 @@ export const PaperTradingDashboard = () => {
   });
   const [savingAuto,   setSavingAuto]   = useState(false);
   const [runningAuto,  setRunningAuto]  = useState(false);
+  const [mlStats, setMlStats] = useState<MlStatsPayload | null>(null);
+  const [sideScorecard, setSideScorecard] = useState<SideScorecardPayload | null>(null);
 
   // New trade form
   const [form, setForm] = useState({ symbol: 'BTC', side: 'BUY' as 'BUY' | 'SELL', volume: '1', price: '' });
@@ -123,12 +222,35 @@ export const PaperTradingDashboard = () => {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const loadMlStats = useCallback(async () => {
+    try {
+      const [statsRes, sideRes] = await Promise.all([
+        fetch('/api/ml/stats'),
+        fetch('/api/paper-trades/side-scorecard', { headers: { 'X-API-Key': 'demo' } }),
+      ]);
+      const data = await statsRes.json();
+      setMlStats(data);
+      if (sideRes.ok) {
+        setSideScorecard(await sideRes.json());
+      }
+    } catch {
+      setMlStats(null);
+      setSideScorecard(null);
+    }
+  }, []);
 
   useEffect(() => {
-    const id = setInterval(() => { void load(true); }, 10_000);
+    void load();
+    void loadMlStats();
+  }, [load, loadMlStats]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      void load(true);
+      void loadMlStats();
+    }, 10_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, loadMlStats]);
 
   const saveAutoConfig = async (nextForm = autoForm) => {
     setSavingAuto(true);
@@ -272,6 +394,365 @@ export const PaperTradingDashboard = () => {
     const gradeColor = winRate >= 70 ? 'text-emerald-400' : winRate >= 55 ? 'text-indigo-400' : winRate >= 45 ? 'text-amber-400' : 'text-rose-400';
     return { profitFactor, avgWin, avgLoss, rr, curve, maxDd, winRate, grade, gradeColor, totalTrades: closedTrades.length };
   }, [closedTrades]);
+
+  const filterTrades = useCallback((trades: PaperTrade[]) => {
+    return trades.filter((trade) => {
+      const source = (trade.entry_source || 'manual_ui') as TradeSourceFilter;
+      const tradeGrade = trade.signal_grade || trade.features?.signal_grade || null;
+      const normalizedGrade: TradeGradeFilter =
+        !tradeGrade ? 'none' : tradeGrade.startsWith('A') ? 'A' : tradeGrade === 'B' ? 'B' : 'C';
+      const tradeOutcome = (trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase();
+
+      if (sourceFilter !== 'all' && source !== sourceFilter) return false;
+      if (gradeFilter !== 'all' && normalizedGrade !== gradeFilter) return false;
+      if (outcomeFilter === 'win' && tradeOutcome !== 'WIN') return false;
+      if (outcomeFilter === 'loss' && tradeOutcome !== 'LOSS') return false;
+      return true;
+    });
+  }, [gradeFilter, outcomeFilter, sourceFilter]);
+
+  const sortTrades = useCallback((trades: PaperTrade[]) => {
+    const sorted = [...trades];
+    sorted.sort((a, b) => {
+      const timeA = new Date(a.closed_at || a.opened_at).getTime();
+      const timeB = new Date(b.closed_at || b.opened_at).getTime();
+      switch (sortBy) {
+        case 'oldest':
+          return timeA - timeB;
+        case 'pnl_desc':
+          return (b.pnl_usd || 0) - (a.pnl_usd || 0);
+        case 'pnl_asc':
+          return (a.pnl_usd || 0) - (b.pnl_usd || 0);
+        case 'ml_desc':
+          return (b.ml_score ?? -1) - (a.ml_score ?? -1);
+        case 'ml_asc':
+          return (a.ml_score ?? 101) - (b.ml_score ?? 101);
+        case 'newest':
+        default:
+          return timeB - timeA;
+      }
+    });
+    return sorted;
+  }, [sortBy]);
+
+  const visibleOpenTrades = useMemo(
+    () => sortTrades(filterTrades(openTrades)),
+    [filterTrades, openTrades, sortTrades],
+  );
+
+  const visibleClosedTrades = useMemo(
+    () => sortTrades(filterTrades(closedTrades)),
+    [closedTrades, filterTrades, sortTrades],
+  );
+
+  const scopedSummary = useMemo(() => {
+    const visibleWins = visibleClosedTrades.filter((trade) => (trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase() === 'WIN');
+    const visibleLosses = visibleClosedTrades.filter((trade) => (trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase() === 'LOSS');
+    const grossWin = visibleWins.reduce((sum, trade) => sum + trade.pnl_usd, 0);
+    const grossLoss = Math.abs(visibleLosses.reduce((sum, trade) => sum + trade.pnl_usd, 0));
+    const avgPnl =
+      visibleClosedTrades.length > 0
+        ? visibleClosedTrades.reduce((sum, trade) => sum + trade.pnl_usd, 0) / visibleClosedTrades.length
+        : 0;
+    const avgMl =
+      visibleClosedTrades.filter((trade) => trade.ml_score != null).length > 0
+        ? visibleClosedTrades
+            .filter((trade) => trade.ml_score != null)
+            .reduce((sum, trade) => sum + Number(trade.ml_score || 0), 0) /
+          visibleClosedTrades.filter((trade) => trade.ml_score != null).length
+        : null;
+    return {
+      openCount: visibleOpenTrades.length,
+      closedCount: visibleClosedTrades.length,
+      winRate: visibleClosedTrades.length ? (visibleWins.length / visibleClosedTrades.length) * 100 : 0,
+      avgPnl,
+      profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 999 : 0,
+      avgMl,
+    };
+  }, [visibleClosedTrades, visibleOpenTrades]);
+
+  const weeklyReview = useMemo(() => {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const weeklyTrades = closedTrades.filter((trade) => {
+      const ts = new Date(trade.closed_at || trade.opened_at).getTime();
+      return Number.isFinite(ts) && ts >= cutoff;
+    });
+
+    if (weeklyTrades.length === 0) {
+      return null;
+    }
+
+    const wins = weeklyTrades.filter((trade) => (trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase() === 'WIN');
+    const grossWin = wins.reduce((sum, trade) => sum + trade.pnl_usd, 0);
+    const grossLoss = Math.abs(
+      weeklyTrades
+        .filter((trade) => (trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase() === 'LOSS')
+        .reduce((sum, trade) => sum + trade.pnl_usd, 0),
+    );
+
+    const bySource = new Map<string, { trades: number; pnl: number; wins: number }>();
+    const bySymbol = new Map<string, { trades: number; pnl: number; wins: number }>();
+
+    for (const trade of weeklyTrades) {
+      const outcome = (trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase();
+      const sourceKey = trade.entry_source || 'manual_ui';
+      const symbolKey = trade.symbol;
+
+      const sourceRow = bySource.get(sourceKey) || { trades: 0, pnl: 0, wins: 0 };
+      sourceRow.trades += 1;
+      sourceRow.pnl += trade.pnl_usd;
+      sourceRow.wins += outcome === 'WIN' ? 1 : 0;
+      bySource.set(sourceKey, sourceRow);
+
+      const symbolRow = bySymbol.get(symbolKey) || { trades: 0, pnl: 0, wins: 0 };
+      symbolRow.trades += 1;
+      symbolRow.pnl += trade.pnl_usd;
+      symbolRow.wins += outcome === 'WIN' ? 1 : 0;
+      bySymbol.set(symbolKey, symbolRow);
+    }
+
+    const strategyRows = [...bySource.entries()].map(([key, value]) => ({
+      key,
+      label: labelSource(key),
+      trades: value.trades,
+      pnl: value.pnl,
+      winRate: value.trades ? (value.wins / value.trades) * 100 : 0,
+    }));
+    const symbolRows = [...bySymbol.entries()].map(([key, value]) => ({
+      key,
+      trades: value.trades,
+      pnl: value.pnl,
+      winRate: value.trades ? (value.wins / value.trades) * 100 : 0,
+    }));
+
+    strategyRows.sort((a, b) => b.pnl - a.pnl);
+    symbolRows.sort((a, b) => b.pnl - a.pnl);
+
+    const bestTrade = [...weeklyTrades].sort((a, b) => b.pnl_usd - a.pnl_usd)[0];
+    const worstTrade = [...weeklyTrades].sort((a, b) => a.pnl_usd - b.pnl_usd)[0];
+    const totalPnl = weeklyTrades.reduce((sum, trade) => sum + trade.pnl_usd, 0);
+    const winRate = weeklyTrades.length ? (wins.length / weeklyTrades.length) * 100 : 0;
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 999 : 0;
+
+    const insights: string[] = [];
+    if (strategyRows[0]) {
+      insights.push(`Best source this week: ${strategyRows[0].label} (${strategyRows[0].pnl >= 0 ? '+' : ''}$${strategyRows[0].pnl.toFixed(2)})`);
+    }
+    if (strategyRows[strategyRows.length - 1]) {
+      insights.push(`Weakest source: ${strategyRows[strategyRows.length - 1].label} (${strategyRows[strategyRows.length - 1].pnl >= 0 ? '+' : ''}$${strategyRows[strategyRows.length - 1].pnl.toFixed(2)})`);
+    }
+    if (symbolRows[0]) {
+      insights.push(`Strongest symbol: ${symbolRows[0].key} (${symbolRows[0].pnl >= 0 ? '+' : ''}$${symbolRows[0].pnl.toFixed(2)})`);
+    }
+    if (symbolRows[symbolRows.length - 1]) {
+      insights.push(`Needs work: ${symbolRows[symbolRows.length - 1].key} (${symbolRows[symbolRows.length - 1].pnl >= 0 ? '+' : ''}$${symbolRows[symbolRows.length - 1].pnl.toFixed(2)})`);
+    }
+
+    return {
+      totalTrades: weeklyTrades.length,
+      totalPnl,
+      winRate,
+      profitFactor,
+      bestTrade,
+      worstTrade,
+      topStrategy: strategyRows[0] || null,
+      weakStrategy: strategyRows[strategyRows.length - 1] || null,
+      topSymbol: symbolRows[0] || null,
+      weakSymbol: symbolRows[symbolRows.length - 1] || null,
+      insights,
+    };
+  }, [closedTrades]);
+
+  const strategyComparison = useMemo(() => {
+    const groups = new Map<string, { trades: number; wins: number; pnl: number; mlTotal: number; mlCount: number }>();
+    for (const trade of closedTrades) {
+      const key = trade.entry_source || 'manual_ui';
+      const row = groups.get(key) || { trades: 0, wins: 0, pnl: 0, mlTotal: 0, mlCount: 0 };
+      row.trades += 1;
+      row.pnl += trade.pnl_usd;
+      if ((trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase() === 'WIN') {
+        row.wins += 1;
+      }
+      if (trade.ml_score != null) {
+        row.mlTotal += Number(trade.ml_score);
+        row.mlCount += 1;
+      }
+      groups.set(key, row);
+    }
+    return [...groups.entries()]
+      .map(([key, value]) => ({
+        key,
+        label: labelSource(key),
+        trades: value.trades,
+        winRate: value.trades ? (value.wins / value.trades) * 100 : 0,
+        pnl: value.pnl,
+        avgPnl: value.trades ? value.pnl / value.trades : 0,
+        avgMl: value.mlCount ? value.mlTotal / value.mlCount : null,
+      }))
+      .sort((a, b) => b.pnl - a.pnl);
+  }, [closedTrades]);
+
+  const symbolScorecard = useMemo(() => {
+    const groups = new Map<string, { trades: number; wins: number; pnl: number; mlTotal: number; mlCount: number }>();
+    for (const trade of closedTrades) {
+      const key = trade.symbol;
+      const row = groups.get(key) || { trades: 0, wins: 0, pnl: 0, mlTotal: 0, mlCount: 0 };
+      row.trades += 1;
+      row.pnl += trade.pnl_usd;
+      if ((trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS')).toUpperCase() === 'WIN') {
+        row.wins += 1;
+      }
+      if (trade.ml_score != null) {
+        row.mlTotal += Number(trade.ml_score);
+        row.mlCount += 1;
+      }
+      groups.set(key, row);
+    }
+    return [...groups.entries()]
+      .map(([key, value]) => ({
+        key,
+        trades: value.trades,
+        winRate: value.trades ? (value.wins / value.trades) * 100 : 0,
+        pnl: value.pnl,
+        avgPnl: value.trades ? value.pnl / value.trades : 0,
+        avgMl: value.mlCount ? value.mlTotal / value.mlCount : null,
+      }))
+      .sort((a, b) => b.pnl - a.pnl);
+  }, [closedTrades]);
+
+  const performanceFeedback = mlStats?.performance_feedback;
+
+  const feedbackStrategyRows = useMemo(() => {
+    return Object.entries(performanceFeedback?.strategy || {})
+      .map(([key, value]) => ({
+        key,
+        label: labelSource(key),
+        trades: Number(value.trades || 0),
+        pnl: Number(value.pnl || 0),
+        winRate: Number(value.win_rate || 0),
+        ready: Number(value.trades || 0) >= 10 && Number(value.win_rate || 0) >= 50 && Number(value.pnl || 0) >= 0,
+      }))
+      .sort((a, b) => b.pnl - a.pnl);
+  }, [performanceFeedback]);
+
+  const feedbackSymbolRows = useMemo(() => {
+    return Object.entries(performanceFeedback?.symbol || {})
+      .map(([key, value]) => ({
+        key,
+        trades: Number(value.trades || 0),
+        pnl: Number(value.pnl || 0),
+        winRate: Number(value.win_rate || 0),
+        ready: Number(value.trades || 0) >= 5 && Number(value.win_rate || 0) >= 50 && Number(value.pnl || 0) >= 0,
+      }))
+      .sort((a, b) => b.pnl - a.pnl);
+  }, [performanceFeedback]);
+
+  const guardedSources = feedbackStrategyRows.filter((row) => row.trades >= 10 && !row.ready);
+  const guardedSymbols = feedbackSymbolRows.filter((row) => row.trades >= 5 && !row.ready);
+  const weakSideRows = sideScorecard?.weak_slices || [];
+  const topSideRows = sideScorecard?.symbol_side?.slice(0, 6) || [];
+
+  const buildSnapshotReport = useCallback(() => {
+    const lines = [
+      `Paper Trading Filter Snapshot`,
+      `Source: ${sourceFilter}`,
+      `Grade: ${gradeFilter}`,
+      `Outcome: ${outcomeFilter}`,
+      `Sort: ${sortBy}`,
+      `Visible Open: ${scopedSummary.openCount}`,
+      `Visible Closed: ${scopedSummary.closedCount}`,
+      `Scoped Win Rate: ${scopedSummary.winRate.toFixed(1)}%`,
+      `Avg P&L: ${scopedSummary.avgPnl >= 0 ? '+' : ''}$${scopedSummary.avgPnl.toFixed(2)}`,
+      `Profit Factor: ${scopedSummary.profitFactor >= 999 ? '∞' : `${scopedSummary.profitFactor.toFixed(2)}x`}`,
+      `Avg ML: ${scopedSummary.avgMl != null ? `${scopedSummary.avgMl.toFixed(1)}%` : 'N/A'}`,
+      '',
+      'Visible Closed Trades:',
+      ...visibleClosedTrades.map((trade) => {
+        const outcome = trade.outcome || (trade.pnl_usd >= 0 ? 'WIN' : 'LOSS');
+        return [
+          trade.symbol,
+          trade.side,
+          trade.entry_source || 'manual_ui',
+          trade.signal_grade || 'NA',
+          outcome,
+          `${trade.pnl_usd >= 0 ? '+' : ''}$${trade.pnl_usd.toFixed(2)}`,
+          trade.ml_score != null ? `${trade.ml_score.toFixed(0)}%` : 'N/A',
+        ].join(' | ');
+      }),
+    ];
+    return lines.join('\n');
+  }, [gradeFilter, outcomeFilter, scopedSummary, sortBy, sourceFilter, visibleClosedTrades]);
+
+  const exportFilteredCsv = useCallback(() => {
+    const rows = [
+      [
+        'status',
+        'symbol',
+        'side',
+        'entry_source',
+        'signal_grade',
+        'macro_bias',
+        'timeframe',
+        'entry_price',
+        'current_or_exit_price',
+        'stop_loss',
+        'take_profit',
+        'pnl_usd',
+        'ml_score',
+        'outcome',
+        'entry_reason',
+        'opened_at',
+        'closed_at',
+      ],
+      ...[...visibleOpenTrades, ...visibleClosedTrades].map((trade) => [
+        trade.status,
+        trade.symbol,
+        trade.side,
+        trade.entry_source || 'manual_ui',
+        trade.signal_grade || '',
+        trade.macro_bias || '',
+        trade.features?.signal_timeframe || '',
+        trade.entry_price,
+        trade.current_price,
+        trade.stop_loss ?? '',
+        trade.take_profit ?? '',
+        trade.pnl_usd,
+        trade.ml_score ?? '',
+        trade.outcome || '',
+        (trade.entry_reason || '').replaceAll('\n', ' '),
+        trade.opened_at,
+        trade.closed_at || '',
+      ]),
+    ];
+
+    const csv = rows
+      .map((row) =>
+        row
+          .map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`)
+          .join(','),
+      )
+      .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `paper-trades-${tab}-${sourceFilter}-${gradeFilter}-${outcomeFilter}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('ok', 'Filtered CSV exported');
+  }, [gradeFilter, outcomeFilter, showToast, sourceFilter, tab, visibleClosedTrades, visibleOpenTrades]);
+
+  const copySnapshotReport = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(buildSnapshotReport());
+      showToast('ok', 'Snapshot report copied');
+    } catch (error) {
+      showToast('err', error instanceof Error ? error.message : 'Failed to copy snapshot');
+    }
+  }, [buildSnapshotReport]);
 
   return (
     <div className={`flex-1 overflow-y-auto p-6 lg:p-8 space-y-6 scrollbar-hide transition-colors duration-500 ${
@@ -435,7 +916,7 @@ export const PaperTradingDashboard = () => {
           <p className="text-sm text-slate-500 font-medium mt-1 ml-11">Simulate trades with zero risk — track performance in real-time</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={load} className={`p-2 rounded-xl transition-all border ${
+          <button onClick={() => { void load(); void loadMlStats(); }} className={`p-2 rounded-xl transition-all border ${
             theme === 'dark' ? 'text-slate-500 hover:text-white bg-slate-900/50 border-white/5' : 'text-slate-400 hover:text-slate-900 bg-white border-slate-200 shadow-sm'
           }`}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -459,6 +940,211 @@ export const PaperTradingDashboard = () => {
         <StatCard icon={<BarChart3 className={`w-4 h-4 ${theme === 'dark' ? 'text-indigo-400' : 'text-indigo-600'}`} />} label="Win Rate" value={`${stats.winRate}%`} color="indigo" theme={theme} />
         <StatCard icon={<TrendingUp className={`w-4 h-4 ${theme === 'dark' ? 'text-amber-400' : 'text-amber-600'}`} />} label="Wins / Losses" value={`${stats.wins}W / ${stats.losses}L`} color="amber" theme={theme} />
       </div>
+
+      {performanceFeedback && (
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`border rounded-2xl p-6 space-y-5 transition-all duration-500 ${
+            theme === 'dark' ? 'bg-[#0a0f1d]/60 border-white/8' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className={`w-4 h-4 ${theme === 'dark' ? 'text-cyan-300' : 'text-cyan-600'}`} />
+              <span className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                Feedback Guardrails
+              </span>
+            </div>
+            <div className={`rounded-xl px-3 py-1.5 text-[10px] font-black uppercase tracking-widest ${
+              guardedSources.length === 0 && guardedSymbols.length === 0
+                ? theme === 'dark' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700'
+                : theme === 'dark' ? 'bg-amber-500/10 text-amber-300' : 'bg-amber-50 text-amber-700'
+            }`}>
+              {guardedSources.length === 0 && guardedSymbols.length === 0 ? 'Ready Bias' : 'Guard Active'}
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Ready Sources</p>
+              <p className={`mt-2 text-2xl font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                {feedbackStrategyRows.filter((row) => row.ready).length}
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">threshold: 10 trades / 50% / non-negative pnl</p>
+            </div>
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Guarded Sources</p>
+              <p className={`mt-2 text-2xl font-black ${guardedSources.length === 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                {guardedSources.length}
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">live can be blocked when source stays weak</p>
+            </div>
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Ready Symbols</p>
+              <p className={`mt-2 text-2xl font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                {feedbackSymbolRows.filter((row) => row.ready).length}
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">threshold: 5 trades / 50% / non-negative pnl</p>
+            </div>
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Guarded Symbols</p>
+              <p className={`mt-2 text-2xl font-black ${guardedSymbols.length === 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                {guardedSymbols.length}
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">confidence gets cut before live is allowed</p>
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-3">
+            <div className={`rounded-xl p-4 space-y-3 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Source Readiness</p>
+              <div className="space-y-2">
+                {feedbackStrategyRows.slice(0, 4).map((row) => (
+                  <div key={row.key} className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{row.label}</p>
+                      <p className="text-[10px] font-bold text-slate-500">{row.trades} trades · {row.winRate.toFixed(1)}%</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-xs font-black ${row.pnl >= 0 ? (theme === 'dark' ? 'text-emerald-300' : 'text-emerald-700') : (theme === 'dark' ? 'text-rose-300' : 'text-rose-700')}`}>
+                        {row.pnl >= 0 ? '+' : ''}${row.pnl.toFixed(2)}
+                      </p>
+                      <p className={`text-[10px] font-black uppercase tracking-widest ${row.ready ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                        {row.ready ? 'ready' : 'guarded'}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className={`rounded-xl p-4 space-y-3 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Symbol Readiness</p>
+              <div className="space-y-2">
+                {feedbackSymbolRows.slice(0, 5).map((row) => (
+                  <div key={row.key} className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{row.key}</p>
+                      <p className="text-[10px] font-bold text-slate-500">{row.trades} trades · {row.winRate.toFixed(1)}%</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-xs font-black ${row.pnl >= 0 ? (theme === 'dark' ? 'text-emerald-300' : 'text-emerald-700') : (theme === 'dark' ? 'text-rose-300' : 'text-rose-700')}`}>
+                        {row.pnl >= 0 ? '+' : ''}${row.pnl.toFixed(2)}
+                      </p>
+                      <p className={`text-[10px] font-black uppercase tracking-widest ${row.ready ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                        {row.ready ? 'ready' : 'guarded'}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className={`rounded-xl p-4 space-y-3 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Recommendations</p>
+              <div className="space-y-2">
+                {(performanceFeedback.recommendations || []).slice(0, 4).map((item) => (
+                  <div
+                    key={item}
+                    className={`rounded-lg px-3 py-2 text-xs font-bold ${
+                      theme === 'dark' ? 'bg-white/5 text-slate-300' : 'bg-white text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    {item}
+                  </div>
+                ))}
+                {(performanceFeedback.recommendations || []).length === 0 && (
+                  <div className={`rounded-lg px-3 py-2 text-xs font-bold ${
+                    theme === 'dark' ? 'bg-white/5 text-slate-400' : 'bg-white text-slate-500 border border-slate-200'
+                  }`}>
+                    Waiting for more closed paper trades before the guardrails get opinionated.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {sideScorecard?.available && (
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`border rounded-2xl p-6 space-y-5 transition-all duration-500 ${
+            theme === 'dark' ? 'bg-[#0a0f1d]/60 border-white/8' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Activity className={`w-4 h-4 ${theme === 'dark' ? 'text-cyan-300' : 'text-cyan-600'}`} />
+              <span className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                Side Scorecard
+              </span>
+            </div>
+            <div className={`rounded-xl px-3 py-1.5 text-[10px] font-black uppercase tracking-widest ${
+              weakSideRows.length === 0
+                ? theme === 'dark' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700'
+                : theme === 'dark' ? 'bg-amber-500/10 text-amber-300' : 'bg-amber-50 text-amber-700'
+            }`}>
+              {weakSideRows.length} weak slices
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className={`rounded-xl p-4 space-y-3 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Top Symbol-Side</p>
+              <div className="space-y-2">
+                {topSideRows.map((row) => (
+                  <div key={row.key} className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{row.key}</p>
+                      <p className="text-[10px] font-bold text-slate-500">{row.trades} trades • {(row.win_rate * 100).toFixed(1)}% WR</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-xs font-black ${row.net_pnl >= 0 ? (theme === 'dark' ? 'text-emerald-300' : 'text-emerald-700') : (theme === 'dark' ? 'text-rose-300' : 'text-rose-700')}`}>
+                        {row.net_pnl >= 0 ? '+' : ''}${row.net_pnl.toFixed(2)}
+                      </p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                        PF {row.profit_factor >= 999 ? 'INF' : row.profit_factor.toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className={`rounded-xl p-4 space-y-3 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Weak Slices</p>
+              <div className="space-y-2">
+                {weakSideRows.slice(0, 6).map((row) => (
+                  <div key={row.key} className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{row.key}</p>
+                      <p className="text-[10px] font-bold text-slate-500">{row.trades} trades • {(row.win_rate * 100).toFixed(1)}% WR • EV ${row.expectancy_usd.toFixed(2)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-xs font-black ${theme === 'dark' ? 'text-rose-300' : 'text-rose-700'}`}>
+                        {row.net_pnl >= 0 ? '+' : ''}${row.net_pnl.toFixed(2)}
+                      </p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                        PF {row.profit_factor >= 999 ? 'INF' : row.profit_factor.toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+                {weakSideRows.length === 0 && (
+                  <div className={`rounded-lg px-3 py-2 text-xs font-bold ${
+                    theme === 'dark' ? 'bg-white/5 text-slate-400' : 'bg-white text-slate-500 border border-slate-200'
+                  }`}>
+                    No weak slices flagged yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Performance Analytics Panel */}
       {perf && (
@@ -541,6 +1227,249 @@ export const PaperTradingDashboard = () => {
             </div>
           )}
         </motion.div>
+      )}
+
+      {weeklyReview && (
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`border rounded-2xl p-6 space-y-5 transition-all duration-500 ${
+            theme === 'dark' ? 'bg-[#0a0f1d]/60 border-white/8' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Award className={`w-4 h-4 ${theme === 'dark' ? 'text-amber-400' : 'text-amber-600'}`} />
+              <span className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                Weekly Review Pack
+              </span>
+            </div>
+            <div className={`rounded-xl px-3 py-1.5 text-[10px] font-black uppercase tracking-widest ${
+              theme === 'dark' ? 'bg-white/5 text-slate-300' : 'bg-slate-100 text-slate-600'
+            }`}>
+              Last 7 days
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Weekly P&amp;L</p>
+              <p className={`mt-2 text-2xl font-black ${
+                weeklyReview.totalPnl >= 0
+                  ? theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'
+                  : theme === 'dark' ? 'text-rose-400' : 'text-rose-600'
+              }`}>
+                {weeklyReview.totalPnl >= 0 ? '+' : ''}${weeklyReview.totalPnl.toFixed(2)}
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">{weeklyReview.totalTrades} closed trades</p>
+            </div>
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Win Rate</p>
+              <p className={`mt-2 text-2xl font-black ${
+                weeklyReview.winRate >= 60
+                  ? theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'
+                  : weeklyReview.winRate >= 45
+                    ? theme === 'dark' ? 'text-amber-400' : 'text-amber-600'
+                    : theme === 'dark' ? 'text-rose-400' : 'text-rose-600'
+              }`}>
+                {weeklyReview.winRate.toFixed(1)}%
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">
+                PF {weeklyReview.profitFactor >= 999 ? '∞' : `${weeklyReview.profitFactor.toFixed(2)}x`}
+              </p>
+            </div>
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Top Strategy</p>
+              <p className={`mt-2 text-base font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                {weeklyReview.topStrategy?.label || 'N/A'}
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">
+                {weeklyReview.topStrategy ? `${weeklyReview.topStrategy.pnl >= 0 ? '+' : ''}$${weeklyReview.topStrategy.pnl.toFixed(2)} · ${weeklyReview.topStrategy.winRate.toFixed(1)}%` : 'No data'}
+              </p>
+            </div>
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Top Symbol</p>
+              <p className={`mt-2 text-base font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                {weeklyReview.topSymbol?.key || 'N/A'}
+              </p>
+              <p className="text-[10px] font-bold text-slate-500">
+                {weeklyReview.topSymbol ? `${weeklyReview.topSymbol.pnl >= 0 ? '+' : ''}$${weeklyReview.topSymbol.pnl.toFixed(2)} · ${weeklyReview.topSymbol.winRate.toFixed(1)}%` : 'No data'}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Best / Worst Trade</p>
+              <div className="mt-3 space-y-3">
+                <div>
+                  <p className={`text-sm font-black ${theme === 'dark' ? 'text-emerald-300' : 'text-emerald-700'}`}>
+                    Best: {weeklyReview.bestTrade.symbol} {weeklyReview.bestTrade.side}
+                  </p>
+                  <p className="text-xs font-bold text-slate-500">
+                    {weeklyReview.bestTrade.pnl_usd >= 0 ? '+' : ''}${weeklyReview.bestTrade.pnl_usd.toFixed(2)} via {labelSource(weeklyReview.bestTrade.entry_source)}
+                  </p>
+                </div>
+                <div>
+                  <p className={`text-sm font-black ${theme === 'dark' ? 'text-rose-300' : 'text-rose-700'}`}>
+                    Worst: {weeklyReview.worstTrade.symbol} {weeklyReview.worstTrade.side}
+                  </p>
+                  <p className="text-xs font-bold text-slate-500">
+                    {weeklyReview.worstTrade.pnl_usd >= 0 ? '+' : ''}${weeklyReview.worstTrade.pnl_usd.toFixed(2)} via {labelSource(weeklyReview.worstTrade.entry_source)}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className={`rounded-xl p-4 ${theme === 'dark' ? 'bg-black/20' : 'bg-slate-50 border border-slate-100'}`}>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">AI Notes</p>
+              <div className="mt-3 space-y-2">
+                {weeklyReview.insights.map((insight) => (
+                  <div
+                    key={insight}
+                    className={`rounded-lg px-3 py-2 text-xs font-bold ${
+                      theme === 'dark' ? 'bg-white/5 text-slate-300' : 'bg-white text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    {insight}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {(strategyComparison.length > 0 || symbolScorecard.length > 0) && (
+        <div className="grid gap-4 xl:grid-cols-2">
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`border rounded-2xl p-5 space-y-4 transition-all duration-500 ${
+              theme === 'dark' ? 'bg-[#0a0f1d]/60 border-white/8' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BarChart3 className={`w-4 h-4 ${theme === 'dark' ? 'text-indigo-400' : 'text-indigo-600'}`} />
+                <span className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                  Compare Strategies
+                </span>
+              </div>
+              <span className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                All closed trades
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {strategyComparison.map((row) => (
+                <div
+                  key={row.key}
+                  className={`grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,0.8fr))] items-center gap-3 rounded-xl border px-4 py-3 ${
+                    theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'
+                  }`}
+                >
+                  <div>
+                    <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{row.label}</p>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{row.trades} trades</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Win</p>
+                    <p className={`text-sm font-black ${
+                      row.winRate >= 60 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') :
+                      row.winRate >= 45 ? (theme === 'dark' ? 'text-amber-400' : 'text-amber-600') :
+                      (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')
+                    }`}>
+                      {row.winRate.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">P&amp;L</p>
+                    <p className={`text-sm font-black ${row.pnl >= 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                      {row.pnl >= 0 ? '+' : ''}${row.pnl.toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Avg</p>
+                    <p className={`text-sm font-black ${row.avgPnl >= 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                      {row.avgPnl >= 0 ? '+' : ''}${row.avgPnl.toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Avg ML</p>
+                    <p className={`text-sm font-black ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+                      {row.avgMl != null ? `${row.avgMl.toFixed(1)}%` : 'N/A'}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`border rounded-2xl p-5 space-y-4 transition-all duration-500 ${
+              theme === 'dark' ? 'bg-[#0a0f1d]/60 border-white/8' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Target className={`w-4 h-4 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
+                <span className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                  Symbol Scorecard
+                </span>
+              </div>
+              <span className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                Ranked by total P&amp;L
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {symbolScorecard.map((row) => (
+                <div
+                  key={row.key}
+                  className={`grid grid-cols-[minmax(0,1.1fr)_repeat(4,minmax(0,0.85fr))] items-center gap-3 rounded-xl border px-4 py-3 ${
+                    theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'
+                  }`}
+                >
+                  <div>
+                    <p className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{row.key}</p>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{row.trades} trades</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Win</p>
+                    <p className={`text-sm font-black ${
+                      row.winRate >= 60 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') :
+                      row.winRate >= 45 ? (theme === 'dark' ? 'text-amber-400' : 'text-amber-600') :
+                      (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')
+                    }`}>
+                      {row.winRate.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">P&amp;L</p>
+                    <p className={`text-sm font-black ${row.pnl >= 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                      {row.pnl >= 0 ? '+' : ''}${row.pnl.toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Avg</p>
+                    <p className={`text-sm font-black ${row.avgPnl >= 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                      {row.avgPnl >= 0 ? '+' : ''}${row.avgPnl.toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Avg ML</p>
+                    <p className={`text-sm font-black ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+                      {row.avgMl != null ? `${row.avgMl.toFixed(1)}%` : 'N/A'}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        </div>
       )}
 
       {/* Unrealized P&L banner */}
@@ -692,29 +1621,197 @@ export const PaperTradingDashboard = () => {
         )}
       </div>
 
+      <div className={`grid gap-3 rounded-2xl border p-4 md:grid-cols-2 xl:grid-cols-4 ${
+        theme === 'dark' ? 'border-white/5 bg-slate-900/40' : 'border-slate-200 bg-white shadow-sm'
+      }`}>
+        <div>
+          <label className={`mb-2 block text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+            Entry Source
+          </label>
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value as TradeSourceFilter)}
+            className={`w-full rounded-xl border px-3 py-2 text-sm font-bold ${
+              theme === 'dark' ? 'border-white/10 bg-slate-950 text-white' : 'border-slate-200 bg-slate-50 text-slate-900'
+            }`}
+          >
+            <option value="all">All sources</option>
+            <option value="signal_feed_analysis">Signal feed</option>
+            <option value="auto_paper">Auto paper</option>
+            <option value="manual_ui">Manual UI</option>
+          </select>
+        </div>
+        <div>
+          <label className={`mb-2 block text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+            Signal Grade
+          </label>
+          <select
+            value={gradeFilter}
+            onChange={(e) => setGradeFilter(e.target.value as TradeGradeFilter)}
+            className={`w-full rounded-xl border px-3 py-2 text-sm font-bold ${
+              theme === 'dark' ? 'border-white/10 bg-slate-950 text-white' : 'border-slate-200 bg-slate-50 text-slate-900'
+            }`}
+          >
+            <option value="all">All grades</option>
+            <option value="A">A range</option>
+            <option value="B">B</option>
+            <option value="C">C / Watch</option>
+            <option value="none">No grade</option>
+          </select>
+        </div>
+        <div>
+          <label className={`mb-2 block text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+            Outcome
+          </label>
+          <select
+            value={outcomeFilter}
+            onChange={(e) => setOutcomeFilter(e.target.value as TradeOutcomeFilter)}
+            className={`w-full rounded-xl border px-3 py-2 text-sm font-bold ${
+              theme === 'dark' ? 'border-white/10 bg-slate-950 text-white' : 'border-slate-200 bg-slate-50 text-slate-900'
+            }`}
+          >
+            <option value="all">All outcomes</option>
+            <option value="win">Wins</option>
+            <option value="loss">Losses</option>
+          </select>
+        </div>
+        <div>
+          <label className={`mb-2 block text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+            Sort By
+          </label>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as TradeSortOption)}
+            className={`w-full rounded-xl border px-3 py-2 text-sm font-bold ${
+              theme === 'dark' ? 'border-white/10 bg-slate-950 text-white' : 'border-slate-200 bg-slate-50 text-slate-900'
+            }`}
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="pnl_desc">P&amp;L high to low</option>
+            <option value="pnl_asc">P&amp;L low to high</option>
+            <option value="ml_desc">ML score high to low</option>
+            <option value="ml_asc">ML score low to high</option>
+          </select>
+        </div>
+      </div>
+
+      <div className={`rounded-2xl border p-4 transition-all ${
+        theme === 'dark' ? 'border-white/5 bg-slate-900/40' : 'border-slate-200 bg-white shadow-sm'
+      }`}>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <p className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+              Filtered View Summary
+            </p>
+            <p className={`mt-1 text-sm font-bold ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+              Snapshot for the trades visible under the current filters
+            </p>
+          </div>
+          <div className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-widest ${
+            theme === 'dark' ? 'bg-white/5 text-slate-300' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {sourceFilter} · {gradeFilter} · {outcomeFilter} · {sortBy}
+          </div>
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <button
+            onClick={exportFilteredCsv}
+            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-widest ${
+              theme === 'dark'
+                ? 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export CSV
+          </button>
+          <button
+            onClick={() => void copySnapshotReport()}
+            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-widest ${
+              theme === 'dark'
+                ? 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <Copy className="h-3.5 w-3.5" />
+            Copy Snapshot
+          </button>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className={`rounded-xl border p-3 ${theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'}`}>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Visible Open</p>
+            <p className={`mt-2 text-2xl font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{scopedSummary.openCount}</p>
+          </div>
+          <div className={`rounded-xl border p-3 ${theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'}`}>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Visible Closed</p>
+            <p className={`mt-2 text-2xl font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{scopedSummary.closedCount}</p>
+          </div>
+          <div className={`rounded-xl border p-3 ${theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'}`}>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Scoped Win Rate</p>
+            <p className={`mt-2 text-2xl font-black ${
+              scopedSummary.winRate >= 60
+                ? theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'
+                : scopedSummary.winRate >= 45
+                  ? theme === 'dark' ? 'text-amber-400' : 'text-amber-600'
+                  : theme === 'dark' ? 'text-rose-400' : 'text-rose-600'
+            }`}>
+              {scopedSummary.winRate.toFixed(1)}%
+            </p>
+          </div>
+          <div className={`rounded-xl border p-3 ${theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'}`}>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Avg P&amp;L</p>
+            <p className={`mt-2 text-2xl font-black ${
+              scopedSummary.avgPnl >= 0
+                ? theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'
+                : theme === 'dark' ? 'text-rose-400' : 'text-rose-600'
+            }`}>
+              {scopedSummary.avgPnl >= 0 ? '+' : ''}${scopedSummary.avgPnl.toFixed(2)}
+            </p>
+          </div>
+          <div className={`rounded-xl border p-3 ${theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-slate-200 bg-slate-50'}`}>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Profit Factor / Avg ML</p>
+            <p className={`mt-2 text-2xl font-black ${
+              scopedSummary.profitFactor >= 1.2
+                ? theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'
+                : scopedSummary.profitFactor >= 1
+                  ? theme === 'dark' ? 'text-amber-400' : 'text-amber-600'
+                  : theme === 'dark' ? 'text-rose-400' : 'text-rose-600'
+            }`}>
+              {scopedSummary.profitFactor >= 999 ? '∞' : scopedSummary.profitFactor.toFixed(2)}x
+            </p>
+            <p className={`mt-1 text-[11px] font-bold ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
+              Avg ML {scopedSummary.avgMl != null ? `${scopedSummary.avgMl.toFixed(1)}%` : 'N/A'}
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Trade Tables */}
       {tab === 'open' ? (
         <div className={`border rounded-2xl overflow-hidden transition-all duration-500 ${
           theme === 'dark' ? 'bg-[#0a0f1d]/60 border-white/5' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
         }`}>
-          {openTrades.length === 0 ? (
+          {visibleOpenTrades.length === 0 ? (
             <div className="py-16 text-center">
               <FlaskConical className={`w-8 h-8 mx-auto mb-3 ${theme === 'dark' ? 'text-slate-700' : 'text-slate-200'}`} />
-              <p className={`font-bold text-sm ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>No open paper trades</p>
-              <p className={`text-xs font-medium mt-1 ${theme === 'dark' ? 'text-slate-700' : 'text-slate-300'}`}>Click "New Trade" to start simulating</p>
+              <p className={`font-bold text-sm ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>No open paper trades in this view</p>
+              <p className={`text-xs font-medium mt-1 ${theme === 'dark' ? 'text-slate-700' : 'text-slate-300'}`}>Try a broader filter or open a new trade</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className={`border-b ${theme === 'dark' ? 'border-white/5' : 'border-slate-100'}`}>
-                    {['Symbol', 'Side', 'Volume', 'Entry', 'Current', 'Unr. P&L', 'Opened', 'Action'].map(h => (
+                    {['Trade', 'Setup', 'Levels', 'Current', 'Unr. P&L', 'Opened', 'Action'].map(h => (
                       <th key={h} className="px-4 py-3 text-left text-[10px] font-black text-slate-500 uppercase tracking-widest">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {openTrades.map(t => {
+                  {visibleOpenTrades.map(t => {
                     const dir = t.side === 'BUY' ? 1 : -1;
                     const unr = dir * (t.current_price - t.entry_price) * t.volume;
                     const pct = t.entry_price ? (unr / (t.entry_price * t.volume)) * 100 : 0;
@@ -722,18 +1819,69 @@ export const PaperTradingDashboard = () => {
                       <tr key={t.id} className={`border-b transition-colors ${
                         theme === 'dark' ? 'border-white/3 hover:bg-white/2' : 'border-slate-50 hover:bg-slate-50'
                       }`}>
-                        <td className={`px-4 py-3 font-black text-sm ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{t.symbol}</td>
                         <td className="px-4 py-3">
-                          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
-                            t.side === 'BUY' 
-                              ? (theme === 'dark' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
-                              : (theme === 'dark' ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-50 text-rose-600')
-                          }`}>
-                            {t.side === 'BUY' ? '▲ Long' : '▼ Short'}
-                          </span>
+                          <div className="min-w-[160px] space-y-2">
+                            <div className={`font-black text-sm ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{t.symbol}</div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
+                                t.side === 'BUY'
+                                  ? (theme === 'dark' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600')
+                                  : (theme === 'dark' ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-50 text-rose-600')
+                              }`}>
+                                {t.side === 'BUY' ? 'LONG' : 'SHORT'}
+                              </span>
+                              {t.signal_grade ? (
+                                <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${gradeTone(theme, t.signal_grade)}`}>
+                                  {t.signal_grade}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className={`text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                              Vol {t.volume} | Entry ${t.entry_price.toLocaleString()}
+                            </div>
+                          </div>
                         </td>
-                        <td className={`px-4 py-3 font-bold text-sm font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>{t.volume}</td>
-                        <td className={`px-4 py-3 font-bold text-sm font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>${t.entry_price.toLocaleString()}</td>
+                        <td className="px-4 py-3">
+                          <div className="min-w-[240px] space-y-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${sourceTone(theme, t.entry_source)}`}>
+                                {(t.entry_source || 'manual_ui').replaceAll('_', ' ')}
+                              </span>
+                              {t.features?.signal_timeframe ? (
+                                <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
+                                  theme === 'dark' ? 'bg-white/5 text-slate-300' : 'bg-slate-100 text-slate-600'
+                                }`}>
+                                  {t.features.signal_timeframe}
+                                </span>
+                              ) : null}
+                            </div>
+                            {t.entry_reason ? (
+                              <p className={`text-xs leading-5 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
+                                {t.entry_reason}
+                              </p>
+                            ) : null}
+                            <div className={`flex flex-wrap gap-3 text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                              {t.features?.master_decision ? <span>{t.features.master_decision}</span> : null}
+                              {t.features?.signal_confidence != null ? <span>Conf {t.features.signal_confidence}%</span> : null}
+                              {t.features?.risk_reward != null ? <span>R:R {Number(t.features.risk_reward).toFixed(2)}</span> : null}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="min-w-[150px] space-y-1">
+                            <div className={`text-xs font-black font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+                              SL {t.stop_loss != null ? `$${t.stop_loss.toLocaleString()}` : 'N/A'}
+                            </div>
+                            <div className={`text-xs font-black font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+                              TP {t.take_profit != null ? `$${t.take_profit.toLocaleString()}` : 'N/A'}
+                            </div>
+                            {t.macro_bias ? (
+                              <div className={`text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                                Bias {t.macro_bias}
+                              </div>
+                            ) : null}
+                          </div>
+                        </td>
                         <td className={`px-4 py-3 font-bold text-sm font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>${t.current_price.toLocaleString()}</td>
                         <td className="px-4 py-3">
                           <div className={`font-black text-sm font-mono ${unr >= 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
@@ -744,7 +1892,8 @@ export const PaperTradingDashboard = () => {
                           </div>
                         </td>
                         <td className={`px-4 py-3 text-xs font-medium ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
-                          {new Date(t.opened_at).toLocaleDateString()}
+                          <div>{new Date(t.opened_at).toLocaleDateString()}</div>
+                          <div>{new Date(t.opened_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                         </td>
                         <td className="px-4 py-3">
                           <button onClick={() => handleClose(t.id)} disabled={closing === t.id}
@@ -766,53 +1915,112 @@ export const PaperTradingDashboard = () => {
         <div className={`border rounded-2xl overflow-hidden transition-all duration-500 ${
           theme === 'dark' ? 'bg-[#0a0f1d]/60 border-white/5' : 'bg-white border-slate-200 shadow-xl shadow-slate-200/40'
         }`}>
-          {closedTrades.length === 0 ? (
+          {visibleClosedTrades.length === 0 ? (
             <div className="py-16 text-center">
               <BarChart3 className={`w-8 h-8 mx-auto mb-3 ${theme === 'dark' ? 'text-slate-700' : 'text-slate-200'}`} />
-              <p className={`font-bold text-sm ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>No closed trades yet</p>
+              <p className={`font-bold text-sm ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>No closed trades in this view</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className={`border-b ${theme === 'dark' ? 'border-white/5' : 'border-slate-100'}`}>
-                    {['Symbol', 'Side', 'Volume', 'Entry', 'Exit', 'P&L', 'ML Score', 'Result', 'Closed'].map(h => (
+                    {['Trade', 'Setup', 'Levels', 'Result', 'ML Score', 'Closed'].map(h => (
                       <th key={h} className="px-4 py-3 text-left text-[10px] font-black text-slate-500 uppercase tracking-widest">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                    {closedTrades.map(t => (
-                      <tr key={t.id} className={`border-b transition-colors ${
-                        theme === 'dark' ? 'border-white/3 hover:bg-white/2' : 'border-slate-50 hover:bg-slate-100/50'
-                      }`}>
-                        <td className={`px-4 py-3 font-black text-sm ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{t.symbol}</td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
-                            t.side === 'BUY' 
-                              ? (theme === 'dark' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/10') 
-                              : (theme === 'dark' ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-600 text-white shadow-sm shadow-rose-500/10')
-                          }`}>
-                            {t.side === 'BUY' ? '▲ Long' : '▼ Short'}
-                          </span>
-                        </td>
-                      <td className={`px-4 py-3 font-bold text-sm font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>{t.volume}</td>
-                      <td className={`px-4 py-3 font-bold text-sm font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>${t.entry_price.toLocaleString()}</td>
-                      <td className={`px-4 py-3 font-bold text-sm font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>${t.current_price.toLocaleString()}</td>
-                      <td className={`px-4 py-3 font-black text-sm font-mono ${t.pnl_usd >= 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
-                        {t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}
+                  {visibleClosedTrades.map(t => (
+                    <tr key={t.id} className={`border-b transition-colors ${
+                      theme === 'dark' ? 'border-white/3 hover:bg-white/2' : 'border-slate-50 hover:bg-slate-100/50'
+                    }`}>
+                      <td className="px-4 py-3">
+                        <div className="min-w-[160px] space-y-2">
+                          <div className={`font-black text-sm ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{t.symbol}</div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
+                              t.side === 'BUY'
+                                ? (theme === 'dark' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/10')
+                                : (theme === 'dark' ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-600 text-white shadow-sm shadow-rose-500/10')
+                            }`}>
+                              {t.side === 'BUY' ? 'LONG' : 'SHORT'}
+                            </span>
+                            {t.signal_grade ? (
+                              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${gradeTone(theme, t.signal_grade)}`}>
+                                {t.signal_grade}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className={`text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                            Entry ${t.entry_price.toLocaleString()} | Exit ${t.current_price.toLocaleString()}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="min-w-[240px] space-y-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${sourceTone(theme, t.entry_source)}`}>
+                              {(t.entry_source || 'manual_ui').replaceAll('_', ' ')}
+                            </span>
+                            {t.features?.signal_timeframe ? (
+                              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
+                                theme === 'dark' ? 'bg-white/5 text-slate-300' : 'bg-slate-100 text-slate-600'
+                              }`}>
+                                {t.features.signal_timeframe}
+                              </span>
+                            ) : null}
+                          </div>
+                          {t.entry_reason ? (
+                            <p className={`text-xs leading-5 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
+                              {t.entry_reason}
+                            </p>
+                          ) : null}
+                          <div className={`flex flex-wrap gap-3 text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                            {t.features?.master_decision ? <span>{t.features.master_decision}</span> : null}
+                            {t.features?.signal_confidence != null ? <span>Conf {t.features.signal_confidence}%</span> : null}
+                            {t.close_reason ? <span>{t.close_reason}</span> : null}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="min-w-[150px] space-y-1">
+                          <div className={`text-xs font-black font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+                            SL {t.stop_loss != null ? `$${t.stop_loss.toLocaleString()}` : 'N/A'}
+                          </div>
+                          <div className={`text-xs font-black font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+                            TP {t.take_profit != null ? `$${t.take_profit.toLocaleString()}` : 'N/A'}
+                          </div>
+                          {t.macro_bias ? (
+                            <div className={`text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                              Bias {t.macro_bias}
+                            </div>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className={`font-black text-sm font-mono ${t.pnl_usd >= 0 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : (theme === 'dark' ? 'text-rose-400' : 'text-rose-600')}`}>
+                          {t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}
+                        </div>
+                        <span className={`mt-1 inline-flex px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
+                          t.outcome === 'WIN' || t.pnl_usd > 0
+                            ? (theme === 'dark' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600')
+                            : (theme === 'dark' ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-50 text-rose-600')
+                        }`}>
+                          {t.outcome || (t.pnl_usd >= 0 ? 'WIN' : 'LOSS')}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         {t.ml_score != null ? (
                           <div className="flex items-center gap-1.5">
                             <Brain className={`w-3 h-3 shrink-0 ${
-                              t.ml_score >= 65 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : 
-                              t.ml_score >= 50 ? (theme === 'dark' ? 'text-amber-400' : 'text-amber-600') : 
+                              t.ml_score >= 65 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') :
+                              t.ml_score >= 50 ? (theme === 'dark' ? 'text-amber-400' : 'text-amber-600') :
                               (theme === 'dark' ? 'text-red-400' : 'text-red-600')
                             }`} />
                             <span className={`font-black text-sm tabular-nums font-mono ${
-                              t.ml_score >= 65 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') : 
-                              t.ml_score >= 50 ? (theme === 'dark' ? 'text-amber-400' : 'text-amber-600') : 
+                              t.ml_score >= 65 ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') :
+                              t.ml_score >= 50 ? (theme === 'dark' ? 'text-amber-400' : 'text-amber-600') :
                               (theme === 'dark' ? 'text-red-400' : 'text-red-600')
                             }`}>
                               {t.ml_score.toFixed(0)}%
@@ -822,17 +2030,9 @@ export const PaperTradingDashboard = () => {
                           <span className={`${theme === 'dark' ? 'text-slate-700' : 'text-slate-300'} text-xs`}>—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
-                          t.outcome === 'WIN' || t.pnl_usd > 0 
-                            ? (theme === 'dark' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
-                            : (theme === 'dark' ? 'bg-rose-500/10 text-rose-400' : 'bg-rose-50 text-rose-600')
-                        }`}>
-                          {t.outcome || (t.pnl_usd >= 0 ? 'WIN' : 'LOSS')}
-                        </span>
-                      </td>
                       <td className={`px-4 py-3 text-xs font-medium ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
-                        {t.closed_at ? new Date(t.closed_at).toLocaleDateString() : '—'}
+                        <div>{t.closed_at ? new Date(t.closed_at).toLocaleDateString() : '—'}</div>
+                        <div>{t.closed_at ? new Date(t.closed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</div>
                       </td>
                     </tr>
                   ))}

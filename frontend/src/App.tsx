@@ -24,8 +24,10 @@ const RiskAlerts         = lazy(() => import('./components/RiskAlerts').then(m =
 const StrategyLab        = lazy(() => import('./components/StrategyLab').then(m => ({ default: m.StrategyLab })))
 const ChatWindow         = lazy(() => import('./components/ChatWindow').then(m => ({ default: m.ChatWindow })))
 const UnifiedSettings   = lazy(() => import('./components/UnifiedSettingsView').then(m => ({ default: m.UnifiedSettingsView })))
+const RagOpsDashboard   = lazy(() => import('./components/RagOpsDashboard').then(m => ({ default: m.RagOpsDashboard })))
 
 interface Toast { id: string; message: string }
+const TICKER_CACHE_KEY = 'crypto_ticker_prices_v1'
 
 const TAB_SLUGS: Record<string, string> = {
   'Market Intelligence': 'market-intel',
@@ -33,6 +35,7 @@ const TAB_SLUGS: Record<string, string> = {
   'Alpha Terminal':      'alpha-terminal',
   'Risk & Alerts':       'risk-alerts',
   'Strategy Lab':        'strategy-lab',
+  'RAG Ops':             'rag-ops',
   'Strategy Chat':       'chat',
   'Settings':            'settings',
 }
@@ -76,19 +79,37 @@ function AppShell() {
   const [gPressed, setGPressed] = useState(false)
   const [showTour, setShowTour] = useState(false)
   const [pendingSearchQuery, setPendingSearchQuery] = useState('')
-  const [tickerPrices, setTickerPrices] = useState<Record<string, { price: number; delta: number }>>({
-    'BTC':    { price: 0, delta: 0 },
-    'ETH':    { price: 0, delta: 0 },
-    'SOL':    { price: 0, delta: 0 },
-    'AAPL':   { price: 0, delta: 0 },
-    'MSFT':   { price: 0, delta: 0 },
-    'NVDA':   { price: 0, delta: 0 },
-    'TSLA':   { price: 0, delta: 0 },
-    'AMD':    { price: 0, delta: 0 },
-    'GOLD':   { price: 0, delta: 0 },
-    'OIL':    { price: 0, delta: 0 },
-    'NASDAQ': { price: 0, delta: 0 },
-    'SP500':  { price: 0, delta: 0 },
+  const [tickerPrices, setTickerPrices] = useState<Record<string, { price: number; delta: number }>>(() => {
+    const fallback = {
+      'BTC':    { price: 0, delta: 0 },
+      'ETH':    { price: 0, delta: 0 },
+      'SOL':    { price: 0, delta: 0 },
+      'AAPL':   { price: 0, delta: 0 },
+      'MSFT':   { price: 0, delta: 0 },
+      'NVDA':   { price: 0, delta: 0 },
+      'TSLA':   { price: 0, delta: 0 },
+      'AMD':    { price: 0, delta: 0 },
+      'GOLD':   { price: 0, delta: 0 },
+      'OIL':    { price: 0, delta: 0 },
+      'NASDAQ': { price: 0, delta: 0 },
+      'SP500':  { price: 0, delta: 0 },
+    }
+    try {
+      const raw = localStorage.getItem(TICKER_CACHE_KEY)
+      if (!raw) return fallback
+      const parsed = JSON.parse(raw) as Record<string, { price?: unknown; delta?: unknown }>
+      const restored = { ...fallback }
+      for (const [key, value] of Object.entries(parsed)) {
+        const price = typeof value?.price === 'number' ? value.price : Number(value?.price)
+        const delta = typeof value?.delta === 'number' ? value.delta : Number(value?.delta)
+        if (Number.isFinite(price) && Number.isFinite(delta) && key in restored) {
+          restored[key as keyof typeof restored] = { price, delta }
+        }
+      }
+      return restored
+    } catch {
+      return fallback
+    }
   })
   const [_currentPrices, setCurrentPrices] = useState<Record<string, number>>({})
 
@@ -183,6 +204,12 @@ function AppShell() {
     }
   }, [lastMessage])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(TICKER_CACHE_KEY, JSON.stringify(tickerPrices))
+    } catch { }
+  }, [tickerPrices])
+
   const handleAuthSuccess = (_token: string, user: UserProfile) => {
     setCurrentUser(user)
     setIsAuthorized(true)
@@ -224,11 +251,12 @@ function AppShell() {
 
   const renderTabView = (tab: string) => {
     switch (tab) {
-      case 'Market Intelligence': return <MarketIntelligence />
+      case 'Market Intelligence': return <MarketIntelligence wsStatus={status} wsLastMessage={lastMessage} />
       case 'Money Flow':          return <MoneyFlow tickerPrices={tickerPrices} />
       case 'Alpha Terminal':      return <AlphaTerminal onAnalyze={handleWatchlistAnalyze} />
       case 'Risk & Alerts':       return <RiskAlerts />
       case 'Strategy Lab':        return <StrategyLab />
+      case 'RAG Ops':             return <RagOpsDashboard />
       case 'Settings':            return <UnifiedSettings />
       case 'Strategy Chat':
       default:                    return (

@@ -7,15 +7,13 @@ interface TradingViewWidgetProps {
 
 const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({ symbol, interval = "15" }) => {
   const container = useRef<HTMLDivElement>(null);
-  const isCreated = useRef(false);
   const containerId = useRef(`tv_chart_${Math.random().toString(36).substr(2, 9)}`);
 
   useEffect(() => {
-    if (!container.current || isCreated.current) return;
+    const currentContainer = container.current;
+    if (!currentContainer) return;
 
     const timer = setTimeout(() => {
-      if (!container.current) return;
-
       const script = document.createElement("script");
       script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
       script.type = "text/javascript";
@@ -35,20 +33,16 @@ const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({ symbol, interval 
         "container_id": containerId.current
       });
       
-      const widgetDiv = container.current.querySelector(`#${containerId.current}`);
+      const widgetDiv = currentContainer.querySelector(`#${containerId.current}`);
       if (widgetDiv) {
         widgetDiv.appendChild(script);
-        isCreated.current = true;
       }
     }, 150);
 
     return () => {
       clearTimeout(timer);
-      isCreated.current = false;
-      if (container.current) {
-        const widgetDiv = container.current.querySelector(`#${containerId.current}`);
-        if (widgetDiv) widgetDiv.innerHTML = "";
-      }
+      const widgetDiv = currentContainer.querySelector(`#${containerId.current}`);
+      if (widgetDiv) widgetDiv.innerHTML = "";
     };
   }, [symbol, interval]);
 

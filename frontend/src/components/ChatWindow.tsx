@@ -389,7 +389,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
     updateActiveSession(prev => [...prev, { role: 'ai', content: '', streaming: true, toolCalls: [], toolResults: [] }]);
 
     const abortController = new AbortController();
-    const streamTimeout = setTimeout(() => abortController.abort(), 60_000);
+    const STREAM_IDLE_TIMEOUT_MS = 180_000;
+    let streamTimeout: ReturnType<typeof setTimeout> | null = null;
+    const resetStreamTimeout = () => {
+      if (streamTimeout) clearTimeout(streamTimeout);
+      streamTimeout = setTimeout(() => abortController.abort(), STREAM_IDLE_TIMEOUT_MS);
+    };
+    resetStreamTimeout();
 
     try {
       // Build conversation history (last 25 messages for deep memory)
@@ -441,6 +447,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
         const { done, value } = await reader.read();
         if (done) break;
 
+        resetStreamTimeout();
         const chunk = decoder.decode(value, { stream: true });
         buffer += chunk;
 
@@ -535,7 +542,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
           : m
       ));
     } finally {
-      clearTimeout(streamTimeout);
+      if (streamTimeout) clearTimeout(streamTimeout);
       setLoading(false);
       // Sync to server after message is finalized
       const currentSess = sessionsRef.current.find(s => s.id === activeIdRef.current);
@@ -544,20 +551,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ initialMessage, onClearI
   };
 
   const quickActions = isRetail
-    ? [
-        { label: t('chat.qa_retail_gold_label'),  q: t('chat.qa_retail_gold_q')  },
-        { label: t('chat.qa_retail_entry_label'), q: t('chat.qa_retail_entry_q') },
-        { label: t('chat.qa_retail_tpsl_label'),  q: t('chat.qa_retail_tpsl_q')  },
-        { label: t('chat.qa_retail_news_label'),  q: t('chat.qa_retail_news_q')  },
-        { label: t('chat.qa_retail_risk_label'),  q: t('chat.qa_retail_risk_q')  },
-      ]
-    : [
-        { label: t('chat.qa_inst_gold_label'),    q: t('chat.qa_inst_gold_q')    },
-        { label: t('chat.qa_inst_entry_label'),   q: t('chat.qa_inst_entry_q')   },
-        { label: t('chat.qa_inst_signal_label'),  q: t('chat.qa_inst_signal_q')  },
-        { label: t('chat.qa_inst_news_label'),    q: t('chat.qa_inst_news_q')    },
-        { label: t('chat.qa_inst_risk_label'),    q: t('chat.qa_inst_risk_q')    },
-      ];
+      ? [
+          { label: t('chat.qa_retail_gold_label'),  q: t('chat.qa_retail_gold_q')  },
+          { label: t('chat.qa_retail_entry_label'), q: t('chat.qa_retail_entry_q') },
+          { label: t('chat.qa_retail_tpsl_label'),  q: t('chat.qa_retail_tpsl_q')  },
+          { label: t('chat.qa_retail_news_label'),  q: t('chat.qa_retail_news_q')  },
+          { label: t('chat.qa_retail_risk_label'),  q: t('chat.qa_retail_risk_q')  },
+          { label: t('chat.qa_retail_open_label'),  q: t('chat.qa_retail_open_q')  },
+          { label: t('chat.qa_retail_stock_label'), q: t('chat.qa_retail_stock_q') },
+          { label: t('chat.qa_retail_10y_up_label'), q: t('chat.qa_retail_10y_up_q') },
+          { label: t('chat.qa_retail_10y_down_label'), q: t('chat.qa_retail_10y_down_q') },
+          { label: t('chat.qa_retail_crypto_label'), q: t('chat.qa_retail_crypto_q') },
+        ]
+      : [
+          { label: t('chat.qa_inst_gold_label'),    q: t('chat.qa_inst_gold_q')    },
+          { label: t('chat.qa_inst_entry_label'),   q: t('chat.qa_inst_entry_q')   },
+          { label: t('chat.qa_inst_signal_label'),  q: t('chat.qa_inst_signal_q')  },
+          { label: t('chat.qa_inst_news_label'),    q: t('chat.qa_inst_news_q')    },
+          { label: t('chat.qa_inst_risk_label'),    q: t('chat.qa_inst_risk_q')    },
+          { label: t('chat.qa_inst_open_label'),    q: t('chat.qa_inst_open_q')    },
+          { label: t('chat.qa_inst_stock_label'),   q: t('chat.qa_inst_stock_q')   },
+          { label: t('chat.qa_inst_10y_up_label'),  q: t('chat.qa_inst_10y_up_q')  },
+          { label: t('chat.qa_inst_10y_down_label'), q: t('chat.qa_inst_10y_down_q') },
+          { label: t('chat.qa_inst_crypto_label'),  q: t('chat.qa_inst_crypto_q')  },
+        ];
 
   return (
     <div className={`flex flex-1 w-full h-full overflow-hidden transition-all duration-700 ${

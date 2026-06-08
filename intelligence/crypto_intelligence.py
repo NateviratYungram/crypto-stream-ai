@@ -23,6 +23,7 @@ Usage:
 
 import logging
 import time
+from datetime import datetime, timezone
 
 from google import genai
 
@@ -40,7 +41,10 @@ from intelligence.technical_engine import (
     compute_indicators,
     get_indicator_summary,
     get_kline_data,
+    get_smart_money_analysis,
 )
+from intelligence.ml.performance_feedback import score_signal_feedback
+from intelligence.ml.trading_quality_gate import get_trading_quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +75,7 @@ class CryptoIntelligence:
         self,
         symbol: str,
         timeframe: str = "15m",
-        limit: int = 60,
+        limit: int = 200,
         include_charts: bool = True,
         asset_class: str = "CRYPTO"
     ) -> dict:
@@ -100,6 +104,27 @@ class CryptoIntelligence:
             "asset_class": asset_class
         }
 
+        # ── Step 0.5: Trading Quality Gate ───────────────────────────────────
+        # Non-STOCK only: check model readiness and paper trade performance
+        if asset_class != "STOCK":
+            try:
+                gate = get_trading_quality_gate(symbol=sym)
+                state["quality_gate"] = gate
+                mode = gate.get("mode", "observe_only")
+                blockers = gate.get("blockers", [])
+                logger.info(
+                    f"Quality Gate: mode={mode} "
+                    f"live_ready={gate.get('live_ready',False)} "
+                    f"blockers={blockers}"
+                )
+                # Store mode so master_agent can use it for sizing decisions
+                state["quality_gate_mode"] = mode
+            except Exception as e:
+                logger.warning(f"Quality gate check failed: {e}")
+                state["quality_gate_mode"] = "observe_only"
+        else:
+            state["quality_gate_mode"] = "tradeable"   # STOCK bypasses ML gate
+
         # ── Step 1: Technical Engine ──────────────────────────────────────────
         logger.info("Step 1/8: Fetching OHLCV + computing indicators...")
         df_raw = get_kline_data(sym, timeframe, limit, asset_class)
@@ -113,6 +138,107 @@ class CryptoIntelligence:
             state["kline_data"] = df
             state["indicator_summary"] = get_indicator_summary(df, sym)
             logger.info(f"  → {len(df)} candles, indicators computed")
+
+            # ── Step 1a: Retail FOMO (Liquidation Heatmap) — CRYPTO only ─────────
+            if asset_class == "CRYPTO":
+                try:
+                    from intelligence.tools.onchain_tools import onchain_engine
+                    fomo = onchain_engine.get_fomo_heatmap(sym)
+                    state["retail_fomo"] = fomo
+                    logger.info(
+                        f"  → FOMO: {fomo.get('retail_sentiment','?')} "
+                        f"L={fomo.get('long_percent','?')}% S={fomo.get('short_percent','?')}%"
+                    )
+                except Exception as e:
+                    logger.warning(f"FOMO fetch failed: {e}")
+
+            # ── Step 1b: SMC / ICT Analysis — CRYPTO and MACRO only (not STOCK) ──
+            if asset_class in ("CRYPTO", "MACRO"):
+                try:
+                    smc = get_smart_money_analysis(df)
+                    if smc:
+                        state["indicator_summary"]["smart_money"] = smc
+                        logger.info(
+                            f"  → SMC: regime={smc.get('regime','?')} "
+                            f"structure={smc.get('structure',{}).get('structure','?')} "
+                            f"session={smc.get('session','?')}"
+                        )
+                except Exception as e:
+                    logger.warning(f"SMC analysis failed: {e}")
+
+            # ── Step 1c: Higher-Timeframe Bias ───────────────────────────────────
+            _htf_map = {"1m": "15m", "5m": "1h", "15m": "1h", "1h": "4h", "4h": "1d"}
+            htf_tf = _htf_map.get(timeframe, "1h")
+            try:
+                df_htf_raw = get_kline_data(sym, htf_tf, limit=200, asset_class=asset_class)
+                if df_htf_raw is not None and not df_htf_raw.empty:
+                    df_htf = compute_indicators(df_htf_raw)
+                    htf_last = df_htf.iloc[-1]
+
+                    def _fs(v):
+                        try:
+                            import math
+                            val = float(v)
+                            return 0.0 if math.isnan(val) else round(val, 4)
+                        except Exception:
+                            return 0.0
+
+                    htf_close = _fs(htf_last.get("Close"))
+                    htf_e20   = _fs(htf_last.get("ema_20"))
+                    htf_e50   = _fs(htf_last.get("ema_50"))
+                    htf_bias  = (
+                        "BULLISH" if htf_close > htf_e20 > htf_e50 else
+                        "BEARISH" if htf_close < htf_e20 < htf_e50 else
+                        "NEUTRAL"
+                    )
+                    # SMC structure on HTF only for CRYPTO/MACRO
+                    htf_smc = get_smart_money_analysis(df_htf) if asset_class in ("CRYPTO", "MACRO") else {}
+                    htf_summary = get_indicator_summary(df_htf, sym)
+                    state["indicator_summary"]["higher_timeframe"] = {
+                        "timeframe":  htf_tf,
+                        "bias":       htf_bias,
+                        "adx":        _fs(htf_last.get("adx_14")),
+                        "rsi":        _fs(htf_last.get("rsi_14")),
+                        "regime":     htf_smc.get("regime", "UNKNOWN"),
+                        "structure":  htf_smc.get("structure", {}),
+                        "nearest_ob": htf_smc.get("nearest_ob"),
+                        "liquidity":  htf_smc.get("liquidity", {}),
+                        "hurst":      htf_summary.get("hurst", {}),
+                    }
+                    logger.info(
+                        f"  → HTF ({htf_tf}): bias={htf_bias} "
+                        f"regime={htf_smc.get('regime','?')}"
+                    )
+            except Exception as e:
+                logger.warning(f"HTF analysis failed: {e}")
+
+            # ── Step 1d: ML Signal Probability — non-STOCK only (per memory rule) ─
+            if asset_class != "STOCK":
+                try:
+                    from intelligence.ml.signal_model import predict_with_neural_consensus
+                    _idx = len(df) - 1
+                    ml_buy  = predict_with_neural_consensus(df, _idx, side="BUY",  symbol=sym, asset_class=asset_class)
+                    ml_sell = predict_with_neural_consensus(df, _idx, side="SELL", symbol=sym, asset_class=asset_class)
+                    buy_prob  = ml_buy.get("win_probability", 0.0)
+                    sell_prob = ml_sell.get("win_probability", 0.0)
+                    state["ml_signal"] = {
+                        "available":        ml_buy.get("available", False),
+                        "buy_prob":         round(buy_prob, 4),
+                        "sell_prob":        round(sell_prob, 4),
+                        "buy_pct":          round(buy_prob * 100, 1),
+                        "sell_pct":         round(sell_prob * 100, 1),
+                        "direction":        "BUY" if buy_prob > sell_prob else "SELL" if sell_prob > buy_prob else "NEUTRAL",
+                        "neural_alignment": ml_buy.get("neural_alignment", False) or ml_sell.get("neural_alignment", False),
+                        "mtf_blocked":      ml_buy.get("mtf_blocked", False),
+                        "mtf_reason":       ml_buy.get("mtf_reason", ""),
+                    }
+                    logger.info(
+                        f"  → ML: buy={round(buy_prob*100,1)}% sell={round(sell_prob*100,1)}% "
+                        f"avail={ml_buy.get('available',False)}"
+                    )
+                except Exception as e:
+                    logger.warning(f"ML prediction failed: {e}")
+                    state["ml_signal"] = {"available": False}
 
         # ── Step 1.5: Intermarket Context (parallel fetch, pure Python) ─────────
         logger.info("Step 1.5/9: Intermarket Agent (DXY/VIX/F&G/Funding)...")
@@ -318,6 +444,10 @@ class CryptoIntelligence:
                 # ── Apply Trained ML Model (Ensemble + Neural) ────────────────
                 from intelligence.ml.signal_model import predict_with_neural_consensus
                 asset_cls = "MACRO" if sym in ["GOLD", "SILVER", "OIL", "EURUSD", "GBPUSD", "USDJPY"] else "CRYPTO"
+                best_prob = 0.50
+                feedback = {"notes": [], "readiness": {}}
+                quality_gate = get_trading_quality_gate(sym, entry_source="signal_feed_analysis")
+                candidate_direction = "HOLD"
 
                 # We evaluate the probability of a WIN for both LONG and SHORT scenarios
                 idx = len(df) - 1
@@ -337,21 +467,43 @@ class CryptoIntelligence:
                             best_prob = s_prob
                             best_dir = "SELL"
                             rationale = sell_ml.get("rationale", [])
+                        candidate_direction = best_dir
 
-                        # Set thresholds: > 52% is considered an actionable edge
-                        if best_prob > 0.52:
+                        feedback = score_signal_feedback(sym, entry_source="signal_feed_analysis", side=best_dir)
+                        quality_gate = get_trading_quality_gate(
+                            sym,
+                            entry_source="signal_feed_analysis",
+                            side=best_dir,
+                        )
+                        best_prob = max(
+                            0.35,
+                            min(0.90, best_prob + float(feedback.get("probability_adjustment", 0.0) or 0.0)),
+                        )
+
+                        buy_sell_threshold = float(quality_gate.get("minimum_buy_sell_probability") or 0.66)
+                        watch_threshold = float(quality_gate.get("minimum_watch_probability") or 0.53)
+
+                        # Dynamic quality gate: no BUY/SELL unless model + paper evidence is ready.
+                        if quality_gate.get("allow_buy_sell") and best_prob >= buy_sell_threshold:
                             direction = best_dir
-                            # Scale confidence from 50%-100% to 0-100% UI meter
-                            confidence = min(98, int((best_prob - 0.50) * 2.0 * 100))
+                            confidence = min(99, max(50, int(round(best_prob * 100))))
+                        elif best_prob >= watch_threshold:
+                            direction = "WATCH"
+                            confidence = min(99, max(50, int(round(best_prob * 100))))
                         else:
                             direction = "HOLD"
-                            confidence = min(98, int((best_prob - 0.50) * 2.0 * 100) if best_prob > 0.50 else int((0.50 - best_prob) * 2.0 * 100))
+                            confidence = min(99, max(35, int(round(best_prob * 100))))
 
                         # Generate reasoning
                         if rationale:
                             reason = f"ML Focus: {' ∙ '.join(rationale)} (WinProb: {best_prob*100:.1f}%)"
                         else:
                             reason = f"ML WinProb: {best_prob*100:.1f}%"
+                        if feedback.get("notes"):
+                            reason = f"{reason} | Feedback: {'; '.join(feedback['notes'])}"
+                        if not quality_gate.get("allow_buy_sell"):
+                            blocked = ", ".join(quality_gate.get("blockers", [])[:4])
+                            reason = f"{reason} | QualityGate: observe-only ({blocked or 'not live ready'})"
                     else:
                         raise ValueError("Model unavailable")
                 except Exception as ml_err:
@@ -361,17 +513,59 @@ class CryptoIntelligence:
                     rsi_score = ((50 - rsi) / 30.0) * 40
                     macd_score = 25 if "Bullish" in macd_sig else -25 if "Bearish" in macd_sig else 0
                     total_raw = (rsi_score + macd_score) * (1.0 + (min(adx, 50) / 100.0)) + (abs(delta_pct) * 5)
-                    direction = "BUY" if total_raw > 15 else "SELL" if total_raw < -15 else "HOLD"
+                    direction = "BUY" if total_raw > 18 else "SELL" if total_raw < -18 else "WATCH" if abs(total_raw) >= 10 else "HOLD"
                     confidence = min(98, max(5, int(abs(total_raw))))
                     reason = f"RSI={rsi:.1f}, MACD={macd_sig}, ADX={adx:.1f}"
+                    quality_gate = {
+                        "live_ready": False,
+                        "allow_buy_sell": False,
+                        "mode": "heuristic_fallback",
+                        "minimum_buy_sell_probability": 0.68,
+                        "minimum_watch_probability": 0.53,
+                        "blockers": ["ml_unavailable"],
+                    }
+                    if direction in ("BUY", "SELL"):
+                        candidate_direction = direction
+                        direction = "WATCH"
 
                 macro_list = ["GOLD", "SILVER", "OIL", "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD"]
                 display_sym = sym if sym in macro_list else f"{sym}USDT"
+                signal_grade = "C"
+                if direction in ("BUY", "SELL"):
+                    if best_prob >= 0.68:
+                        signal_grade = "A+"
+                    elif best_prob >= 0.62:
+                        signal_grade = "A"
+                    elif best_prob >= 0.56:
+                        signal_grade = "B"
+                elif direction == "WATCH" and best_prob >= 0.53:
+                    signal_grade = "WATCH"
+
+                actionable = (
+                    direction in ("BUY", "SELL")
+                    and signal_grade in ("A+", "A", "B")
+                    and bool(quality_gate.get("allow_buy_sell"))
+                )
+                tradeable = (
+                    direction in ("BUY", "SELL")
+                    and signal_grade in ("A+", "A")
+                    and bool(quality_gate.get("live_ready"))
+                )
 
                 signals.append({
                     "symbol": display_sym,
                     "direction": direction,
+                    "candidate_direction": candidate_direction,
                     "confidence": confidence,
+                    "signal_grade": signal_grade,
+                    "actionable": actionable,
+                    "tradeable": tradeable,
+                    "live_ready": bool(quality_gate.get("live_ready")),
+                    "quality_gate": quality_gate,
+                    "ml_win_prob": round(best_prob, 4),
+                    "ml_win_pct": round(best_prob * 100, 1),
+                    "feedback_ready": feedback.get("readiness"),
+                    "feedback_notes": feedback.get("notes", []),
                     "price": price,
                     "rsi": round(rsi, 1),
                     "macd_signal": macd_sig,
@@ -380,6 +574,7 @@ class CryptoIntelligence:
                     "timeframe": timeframe,
                     "delta_pct": round(delta_pct, 4),
                     "vol_surge": vol_surge,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
             except Exception as e:
                 logger.warning(f"QuickSignal error for {sym}: {e}")

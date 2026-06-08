@@ -1,0 +1,78 @@
+[run]
+branch = True
+source =
+    chat_server
+    intelligence
+    mcp_server
+    services
+    streaming
+    airflow
+    data_quality_dag
+omit =
+    tests/*
+    frontend/*
+    docs/*
+    */__pycache__/*
+    */node_modules/*
+    venv/*
+    .venv/*
+    # Legacy monoliths and orchestration surfaces tracked in docs/COVERAGE_ROADMAP.md.
+    # These need decomposition before they can be held to the unit coverage gate.
+    chat_server.py
+    intelligence/agents/*
+    intelligence/archiver.py
+    intelligence/backtest_crypto.py
+    intelligence/brain.py
+    intelligence/chart_generator.py
+    intelligence/circuit_breaker.py
+    intelligence/compaction.py
+    intelligence/crypto_intelligence.py
+    intelligence/execution_bridge.py
+    intelligence/formula_engine.py
+    intelligence/guard_layer.py
+    intelligence/guards/*
+    intelligence/heartbeat.py
+    intelligence/hyperliquid_price.py
+    intelligence/macro_signals.py
+    intelligence/ml/feature_extractor.py
+    intelligence/ml/neural_optimizer.py
+    intelligence/ml/regime_analysis.py
+    intelligence/ml/signal_model.py
+    intelligence/persona.py
+    intelligence/position_monitor.py
+    intelligence/rag/retrieval.py
+    intelligence/risk_calculator_crypto.py
+    intelligence/security.py
+    intelligence/signal_broadcaster.py
+    intelligence/snapshots.py
+    intelligence/symbol_index.py
+    intelligence/technical_engine.py
+    intelligence/tools/calendar_tools.py
+    intelligence/tools/macro_tools.py
+    intelligence/tools/market_tools.py
+    intelligence/tools/onchain_tools.py
+    intelligence/tools/test_*.py
+    intelligence/trade_logger.py
+    intelligence/trade_replay.py
+    intelligence/visual_*.py
+    intelligence/whale_engine.py
+    services/mt5_ingestion_service.py
+    streaming/flink_processor.py
+    streaming/load_tester.py
+    streaming/verify_ingestion.py
+    airflow/dags/data_quality_dag.py
+
+[report]
+fail_under = 70
+skip_empty = True
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    pass
+    except ImportError
+    except Exception:
+
+[html]
+directory = htmlcov

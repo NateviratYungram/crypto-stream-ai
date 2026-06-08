@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class AuditLogger:
     def log_event(self, event_type: str, payload: Dict[str, Any]):
         """Append a structured JSON event to the audit log."""
         entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "type": event_type,
             "payload": payload
         }

@@ -5,7 +5,9 @@
 # ============================================================
 
 # ── Kafka ─────────────────────────────────────────────────
-confluent-kafka       # Producer with Avro + Schema Registry (producer.py)
+confluent-kafka[avro] # Producer with Avro + Schema Registry (producer.py)
+authlib               # Required by confluent-kafka Schema Registry OAuth import path
+fastavro              # Avro serializer backend for Schema Registry integration
 kafka-python          # Consumer for lake_writer.py and legacy services
 websocket-client      # Binance WebSocket stream (producer.py)
 websockets            # Async WebSocket client for Binance live price broadcaster
@@ -18,6 +20,7 @@ redis                 # Cache client — market_tools.py (market_regime, market_
 # ── Data Lake ─────────────────────────────────────────────
 pandas                # DataFrame transformations in lake_writer.py
 pyarrow               # Parquet read/write with explicit schema enforcement
+pypdf                 # Optional PDF extraction for RAG knowledge ingestion
 
 # ── Utilities ─────────────────────────────────────────────
 python-dotenv         # Load .env files for local dev secret management
@@ -54,6 +57,10 @@ dbt-postgres          # dbt adapter for PostgreSQL — run: dbt run --profiles-d
 # ── Machine Learning (Phase 15 — Self-Learning Signal Model) ─────────────
 scikit-learn          # GradientBoostingClassifier for win-probability prediction
 joblib                # Fast model serialization (complement to scikit-learn)
+
+# Test & Coverage
+pytest                # Python test runner
+pytest-cov            # Coverage reporting for pytest
 
 # ── Real-time Analytics (Phase 2 Additions) ─────────
 # aiokafka              # Async Kafka client for FastAPI WebSocket bridge

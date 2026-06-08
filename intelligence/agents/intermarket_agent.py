@@ -100,6 +100,68 @@ def _fetch_funding_rate(symbol: str) -> Dict[str, Any]:
     return {"rate_pct": None, "bias": "NEUTRAL"}
 
 
+def _fetch_liquidation_bias(symbol: str) -> Dict[str, Any]:
+    """
+    Recent forced liquidations from Binance perp market.
+    More BUY-side liq (short squeezes) → bullish pressure.
+    More SELL-side liq (long wipeouts) → bearish pressure.
+    """
+    try:
+        import requests
+        base = symbol.upper().replace("USD", "").replace("USDT", "")
+        sym = base + "USDT"
+        r = requests.get(
+            f"https://fapi.binance.com/fapi/v1/allForceOrders?symbol={sym}&limit=50",
+            timeout=5,
+        )
+        data = r.json()
+        if not isinstance(data, list) or not data:
+            return {"liq_bias": "NEUTRAL", "buy_liq": 0, "sell_liq": 0}
+        buy_liq  = sum(float(o.get("origQty", 0)) for o in data if o.get("side") == "BUY")
+        sell_liq = sum(float(o.get("origQty", 0)) for o in data if o.get("side") == "SELL")
+        total = buy_liq + sell_liq
+        if total == 0:
+            return {"liq_bias": "NEUTRAL", "buy_liq": 0, "sell_liq": 0}
+        ratio = buy_liq / total
+        # BUY liquidations = shorts being squeezed → bullish cascade
+        bias = "BULLISH" if ratio > 0.65 else "BEARISH" if ratio < 0.35 else "NEUTRAL"
+        return {
+            "liq_bias": bias,
+            "buy_liq":  round(buy_liq, 2),
+            "sell_liq": round(sell_liq, 2),
+        }
+    except Exception as e:
+        logger.debug(f"Intermarket: liquidation fetch failed: {e}")
+    return {"liq_bias": "NEUTRAL", "buy_liq": 0, "sell_liq": 0}
+
+
+def _fetch_oi_trend(symbol: str) -> Dict[str, Any]:
+    """
+    Open Interest history from Binance (1h intervals, last 5 bars).
+    Rising OI + price move = trend continuation.
+    Falling OI = weakening conviction / potential reversal.
+    """
+    try:
+        import requests
+        base = symbol.upper().replace("USD", "").replace("USDT", "")
+        sym = base + "USDT"
+        r = requests.get(
+            f"https://fapi.binance.com/futures/data/openInterestHist?symbol={sym}&period=1h&limit=5",
+            timeout=5,
+        )
+        data = r.json()
+        if not isinstance(data, list) or len(data) < 2:
+            return {"oi_trend": "UNKNOWN", "oi_change_pct": None}
+        oldest = float(data[0]["sumOpenInterest"])
+        newest = float(data[-1]["sumOpenInterest"])
+        change_pct = (newest - oldest) / oldest * 100 if oldest else 0
+        trend = "RISING" if change_pct > 1.0 else "FALLING" if change_pct < -1.0 else "FLAT"
+        return {"oi_trend": trend, "oi_change_pct": round(change_pct, 2)}
+    except Exception as e:
+        logger.debug(f"Intermarket: OI trend fetch failed: {e}")
+    return {"oi_trend": "UNKNOWN", "oi_change_pct": None}
+
+
 def _compute_macro_bias(dxy: dict, vix: dict, fear_greed: dict, asset_class: str) -> str:
     risk_on = 0
     risk_off = 0
@@ -170,9 +232,11 @@ def create_intermarket_agent():
         ]
         if asset_class == "CRYPTO":
             threads += [
-                threading.Thread(target=run, args=("fear_greed", _fetch_fear_greed)),
+                threading.Thread(target=run, args=("fear_greed",    _fetch_fear_greed)),
                 threading.Thread(target=run, args=("btc_dominance", _fetch_btc_dominance)),
-                threading.Thread(target=run, args=("funding", lambda: _fetch_funding_rate(symbol))),
+                threading.Thread(target=run, args=("funding",       lambda: _fetch_funding_rate(symbol))),
+                threading.Thread(target=run, args=("liquidation",   lambda: _fetch_liquidation_bias(symbol))),
+                threading.Thread(target=run, args=("oi_trend",      lambda: _fetch_oi_trend(symbol))),
             ]
 
         for t in threads:
@@ -180,11 +244,13 @@ def create_intermarket_agent():
         for t in threads:
             t.join(timeout=10)
 
-        dxy        = results.get("dxy",        {"trend": "UNKNOWN"})
-        vix        = results.get("vix",        {"level": "UNKNOWN"})
-        fear_greed = results.get("fear_greed", {"value": 50, "label": "Neutral"})
-        btc_dom    = results.get("btc_dominance", {"value": None})
-        funding    = results.get("funding",    {"rate_pct": None, "bias": "NEUTRAL"})
+        dxy         = results.get("dxy",          {"trend": "UNKNOWN"})
+        vix         = results.get("vix",          {"level": "UNKNOWN"})
+        fear_greed  = results.get("fear_greed",   {"value": 50, "label": "Neutral"})
+        btc_dom     = results.get("btc_dominance",{"value": None})
+        funding     = results.get("funding",      {"rate_pct": None, "bias": "NEUTRAL"})
+        liquidation = results.get("liquidation",  {"liq_bias": "NEUTRAL", "buy_liq": 0, "sell_liq": 0})
+        oi_trend    = results.get("oi_trend",     {"oi_trend": "UNKNOWN", "oi_change_pct": None})
 
         macro_bias = _compute_macro_bias(dxy, vix, fear_greed, asset_class)
 
@@ -210,6 +276,8 @@ def create_intermarket_agent():
             "fear_greed":     fear_greed,
             "btc_dominance":  btc_dom,
             "funding":        funding,
+            "liquidation":    liquidation,
+            "oi_trend":       oi_trend,
             "forex_context":  forex_context,
             "metals_context": metals_context,
             "skipped":        False,
@@ -222,7 +290,8 @@ def create_intermarket_agent():
         logger.info(
             f"Intermarket [{asset_class}]: macro={macro_bias} "
             f"DXY={dxy.get('trend','?')} VIX={vix.get('level','?')} "
-            f"F&G={fear_greed.get('value','?')} Funding={funding.get('bias','?')}"
+            f"F&G={fear_greed.get('value','?')} Funding={funding.get('bias','?')} "
+            f"Liq={liquidation.get('liq_bias','?')} OI={oi_trend.get('oi_trend','?')}"
         )
 
         return {"intermarket": intermarket}

@@ -17,6 +17,12 @@ interface FlowData {
   top_inflows:    FlowRow[];
   top_outflows:   FlowRow[];
   market_theme:   string;
+  updated_at?:    string;
+  warning?:       string;
+  _meta?: {
+    data_quality?: 'live' | 'stale' | 'partial' | 'unavailable';
+    updated_at?: string;
+  };
 }
 
 const API_KEY = () => localStorage.getItem('crypto_terminal_key') || '';
@@ -34,13 +40,20 @@ export const ETFFlowView = () => {
   const [data,    setData]    = useState<FlowData | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab,     setTab]     = useState<'ALL' | 'INFLOW' | 'OUTFLOW'>('ALL');
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const { theme } = useMode();
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await fetch('/api/market/etf-flows', { headers: { 'X-API-Key': API_KEY() } });
-      setData(await res.json());
+      const json: FlowData = await res.json();
+      setData(json);
+      const rawUpdatedAt = json.updated_at || json._meta?.updated_at;
+      if (rawUpdatedAt) {
+        const parsed = new Date(rawUpdatedAt);
+        setLastUpdated(Number.isNaN(parsed.getTime()) ? null : parsed);
+      }
     } catch { /* silent */ }
     finally { setLoading(false); }
   };
@@ -54,6 +67,20 @@ export const ETFFlowView = () => {
   const themeColor =
     data?.market_theme?.includes('RISK ON')  ? 'text-emerald-400' :
     data?.market_theme?.includes('RISK OFF') ? 'text-rose-400'    : 'text-amber-400';
+  const quality = data?._meta?.data_quality ?? null;
+  const qualityTone =
+    quality === 'live'
+      ? theme === 'dark' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      : quality === 'stale'
+        ? theme === 'dark' ? 'border-amber-500/20 bg-amber-500/10 text-amber-400' : 'border-amber-200 bg-amber-50 text-amber-700'
+        : quality === 'partial'
+          ? theme === 'dark' ? 'border-sky-500/20 bg-sky-500/10 text-sky-400' : 'border-sky-200 bg-sky-50 text-sky-700'
+          : theme === 'dark' ? 'border-rose-500/20 bg-rose-500/10 text-rose-400' : 'border-rose-200 bg-rose-50 text-rose-700';
+  const qualityLabel =
+    quality === 'live' ? 'Live' :
+    quality === 'stale' ? 'Snapshot' :
+    quality === 'partial' ? 'Partial' :
+    quality === 'unavailable' ? 'Unavailable' : 'Syncing';
 
   return (
     <div className="flex-1 p-8 overflow-y-auto space-y-6 custom-scrollbar">
@@ -67,6 +94,16 @@ export const ETFFlowView = () => {
             Institutional ETF Monitor
           </div>
           <h2 className={`text-3xl font-extrabold tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>ETF Flows</h2>
+          <div className="mt-2 flex items-center gap-2">
+            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-widest ${qualityTone}`}>
+              {qualityLabel}
+            </span>
+            {lastUpdated && (
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </div>
           <p className="text-slate-500 text-sm">Track fund inflows/outflows: SPY · QQQ · GLD · IBIT · TQQQ · SOXL</p>
         </div>
         <button onClick={load} className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-xs font-bold transition-all ${
@@ -76,6 +113,14 @@ export const ETFFlowView = () => {
           Refresh
         </button>
       </header>
+
+      {data?.warning && (
+        <div className={`rounded-2xl border px-4 py-3 text-xs font-bold ${
+          theme === 'dark' ? 'border-amber-500/20 bg-amber-500/10 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'
+        }`}>
+          {data.warning}
+        </div>
+      )}
 
       {/* Market Theme */}
       {data?.market_theme && (

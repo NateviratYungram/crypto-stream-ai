@@ -59,7 +59,7 @@ interface TacticsData {
   };
 }
 
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 12000;
 const RECENT_SYMBOLS_STORAGE_KEY = 'crypto_tactics_recent_symbols';
 const TACTICS_CACHE_KEY = 'crypto_tactics_cache_v1';
 const TACTICS_AUDIT_CACHE_KEY = 'crypto_tactics_audits_v1';
@@ -171,6 +171,16 @@ const fetchAuditLogs = async (headers: Record<string, string>) => {
   }
 };
 
+const scheduleAuditFetch = (task: () => void) => {
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    const idleId = window.requestIdleCallback(() => task(), { timeout: 1200 });
+    return () => window.cancelIdleCallback(idleId);
+  }
+
+  const timeoutId = window.setTimeout(task, 500);
+  return () => window.clearTimeout(timeoutId);
+};
+
 export const TacticsHub = () => {
   const { theme } = useMode();
   const [symbol, setSymbol] = useState('BTC');
@@ -188,7 +198,7 @@ export const TacticsHub = () => {
     }
   });
   const [watchlistSymbols, setWatchlistSymbols] = useState<string[]>([]);
-  const isTimeoutError = typeof error === 'string' && error.toLowerCase().includes('longer than 30s');
+  const isTimeoutError = typeof error === 'string' && error.toLowerCase().includes('longer than 12s');
 
   const apiKey = () => localStorage.getItem('crypto_terminal_key') || 'demo';
   const watchlistHeaders = () => ({
@@ -299,17 +309,19 @@ export const TacticsHub = () => {
 
       setLoading(false);
 
-      void fetchAuditLogs(headers)
-        .then((logs) => {
-          setAuditLogs(logs);
-          writeCachedAudits(logs);
-        })
-        .catch(() => {
-          if (!cached) setAuditLogs([]);
-        });
+      scheduleAuditFetch(() => {
+        void fetchAuditLogs(headers)
+          .then((logs) => {
+            setAuditLogs(logs);
+            writeCachedAudits(logs);
+          })
+          .catch(() => {
+            if (!cached) setAuditLogs([]);
+          });
+      });
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        setError('Tactical engine is taking longer than 30s. The backend is likely busy, not offline.');
+        setError('Tactical engine is taking longer than 12s. The backend is likely busy, not offline.');
       } else {
         setError(err?.message || 'Unknown error');
       }

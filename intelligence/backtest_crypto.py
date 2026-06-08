@@ -17,6 +17,7 @@ Improvements over v3:
 
 import itertools
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -53,19 +54,38 @@ _BARS_PER_YEAR = {
 DEFAULT_PARAMS = {
     "adx_trending_threshold": 25,   # ADX > 25  → TRENDING regime
     "adx_ranging_threshold":  20,   # ADX < 20  → RANGING  regime
-    "adx_trade_min":          22,   # Trending trades require at least this ADX
+    "adx_trade_min":          25,   # Trending trades require at least this ADX (raised from 22)
     "rsi_oversold":           35,   # RANGING: buy signal
     "rsi_overbought":         65,   # RANGING: sell signal
-    "rsi_long_block":         75,   # Hard block: never go LONG above this RSI
-    "rsi_short_block":        25,   # Hard block: never go SHORT below this RSI
-    "sl_atr_mult":           1.5,   # Stop Loss  = entry ± ATR × mult
+    "rsi_long_block":         72,   # Hard block: never go LONG above this RSI (tightened from 75)
+    "rsi_short_block":        28,   # Hard block: never go SHORT below this RSI (tightened from 25)
+    "sl_atr_mult":           1.2,   # Stop Loss  = entry ± ATR × mult
     "tp1_atr_mult":          2.0,   # Take Profit 1 (partial exit)
     "tp2_atr_mult_base":     3.0,   # TP2 base multiple (scaled by ADX)
-    "risk_reward_min":       1.5,   # Minimum R:R before a trade is taken
+    "risk_reward_min":       1.6,   # Minimum R:R before a trade is taken
     "max_hold_bars":          30,   # Time-stop (bars)
     "risk_pct":              2.0,   # % of balance risked per trade
     "leverage":              1.0,
 }
+
+DEFAULT_FEE_BPS = float(os.getenv("BACKTEST_FEE_BPS", "4.0"))
+DEFAULT_SLIPPAGE_BPS = float(os.getenv("BACKTEST_SLIPPAGE_BPS", "2.0"))
+
+
+def _bps_to_rate(value: float) -> float:
+    try:
+        return max(float(value), 0.0) / 10_000.0
+    except Exception:
+        return 0.0
+
+
+def _apply_slippage(price: float, side: int, is_entry: bool, slippage_rate: float) -> float:
+    """Return a conservative execution price after slippage."""
+    if slippage_rate <= 0:
+        return price
+    if side == 1:
+        return price * (1.0 + slippage_rate) if is_entry else price * (1.0 - slippage_rate)
+    return price * (1.0 - slippage_rate) if is_entry else price * (1.0 + slippage_rate)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,7 +218,9 @@ def simulate_trades(df: pd.DataFrame,
                     sl_atr_mult: float = 1.5,
                     tp1_atr_mult: float = 2.0,
                     tp2_atr_mult_base: float = 3.0,
-                    min_ml_edge: float = 0.0) -> dict:
+                    min_ml_edge: float = 0.0,
+                    fee_bps: float = DEFAULT_FEE_BPS,
+                    slippage_bps: float = DEFAULT_SLIPPAGE_BPS) -> dict:
     """
     Bar-by-bar trade simulator.
 
@@ -211,6 +233,8 @@ def simulate_trades(df: pd.DataFrame,
         return {"error": "Insufficient data/indicators for simulation"}
 
     bars_per_year = _BARS_PER_YEAR.get(timeframe, 35_040)
+    fee_rate = _bps_to_rate(fee_bps)
+    slippage_rate = _bps_to_rate(slippage_bps)
 
     trades       = []
     balance      = initial_balance
@@ -223,6 +247,8 @@ def simulate_trades(df: pd.DataFrame,
     pos_size = 0.0
     bars_held = 0
     best_price = 0.0
+    entry_notional = 0.0
+    trade_realized_profit = 0.0
 
     records = df.reset_index(drop=True).to_dict("records")
 
@@ -259,8 +285,12 @@ def simulate_trades(df: pd.DataFrame,
 
                 # Partial TP1 (before checking ambiguous bar)
                 if partial_tp and not partial_done and hit_tp1 and not hit_sl:
-                    half_profit  = (take_profit1 - entry_price) / entry_price * (pos_size * 0.5) * leverage
+                    half_notional = (pos_size * 0.5) * leverage
+                    exit_price = _apply_slippage(take_profit1, pos_type, is_entry=False, slippage_rate=slippage_rate)
+                    half_profit  = (exit_price - entry_price) / entry_price * half_notional
+                    half_profit -= half_notional * fee_rate
                     balance     += half_profit
+                    trade_realized_profit += half_profit
                     peak_balance = max(peak_balance, balance)
                     pos_size    *= 0.5
                     partial_done = True
@@ -285,8 +315,12 @@ def simulate_trades(df: pd.DataFrame,
                 hit_tp1 = low  <= take_profit1
 
                 if partial_tp and not partial_done and hit_tp1 and not hit_sl:
-                    half_profit  = (entry_price - take_profit1) / entry_price * (pos_size * 0.5) * leverage
+                    half_notional = (pos_size * 0.5) * leverage
+                    exit_price = _apply_slippage(take_profit1, pos_type, is_entry=False, slippage_rate=slippage_rate)
+                    half_profit  = (entry_price - exit_price) / entry_price * half_notional
+                    half_profit -= half_notional * fee_rate
                     balance     += half_profit
+                    trade_realized_profit += half_profit
                     peak_balance = max(peak_balance, balance)
                     pos_size    *= 0.5
                     partial_done = True
@@ -306,14 +340,27 @@ def simulate_trades(df: pd.DataFrame,
                     closed, close_reason = True, "TIME"
 
             if closed:
-                profit       = pnl_pct * pos_size * leverage
+                if pos_type == 1:
+                    exit_level = stop_loss if close_reason == "SL" else (take_profit2 if close_reason == "TP2" else price)
+                    exit_price = _apply_slippage(exit_level, pos_type, is_entry=False, slippage_rate=slippage_rate)
+                    pnl_pct = (exit_price - entry_price) / entry_price
+                else:
+                    exit_level = stop_loss if close_reason == "SL" else (take_profit2 if close_reason == "TP2" else price)
+                    exit_price = _apply_slippage(exit_level, pos_type, is_entry=False, slippage_rate=slippage_rate)
+                    pnl_pct = (entry_price - exit_price) / entry_price
+
+                remaining_notional = pos_size * leverage
+                profit       = pnl_pct * remaining_notional
+                profit      -= remaining_notional * fee_rate
                 balance     += profit
+                trade_realized_profit += profit
                 peak_balance = max(peak_balance, balance)
+                net_pnl_pct = (trade_realized_profit / entry_notional * 100.0) if entry_notional > 0 else 0.0
                 trades.append({
                     "type":    "LONG" if pos_type == 1 else "SHORT",
                     "reason":  close_reason,
-                    "pnl_pct": round(pnl_pct * leverage * 100, 3),
-                    "profit":  round(profit, 4),
+                    "pnl_pct": round(net_pnl_pct, 3),
+                    "profit":  round(trade_realized_profit, 4),
                     "balance": round(balance, 4),
                     "bars":    bars_held,
                     "partial": partial_done,
@@ -322,6 +369,8 @@ def simulate_trades(df: pd.DataFrame,
                 in_position  = False
                 partial_done = False
                 bars_held    = 0
+                entry_notional = 0.0
+                trade_realized_profit = 0.0
 
         # ── New entry ─────────────────────────────────────────────────────────
         if not in_position and row.get("signal", 0) != 0 and atr > 0 and balance > 0:
@@ -332,7 +381,7 @@ def simulate_trades(df: pd.DataFrame,
                     continue  # Filtered by AI!
 
             pos_type    = int(row["signal"])
-            entry_price = price
+            entry_price = _apply_slippage(price, pos_type, is_entry=True, slippage_rate=slippage_rate)
 
             # TP2 widens with trend strength (from QuantAgent concept)
             tp2_mult = (tp2_atr_mult_base + 1.0) if adx_v > 30 else \
@@ -365,6 +414,10 @@ def simulate_trades(df: pd.DataFrame,
             risk_amt = balance * (current_risk_pct / 100)
             pos_size = (risk_amt / (sl_dist / entry_price)) if sl_dist > 0 else 0
             pos_size = min(pos_size, balance * leverage)
+            entry_notional = pos_size * leverage
+            entry_fee = entry_notional * fee_rate
+            balance -= entry_fee
+            trade_realized_profit = -entry_fee
 
             in_position  = True
             partial_done = False
@@ -377,6 +430,10 @@ def simulate_trades(df: pd.DataFrame,
             "status":          "no_trades",
             "message":         "No signals generated",
             "candles_analyzed": len(df),
+            "cost_model": {
+                "fee_bps": round(float(fee_bps), 4),
+                "slippage_bps": round(float(slippage_bps), 4),
+            },
         }
 
     wins   = [t for t in trades if t["profit"] > 0]
@@ -442,6 +499,10 @@ def simulate_trades(df: pd.DataFrame,
         "best_trade_pct":    round(max(t["pnl_pct"] for t in trades), 2),
         "worst_trade_pct":   round(min(t["pnl_pct"] for t in trades), 2),
         "regime_breakdown":  regime_counts,
+        "cost_model": {
+            "fee_bps": round(float(fee_bps), 4),
+            "slippage_bps": round(float(slippage_bps), 4),
+        },
     }
 
 
@@ -475,7 +536,9 @@ def run_crypto_backtest(symbol: str, timeframe: str = "15m", limit: int = 500,
         sl_atr_mult=p["sl_atr_mult"],
         tp1_atr_mult=p["tp1_atr_mult"],
         tp2_atr_mult_base=p["tp2_atr_mult_base"],
-        min_ml_edge=p.get("min_ml_edge", 0.0)
+        min_ml_edge=p.get("min_ml_edge", 0.0),
+        fee_bps=p.get("fee_bps", DEFAULT_FEE_BPS),
+        slippage_bps=p.get("slippage_bps", DEFAULT_SLIPPAGE_BPS),
     )
     results["symbol"]            = symbol
     results["timeframe"]         = timeframe

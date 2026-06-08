@@ -77,3 +77,14 @@ scrape_configs:
     static_configs:
       - targets: ['lake-writer:8000']
     metrics_path: /metrics
+
+  # AI/RAG application metrics: retrieval latency, estimated embedding cost,
+  # A/B experiment arms, feedback quality, and annotation queue depth.
+  - job_name: 'chat_server'
+    static_configs:
+      - targets: ['chat-server:8888']
+    metrics_path: /metrics
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: chat-server

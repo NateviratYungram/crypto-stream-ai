@@ -24,6 +24,8 @@ CryptoStream AI is a portfolio project that demonstrates how modern data, AI, an
 - Orchestrates pipelines with Airflow
 - Transforms analytical data with dbt
 - Generates AI-assisted market analysis and trading context
+- Retrieves ingested unstructured knowledge with PostgreSQL/pgvector RAG context
+- Detects price, volume, range, and missing-candle anomalies with adaptive baselines
 - Applies risk and guard-rail logic before execution
 - Monitors health, lineage, and quality through CI and observability tooling
 
@@ -86,6 +88,7 @@ flowchart LR
         A2["Yahoo Finance"]
         A3["FRED macro data"]
         A4["MetaTrader 5 / broker context"]
+        A5["Knowledge docs / research notes"]
     end
 
     subgraph Ingestion
@@ -130,6 +133,7 @@ flowchart LR
     A2 --> B3
     A3 --> B3
     A4 --> C2
+    A5 --> D1
     B2 --> B1
     B1 --> C1
     B3 --> D1
@@ -157,6 +161,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     A["Binance / Yahoo Finance / FRED / Broker context"] --> B["Kafka + Airflow ingestion"]
+    K["Knowledge docs / research notes"] --> E["PostgreSQL / pgvector (OLTP)"]
     B --> C["Flink stream processing"]
     B --> D["Scheduled Python intelligence jobs"]
     C --> E["PostgreSQL / pgvector (OLTP)"]
@@ -227,7 +232,7 @@ This repository highlights experience across:
 | Orchestration | Airflow 2.8 | Scheduled pipelines, DAG-based operations |
 | Transformation | dbt-postgres | Staging and analytical marts |
 | Storage | PostgreSQL, Parquet, SQLite, Redis | OLTP serving, OLAP storage/export, operational state, cache |
-| AI / Analytics | Custom intelligence modules, ML signal model | Multi-factor analysis and decision support |
+| AI / Analytics | Custom intelligence modules, ML signal model, Gemini embeddings, pgvector RAG | Multi-factor analysis, vector retrieval, and decision support |
 | Observability | Prometheus, Grafana, Marquez | Metrics, dashboards, lineage |
 | Quality | Ruff, GitHub Actions, DAG import tests | CI stability and code quality |
 
@@ -241,6 +246,46 @@ This repository highlights experience across:
 | Yahoo Finance | Scheduled | NASDAQ, S&P 500, Gold, Oil, BTC, ETH, SOL |
 | FRED | Scheduled | Fed Funds Rate, CPI, yield curve, unemployment, M2 |
 | MetaTrader 5 | Runtime broker context | Symbol normalization, execution-aware logic |
+| Knowledge documents | On-demand | Markdown, text, JSON, CSV, logs, and PDFs for RAG retrieval |
+
+---
+
+## RAG Knowledge Retrieval
+
+CryptoStream AI includes a lightweight RAG layer for unstructured knowledge:
+
+- `intelligence/rag/retrieval.py` chunks documents and stores them in `knowledge_documents` and `knowledge_chunks`
+- Gemini `text-embedding-004` creates 768-dimensional embeddings when `GEMINI_API_KEY` is configured
+- PostgreSQL/pgvector performs semantic search through `ivfflat` cosine indexes
+- PostgreSQL full-text search provides a keyword fallback when embeddings are unavailable
+- `retrieve_knowledge_context` is exposed as a Gemini tool so the chat agent can fetch cited context before answering
+- `scripts/ingest_knowledge.py` supports local ingestion and retrieval demos
+
+Example:
+
+```bash
+python scripts/ingest_knowledge.py ingest-file README.md --source-type md
+python scripts/ingest_knowledge.py retrieve "How does the pipeline move data into analytics?"
+```
+
+---
+
+## Anomaly Detection
+
+The anomaly detector can run on schedule through Airflow or as a one-shot local command:
+
+```bash
+python scripts/apply_schema.py
+python scripts/run_anomaly_detection.py --lookback-hours 72
+python scripts/run_anomaly_detection.py --lookback-hours 72 --dry-run --print-events
+```
+
+Runtime behavior:
+
+- Reads recent rows from `market_ohlcv`
+- Detects price return spikes, volume spikes, candle range outliers, and missing candle gaps
+- Writes deduplicated events into `data_anomaly_events`
+- Exposes recent events through `/api/anomalies/recent` and the `get_data_anomalies` Gemini tool
 
 ---
 
@@ -253,6 +298,7 @@ This repository highlights experience across:
 | `fred_ingestion` | Pulls macroeconomic indicators |
 | `daily_aggregation` | Builds daily rollups and summaries |
 | `data_quality` | Runs SQL assertions and blocks bad downstream data |
+| `market_data_anomaly_detection` | Detects adaptive price, volume, range, and missing-candle anomalies |
 | `datalake_to_bigquery` | Ships Parquet data into BigQuery |
 | `data_retention` | Enforces data lifecycle and cleanup policies |
 
