@@ -107,12 +107,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dbt-postgres
-        run: pip install "dbt-postgres==1.8.2"
+      - name: Install dbt-core + dbt-postgres
+        run: pip install "dbt-core==1.8.2" "dbt-postgres==1.8.2"
 
       - name: dbt deps (install packages)
         working-directory: dbt
-        run: dbt deps
+        run: python -m dbt.cli.main deps --profiles-dir .
 
       - name: dbt parse (validate all SQL models)
         working-directory: dbt
@@ -120,7 +120,7 @@ jobs:
           DBT_HOST: localhost
           DBT_USER: user
           DBT_PASSWORD: password
-        run: dbt parse --profiles-dir .
+        run: python -m dbt.cli.main parse --profiles-dir .
 
   # ── 4. Unit Tests ────────────────────────────────────────────────────────
   unit-tests:
