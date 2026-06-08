@@ -35,16 +35,16 @@ from intelligence.agents.master_agent import create_master_agent
 from intelligence.agents.pattern_agent import create_pattern_agent
 from intelligence.agents.sentiment_agent import create_sentiment_agent
 from intelligence.agents.trend_agent import create_trend_agent
-from intelligence.guards.correlation_guardian import check_directional_correlation
 from intelligence.chart_generator import generate_kline_chart, generate_trend_chart
+from intelligence.guards.correlation_guardian import check_directional_correlation
+from intelligence.ml.performance_feedback import score_signal_feedback
+from intelligence.ml.trading_quality_gate import get_trading_quality_gate
 from intelligence.technical_engine import (
     compute_indicators,
     get_indicator_summary,
     get_kline_data,
     get_smart_money_analysis,
 )
-from intelligence.ml.performance_feedback import score_signal_feedback
-from intelligence.ml.trading_quality_gate import get_trading_quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +215,9 @@ class CryptoIntelligence:
             # ── Step 1d: ML Signal Probability — non-STOCK only (per memory rule) ─
             if asset_class != "STOCK":
                 try:
-                    from intelligence.ml.signal_model import predict_with_neural_consensus
+                    from intelligence.ml.signal_model import (
+                        predict_with_neural_consensus,
+                    )
                     _idx = len(df) - 1
                     ml_buy  = predict_with_neural_consensus(df, _idx, side="BUY",  symbol=sym, asset_class=asset_class)
                     ml_sell = predict_with_neural_consensus(df, _idx, side="SELL", symbol=sym, asset_class=asset_class)

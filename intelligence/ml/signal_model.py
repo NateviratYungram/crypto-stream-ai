@@ -27,14 +27,32 @@ from dotenv import load_dotenv
 from .feature_extractor import FEATURE_COLS, extract_features
 from .signal_model_support_helpers import (
     apply_calibration as _helper_apply_calibration,
+)
+from .signal_model_support_helpers import (
     build_calibration_profile as _helper_build_calibration_profile,
+)
+from .signal_model_support_helpers import (
     build_dataset_report as _helper_build_dataset_report,
+)
+from .signal_model_support_helpers import (
     build_sufficiency_status as _helper_build_sufficiency_status,
+)
+from .signal_model_support_helpers import (
     count_reason as _helper_count_reason,
+)
+from .signal_model_support_helpers import (
     model_promotion_gate as _helper_model_promotion_gate,
+)
+from .signal_model_support_helpers import (
     normalize_paper_symbol as _helper_normalize_paper_symbol,
+)
+from .signal_model_support_helpers import (
     paper_feature_coverage as _helper_paper_feature_coverage,
+)
+from .signal_model_support_helpers import (
     paper_label_quality_decision as _helper_paper_label_quality_decision,
+)
+from .signal_model_support_helpers import (
     prune_weak_slices as _helper_prune_weak_slices,
 )
 
@@ -419,14 +437,11 @@ def _generate_training_signals(
         if not required_base.issubset(df.columns):
             return df
 
-    is_daily = tf in ("1d", "1w")
     # MTF gate disabled for training — MTF context is already encoded as features
     # (d_trend, d_rsi, d_ema_align). Gating here blocks entire assets/periods
     # (e.g. SOL in a downtrend) from generating any training examples, which is
     # worse than having the model learn the MTF relationship from labels.
     use_mtf  = False
-    rsi_buy  = 55 if not is_daily else 52
-    rsi_sell = 45 if not is_daily else 48
     adx_min  = 20
     cooldown = 6
 
@@ -552,7 +567,9 @@ def build_ml_dataset(
             smc_bar_cache: dict = {}
             if asset_class in ("CRYPTO", "MACRO") and signal_idx:
                 try:
-                    from intelligence.technical_engine import get_smart_money_analysis as _get_smc
+                    from intelligence.technical_engine import (
+                        get_smart_money_analysis as _get_smc,
+                    )
                     for _pos in signal_idx:
                         _i = df.index.get_loc(_pos)
                         _start = max(0, _i - 100)
@@ -1506,7 +1523,9 @@ def predict_with_neural_consensus(
     _smc_ctx = None
     if asset_class in ("CRYPTO", "MACRO"):
         try:
-            from intelligence.technical_engine import get_smart_money_analysis as _get_smc
+            from intelligence.technical_engine import (
+                get_smart_money_analysis as _get_smc,
+            )
             _smc_ctx = _get_smc(df)
         except Exception:
             pass

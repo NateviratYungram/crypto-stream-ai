@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from airflow import DAG
 from airflow.operators.python import PythonOperator
+
+from airflow import DAG
 
 DEFAULT_ARGS = {
     "owner":            "cryptostream",

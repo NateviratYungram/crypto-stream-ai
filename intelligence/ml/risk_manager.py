@@ -15,7 +15,6 @@ import logging
 import os
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -249,8 +248,8 @@ def get_funding_rate(symbol: str) -> Optional[float]:
         return cached.get("rate")
 
     try:
-        import urllib.request
         import json
+        import urllib.request
         url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={cache_key}"
         with urllib.request.urlopen(url, timeout=5) as resp:
             data = json.loads(resp.read())

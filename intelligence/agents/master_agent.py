@@ -13,10 +13,14 @@ import json
 import logging
 import os
 
-from intelligence.agents.reflector_agent import get_reflexive_context, format_symbol_memory
+from intelligence.agents.reflector_agent import (
+    format_symbol_memory,
+    get_reflexive_context,
+)
 from intelligence.ml.drift_monitor import drift_shield
 from intelligence.ml.performance_feedback import score_signal_feedback
-from intelligence.ml.signal_cooldown import check as cooldown_check, register as cooldown_register
+from intelligence.ml.signal_cooldown import check as cooldown_check
+from intelligence.ml.signal_cooldown import register as cooldown_register
 from intelligence.ml.symbol_threshold import get_threshold_for_side
 from intelligence.risk_manager import risk_manager
 
@@ -766,7 +770,7 @@ Respond ONLY with valid JSON:
             _regime_upper = str(regime).upper()
             if "CHAOS" in _regime_upper:
                 master_decision = "NO_TRADE"
-                reasoning = f"CHAOS BLOCK: Market regime=CHAOS — no trading allowed. " + reasoning
+                reasoning = "CHAOS BLOCK: Market regime=CHAOS — no trading allowed. " + reasoning
                 logger.info(f"[MasterAgent] Chaos block — {symbol} regime={regime}")
             elif integrity_score < 40:
                 master_decision = "NO_TRADE"

@@ -268,7 +268,7 @@ def extract_features(
     #  0 = no clear structure
     price_structure = 0.0
     if idx >= 10 and "High" in df.columns and "Low" in df.columns:
-        mid = idx - 5
+        idx - 5
         h_recent  = float(df["High"].iloc[idx - 4 : idx + 1].max())
         h_earlier = float(df["High"].iloc[idx - 10 : idx - 4].max())
         l_recent  = float(df["Low"].iloc[idx - 4 : idx + 1].min())

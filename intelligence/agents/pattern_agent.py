@@ -73,8 +73,8 @@ def create_pattern_agent(client: genai.Client):
                 ob_bot  = float(_ob.get("bottom", 0) or 0)
                 if ob_top > 0 and ob_bot > 0:
                     # "price inside OB" not directly available — use dist ≈ 0 proxy
-                    ob_mid  = (ob_top + ob_bot) / 2.0
-                    ob_half = (ob_top - ob_bot) / 2.0
+                    (ob_top + ob_bot) / 2.0
+                    (ob_top - ob_bot) / 2.0
                     if "BULLISH" in ob_type:
                         ict_patterns.append("Bullish OB Reaction")
                         bias_score += 2
@@ -114,7 +114,7 @@ def create_pattern_agent(client: genai.Client):
                 bias_score -= 1
 
             # ── Determine final bias ─────────────────────────────────────────
-            all_patterns = ict_patterns + [p for p in detected if p != "None"]
+            ict_patterns + [p for p in detected if p != "None"]
             if bias_score >= 2:
                 bias = "BULLISH"
                 confidence = min(55 + bias_score * 5, 82)

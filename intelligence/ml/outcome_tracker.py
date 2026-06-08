@@ -58,8 +58,8 @@ def _evaluate_trade_outcome(side: str, price: float, sl: Optional[float], tp: Op
 
 
 def _refresh_policy_caches() -> None:
-    from intelligence.ml.symbol_threshold import refresh_threshold_cache
     from intelligence.ml.symbol_policy import refresh_symbol_policy_cache
+    from intelligence.ml.symbol_threshold import refresh_threshold_cache
 
     refresh_threshold_cache()
     refresh_symbol_policy_cache()

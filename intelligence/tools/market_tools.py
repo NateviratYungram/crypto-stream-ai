@@ -6,7 +6,8 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime as dt_datetime, timezone as dt_timezone
+from datetime import datetime as dt_datetime
+from datetime import timezone as dt_timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -16,49 +17,6 @@ import psycopg2.extras
 import yfinance as yf
 from dotenv import load_dotenv
 from google import genai as _genai
-from intelligence.tools.market_tool_primitives import (
-    _bias_from_label as _primitives_bias_from_label,
-    _build_chart_analysis as _primitives_build_chart_analysis,
-    _derive_trade_signal as _primitives_derive_trade_signal,
-    _safe_num as _primitives_safe_num,
-    calculate_trade_pnl as _primitives_calculate_trade_pnl,
-)
-from intelligence.tools.market_tool_response_helpers import (
-    _build_market_features_response as _response_build_market_features_response,
-    _build_market_opportunities_response as _response_build_market_opportunities_response,
-    _interpret_market_features as _response_interpret_market_features,
-)
-from intelligence.tools.market_tool_fundamentals_helpers import (
-    _summarize_stock_fundamentals as _fundamentals_summarize_stock_fundamentals,
-)
-from intelligence.tools.market_tool_history_helpers import (
-    _build_historical_ranking_insert_payload as _history_build_historical_ranking_insert_payload,
-    _build_live_historical_rankings_response as _history_build_live_historical_rankings_response,
-    _build_persisted_historical_rankings_response as _history_build_persisted_historical_rankings_response,
-    _historical_rankings_are_fresh as _history_historical_rankings_are_fresh,
-)
-from intelligence.tools.market_tool_index_helpers import (
-    _build_index_summary_response as _index_build_index_summary_response,
-    _normalize_index_requests as _index_normalize_index_requests,
-    _summarize_index_close_series as _index_summarize_index_close_series,
-)
-from intelligence.tools.market_tool_macro_helpers import (
-    _build_market_climate_response as _macro_build_market_climate_response,
-    _build_market_regime_response as _macro_build_market_regime_response,
-    _build_risk_parameters_response as _macro_build_risk_parameters_response,
-    _build_sector_rotation_response as _macro_build_sector_rotation_response,
-)
-from intelligence.tools.market_tool_opportunity_helpers import (
-    _absolute_change as _opportunities_absolute_change,
-    _build_opportunity_group as _opportunities_build_group,
-    _enrich_opportunity_stock as _opportunities_enrich_stock,
-    _liquid_stocks as _opportunities_liquid_stocks,
-)
-from intelligence.tools.market_tool_stats_helpers import (
-    _calculate_hurst_exponent as _stats_calculate_hurst_exponent,
-    _calculate_volatility_skew as _stats_calculate_volatility_skew,
-    _get_historical_stock_universe as _stats_get_historical_stock_universe,
-)
 
 from intelligence.agents.sentiment_agent import _fetch_rss_news
 from intelligence.backtest_crypto import run_crypto_backtest
@@ -67,6 +25,15 @@ from intelligence.constants import (
     NASDAQ_100_TICKERS,
     SMALL_CAP_TICKERS,
     SP500_TICKERS,
+)
+from intelligence.ml.anomaly_store import (
+    connect as _anomaly_connect,
+)
+from intelligence.ml.anomaly_store import (
+    fetch_anomaly_events as _fetch_anomaly_events,
+)
+from intelligence.ml.anomaly_store import (
+    fetch_anomaly_summary as _fetch_anomaly_summary,
 )
 from intelligence.mt5_connector import (
     _MT5_AVAILABLE,
@@ -78,13 +45,10 @@ from intelligence.mt5_connector import (
 from intelligence.persistence_utils import (
     save_trade_draft,
 )
-from intelligence.ml.anomaly_store import (
-    connect as _anomaly_connect,
-    fetch_anomaly_events as _fetch_anomaly_events,
-    fetch_anomaly_summary as _fetch_anomaly_summary,
-)
 from intelligence.rag import (
     ingest_knowledge_document as _rag_ingest_knowledge_document,
+)
+from intelligence.rag import (
     retrieve_knowledge_context as _rag_retrieve_knowledge_context,
 )
 from intelligence.technical_engine import (
@@ -92,6 +56,81 @@ from intelligence.technical_engine import (
     get_indicator_summary,
     get_kline_data,
     get_smart_money_analysis,
+)
+from intelligence.tools.market_tool_fundamentals_helpers import (
+    _summarize_stock_fundamentals as _fundamentals_summarize_stock_fundamentals,
+)
+from intelligence.tools.market_tool_history_helpers import (
+    _build_historical_ranking_insert_payload as _history_build_historical_ranking_insert_payload,
+)
+from intelligence.tools.market_tool_history_helpers import (
+    _build_live_historical_rankings_response as _history_build_live_historical_rankings_response,
+)
+from intelligence.tools.market_tool_history_helpers import (
+    _build_persisted_historical_rankings_response as _history_build_persisted_historical_rankings_response,
+)
+from intelligence.tools.market_tool_history_helpers import (
+    _historical_rankings_are_fresh as _history_historical_rankings_are_fresh,
+)
+from intelligence.tools.market_tool_index_helpers import (
+    _build_index_summary_response as _index_build_index_summary_response,
+)
+from intelligence.tools.market_tool_index_helpers import (
+    _normalize_index_requests as _index_normalize_index_requests,
+)
+from intelligence.tools.market_tool_index_helpers import (
+    _summarize_index_close_series as _index_summarize_index_close_series,
+)
+from intelligence.tools.market_tool_macro_helpers import (
+    _build_market_climate_response as _macro_build_market_climate_response,
+)
+from intelligence.tools.market_tool_macro_helpers import (
+    _build_sector_rotation_response as _macro_build_sector_rotation_response,
+)
+from intelligence.tools.market_tool_opportunity_helpers import (
+    _absolute_change as _opportunities_absolute_change,
+)
+from intelligence.tools.market_tool_opportunity_helpers import (
+    _build_opportunity_group as _opportunities_build_group,
+)
+from intelligence.tools.market_tool_opportunity_helpers import (
+    _enrich_opportunity_stock as _opportunities_enrich_stock,
+)
+from intelligence.tools.market_tool_opportunity_helpers import (
+    _liquid_stocks as _opportunities_liquid_stocks,
+)
+from intelligence.tools.market_tool_primitives import (
+    _bias_from_label as _primitives_bias_from_label,
+)
+from intelligence.tools.market_tool_primitives import (
+    _build_chart_analysis as _primitives_build_chart_analysis,
+)
+from intelligence.tools.market_tool_primitives import (
+    _derive_trade_signal as _primitives_derive_trade_signal,
+)
+from intelligence.tools.market_tool_primitives import (
+    _safe_num as _primitives_safe_num,
+)
+from intelligence.tools.market_tool_primitives import (
+    calculate_trade_pnl as _primitives_calculate_trade_pnl,
+)
+from intelligence.tools.market_tool_response_helpers import (
+    _build_market_features_response as _response_build_market_features_response,
+)
+from intelligence.tools.market_tool_response_helpers import (
+    _build_market_opportunities_response as _response_build_market_opportunities_response,
+)
+from intelligence.tools.market_tool_response_helpers import (
+    _interpret_market_features as _response_interpret_market_features,
+)
+from intelligence.tools.market_tool_stats_helpers import (
+    _calculate_hurst_exponent as _stats_calculate_hurst_exponent,
+)
+from intelligence.tools.market_tool_stats_helpers import (
+    _calculate_volatility_skew as _stats_calculate_volatility_skew,
+)
+from intelligence.tools.market_tool_stats_helpers import (
+    _get_historical_stock_universe as _stats_get_historical_stock_universe,
 )
 from intelligence.tools.onchain_tools import onchain_engine
 from intelligence.whale_engine import whale_pulse
@@ -1012,7 +1051,7 @@ def _load_persisted_historical_stock_rankings(
             if not _history_historical_rankings_are_fresh(meta, max_age_hours=max_age_hours):
                 return None
 
-            updated_at = meta.get("updated_at")
+            meta.get("updated_at")
             order_sql = "DESC" if direction == "top" else "ASC"
             cur.execute(
                 f"""
@@ -1058,6 +1097,7 @@ def _compute_historical_stock_rankings(
     full_window_only: bool,
 ) -> Dict[str, Any]:
     import math
+
     import yfinance as yf
 
     def _yf_equity_symbol(sym: str) -> str:
@@ -2389,7 +2429,8 @@ def _scan_basket(tickers: list) -> list:
     except Exception as batch_error:
         logger.warning(f"Binance bulk crypto scan failed ({batch_error}); trying per-symbol fallback")
 
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import TimeoutError as FuturesTimeoutError
 
     def _fetch_one(binance_symbol: str):
         try:
@@ -2589,8 +2630,7 @@ def get_market_opportunities(asset_class: str = "ALL") -> Dict[str, Any]:
             nasdaq_composite = index_data["exchanges"].get("NASDAQ", [])
 
             # Fetch gainers and losers IN PARALLEL to halve wait time
-            from concurrent.futures import ThreadPoolExecutor
-            from concurrent.futures import wait
+            from concurrent.futures import ThreadPoolExecutor, wait
             _ex = ThreadPoolExecutor(max_workers=2)
             try:
                 futures = {
